@@ -68,8 +68,11 @@
     name: "{{ item.name }}"
     definition:
       metadata:
-        labels:
-          "{{ gpu_device_label }}": "{{ item.gpu_workload }}"
+        # The whole mapping is built inside one expression. Ansible does not
+        # reliably template a dictionary *key* written as "{{ var }}:" in a
+        # nested module argument -- it arrives at the API server as the literal
+        # string, and the request is rejected as an invalid label name.
+        labels: "{{ {gpu_device_label: item.gpu_workload} }}"
   loop: "{{ control_plane_nodes }}"
   loop_control:
     label: "{{ item.name }} -> {{ item.gpu_workload }}"

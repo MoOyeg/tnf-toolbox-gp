@@ -222,3 +222,94 @@ package repository's contents, a device-name namespace, a file's meaning.
 Two are now covered by tests that would have caught them
 (`hack/test-common-sh.sh` for the parameter encoding, and the same suite could
 be extended). The rest are the kind only a real deploy finds.
+
+## Run 2 — 2026-08-27, eu-west-1, account 687604608198
+
+A different sandbox account. Two more defects, and one environmental blocker
+worth writing down because it cost nothing to detect and would have cost an
+hour to debug.
+
+### 11. Not a bug: the G/VT quota is per region, and mostly 4
+
+`make doctor` refused to proceed in us-east-2: the "Running On-Demand G and VT
+instances" quota was **64 vCPU**, and one `g4dn.metal` is 96. Not two — one.
+
+Checking every region turned up the real picture:
+
+| region | G/VT vCPU quota |
+|---|---|
+| us-east-1 | 4 |
+| us-east-2 | 64 |
+| us-west-1 / us-west-2 | 4 |
+| ap-southeast-1 | 4 |
+| **eu-west-1** | **768** |
+
+`g4dn.metal` is also the only GPU bare-metal type offered in any of them, so
+there is no smaller fallback. The fix was a two-line config change to
+`eu-west-1`, which is exactly what `config/instance.env` is for.
+
+The lesson for the toolbox: `make doctor`'s quota check earns its place. It
+turned a would-be failure ~40 minutes into a deploy into a five-second refusal
+before anything was created.
+
+### 12. Ansible does not template a dictionary *key*
+
+The node labelling task wrote the label name as a templated key:
+
+```yaml
+labels:
+  "{{ gpu_device_label }}": "{{ item.gpu_workload }}"
+```
+
+The value templated; the key did not. It reached the API server as the literal
+string `{{ gpu_device_label }}` and was rejected:
+
+```
+Node "master-0" is invalid: metadata.labels: Invalid value:
+"{{ gpu_device_label }}": name part must consist of alphanumeric characters...
+```
+
+*Fix:* build the whole mapping inside one expression, so the key is evaluated
+as part of it:
+
+```yaml
+labels: "{{ {gpu_device_label: item.gpu_workload} }}"
+```
+
+This was the only templated dictionary key in the repository. Worth grepping
+for (`'^\s*"{{.*}}":'`) after adding any k8s object with a dynamic key.
+
+### 13. The MachineConfigPool wait could pass without a rollout
+
+Watching the `Updating` condition to confirm a rollout had begun turned out to
+be both too slow and unsound.
+
+Too slow: on a two-node TNF cluster the MCO must coordinate with Pacemaker
+before draining a node that runs half of etcd. `Updating=True` did not appear
+within the five-minute window, so that stage timed out.
+
+Unsound: the stage was written with `failed_when: false`, and the stage after it
+waits for `machineCount == updatedMachineCount` — which is **trivially true
+before a rollout starts**. Had the pool genuinely never picked up the change,
+the wait would have reported success for a MachineConfig applied to nothing.
+
+*Fix:* stop watching a transient condition. Read the pool's target
+(`.spec.configuration.name`) and wait until every node's
+`machineconfiguration.openshift.io/currentConfig` annotation equals it and its
+state is `Done`. That cannot be true before the rollout starts and cannot be
+missed by polling too slowly. The failure path now dumps the pool, the per-node
+annotations and the machine-config-daemon logs.
+
+### 14. Not a bug: a metal reboot is ~17 minutes
+
+Observed during the IOMMU rollout:
+
+```
+16:59  master-0 cordoned
+17:02  master-0 NotReady          <- reboot begins
+17:19  master-0 Ready             <- 17 minutes later
+17:20  uncordoned, pool Updated
+```
+
+A two-node pool reboots serially, so **any MachineConfig change costs ~40
+minutes**. Worth knowing before adding kernel arguments casually.

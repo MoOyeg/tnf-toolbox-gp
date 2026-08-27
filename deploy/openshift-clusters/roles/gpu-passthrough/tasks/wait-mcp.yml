@@ -1,39 +1,96 @@
 ---
 # Wait for a MachineConfigPool to finish applying.
 #
-# Polled in two stages deliberately. A pool that has not started updating yet
-# still reports Updated=True, so waiting only for "Updated" can return
-# immediately and let the playbook race ahead of a reboot that has not begun.
+# This does not watch the Updating condition. Two reasons, both learned the hard
+# way on a real two-node cluster:
+#
+#   * It is transient, and on TNF the MCO takes well over five minutes to even
+#     begin -- it has to coordinate with Pacemaker before it can drain a node
+#     that is running half the etcd cluster. A poll loop can easily miss it.
+#   * Worse, missing it is silent. "machineCount == updatedMachineCount" is
+#     trivially true *before* a rollout starts, so a wait built on that alone
+#     reports success for a change that has not been applied to anything.
+#
+# Instead it compares each node's rendered config against the pool's target.
+# That is the authoritative signal, it cannot be true before the rollout starts,
+# and it cannot be missed by polling too slowly.
 
-- name: Wait for the {{ target_mcp }} pool to pick up the change
+- name: Read the {{ target_mcp }} pool's target rendered config
   ansible.builtin.command: >-
-    oc get mcp {{ target_mcp }}
-    -o jsonpath={.status.conditions[?(@.type=="Updating")].status}
+    oc get mcp {{ target_mcp }} -o jsonpath={.spec.configuration.name}
   environment:
     KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
-  register: mcp_updating
+  register: mcp_target
   changed_when: false
   retries: 20
   delay: 15
-  until: mcp_updating.stdout == "True"
-  # A MachineConfig identical to what is already applied never triggers an
-  # update; that is a success, not a failure.
-  failed_when: false
+  until: mcp_target.rc == 0 and mcp_target.stdout | length > 0
 
-- name: Wait for the {{ target_mcp }} pool to finish updating
-  ansible.builtin.command: >-
-    oc get mcp {{ target_mcp }} -o jsonpath={.status.machineCount}/{.status.updatedMachineCount}/{.status.degradedMachineCount}
-  environment:
-    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
-  register: mcp_state
-  changed_when: false
-  retries: "{{ (mcp_rollout_timeout | int / 30) | int }}"
-  delay: 30
-  until:
-    - mcp_state.rc == 0
-    - mcp_state.stdout.split('/')[0] == mcp_state.stdout.split('/')[1]
-    - mcp_state.stdout.split('/')[2] == "0"
-
-- name: Report the pool state
+- name: Show the target config
   ansible.builtin.debug:
-    msg: "{{ target_mcp }} pool: {{ mcp_state.stdout }} (machines/updated/degraded)"
+    msg: "{{ target_mcp }} pool is converging on {{ mcp_target.stdout }}"
+
+- name: Wait for every node to reach the target config
+  block:
+    - name: Poll each node's applied config
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        oc get nodes -l node-role.kubernetes.io/{{ target_mcp }} -o json
+        | jq -r '.items[]
+                 | "\(.metadata.name) \(.metadata.annotations["machineconfiguration.openshift.io/currentConfig"]) \(.metadata.annotations["machineconfiguration.openshift.io/state"])"'
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+      register: node_configs
+      changed_when: false
+      # The API goes away while a control-plane node reboots, so a failed poll
+      # is expected rather than fatal -- keep retrying.
+      failed_when: false
+      retries: "{{ (mcp_rollout_timeout | int / 30) | int }}"
+      delay: 30
+      until:
+        - node_configs.rc == 0
+        - node_configs.stdout_lines | length > 0
+        - node_configs.stdout_lines | select('search', mcp_target.stdout ~ ' Done')
+          | list | length == node_configs.stdout_lines | length
+
+    - name: Confirm the pool is not degraded
+      ansible.builtin.command: >-
+        oc get mcp {{ target_mcp }}
+        -o jsonpath={.status.conditions[?(@.type=="Degraded")].status}
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+      register: mcp_degraded
+      changed_when: false
+      failed_when: mcp_degraded.stdout != "False"
+  rescue:
+    - name: Collect rollout diagnostics
+      ansible.builtin.shell: |
+        echo "--- pool ---"
+        oc get mcp {{ target_mcp }} -o wide 2>&1
+        echo "--- degraded reason ---"
+        oc get mcp {{ target_mcp }} -o jsonpath='{.status.conditions[?(@.type=="Degraded")].message}{"\n"}' 2>&1
+        echo "--- nodes ---"
+        oc get nodes -o custom-columns='NAME:.metadata.name,STATE:.metadata.annotations.machineconfiguration\.openshift\.io/state,CURRENT:.metadata.annotations.machineconfiguration\.openshift\.io/currentConfig,DESIRED:.metadata.annotations.machineconfiguration\.openshift\.io/desiredConfig,REASON:.metadata.annotations.machineconfiguration\.openshift\.io/reason' 2>&1
+        echo "--- machine-config-daemon logs ---"
+        oc logs -n openshift-machine-config-operator -l k8s-app=machine-config-daemon \
+          --tail=25 --max-log-requests=4 2>&1 | tail -40
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+      register: mcp_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: Report and fail
+      ansible.builtin.fail:
+        msg: |
+          The {{ target_mcp }} pool did not converge on {{ mcp_target.stdout }}
+          within {{ mcp_rollout_timeout }}s.
+
+          On a two-node control plane every reboot drains a node that is running
+          half of etcd, so the MCO waits on Pacemaker before proceeding. A pool
+          stuck at one updated node usually means the first node has not rejoined.
+          {{ mcp_diagnostics.stdout }}
+
+- name: Report the rollout result
+  ansible.builtin.debug:
+    msg: "{{ target_mcp }} pool converged: {{ node_configs.stdout_lines }}"
