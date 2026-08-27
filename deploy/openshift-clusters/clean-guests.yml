@@ -45,12 +45,13 @@
         state: absent
 
     - name: Confirm the passthrough GPUs are free again
+      # Identical indentation on every line: see the note in roles/cnv.
       ansible.builtin.shell: >-
         set -o pipefail;
         oc get nodes -o json
         | jq -r --arg r "{{ gpu_resource_name }}"
-          '.items[] | select(.status.allocatable[$r] != null)
-           | "\(.metadata.name) allocatable=\(.status.allocatable[$r])"'
+        '.items[] | select(.status.allocatable[$r] != null)
+        | "\(.metadata.name) allocatable=\(.status.allocatable[$r])"'
       register: freed_gpus
       changed_when: false
 

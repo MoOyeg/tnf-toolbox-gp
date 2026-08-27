@@ -266,6 +266,69 @@ def test_jsonpath_filters_are_shell_quoted():
     )
 
 
+def test_shell_commands_are_not_split_by_stray_newlines():
+    """A folded YAML scalar must not put a bare newline between shell arguments.
+
+    In a `>-` scalar, a *more-indented* continuation line keeps its newline
+    instead of folding to a space. Inside quotes that is harmless. Between
+    arguments it is fatal: bash treats the newline as a command separator, so
+
+        oc get nodes -o json | jq -r --arg r "nvidia.com/..."
+          '.items[] | select(...)'
+
+    runs jq with no filter, then tries to execute the filter as a program. The
+    task fails with a bare "non-zero return code" that says nothing about why.
+
+    A newline is fine when it is inside quotes, or escaped with a trailing
+    backslash, or part of a deliberate multi-line `|` script whose next line
+    starts a new command. Only a newline followed by a quoted argument is
+    reported.
+    """
+    print("\nshell command continuation")
+
+    def offending_fragment(command):
+        quote = None
+        for i, ch in enumerate(command):
+            if quote:
+                if ch == quote:
+                    quote = None
+            elif ch in "'\"":
+                quote = ch
+            elif ch == "\n":
+                if command[i - 1:i] == "\\":
+                    continue  # escaped: a real shell line continuation
+                if command[i + 1:].lstrip(" ")[:1] in ("'", '"'):
+                    return command[max(0, i - 40):i + 30].replace("\n", "\\n")
+        return None
+
+    def walk(node, path, found):
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("ansible.builtin.shell", "ansible.builtin.command",
+                           "shell", "command") and isinstance(value, str):
+                    fragment = offending_fragment(value)
+                    if fragment:
+                        found.append(f"{path}: ...{fragment}...")
+                walk(value, path, found)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, path, found)
+
+    found = []
+    playbook_dir = f"{ROOT}/deploy/openshift-clusters"
+    for path in sorted(glob.glob(f"{playbook_dir}/**/*.yml", recursive=True)):
+        if "ansible_collections" in path:
+            continue
+        try:
+            document = yaml.safe_load(open(path, encoding="utf-8"))
+        except yaml.YAMLError:
+            continue
+        walk(document, os.path.relpath(path, ROOT), found)
+
+    check("no shell command is split by a stray newline", not found,
+          "; ".join(found))
+
+
 def main():
     test_every_template_renders()
     test_install_config()
@@ -274,6 +337,7 @@ def main():
     test_haproxy_config()
     test_cloudformation()
     test_jsonpath_filters_are_shell_quoted()
+    test_shell_commands_are_not_split_by_stray_newlines()
 
     print()
     if FAILURES:

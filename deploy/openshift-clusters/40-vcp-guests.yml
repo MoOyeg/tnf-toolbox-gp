@@ -17,11 +17,12 @@
         op_kubeconfig: "{{ kubeconfig }}"
 
     - name: Check the GPU budget before creating anything
+      # Identical indentation on every line: see the note in roles/cnv.
       ansible.builtin.shell: >-
         set -o pipefail;
         oc get nodes -o json
         | jq -r --arg r "{{ gpu_resource_name }}"
-          '[.items[].status.allocatable[$r] // "0" | tonumber] | add'
+        '[.items[].status.allocatable[$r] // "0" | tonumber] | add'
       register: gpu_budget
       changed_when: false
 

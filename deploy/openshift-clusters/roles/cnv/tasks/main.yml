@@ -57,12 +57,16 @@
 # not bound the GPUs, this stays absent and every guest cluster NodePool would
 # sit Pending with no obvious reason.
 - name: Confirm the GPU resource is allocatable on the passthrough node
+  # Every line is indented identically on purpose. In a folded (>-) scalar a
+  # more-indented line keeps its newline, and a newline between shell arguments
+  # splits the command in two: jq would run with no filter and the filter would
+  # be executed as a program name.
   ansible.builtin.shell: >-
     set -o pipefail;
     oc get nodes -o json
     | jq -r --arg r "{{ gpu_resource_name }}"
-      '.items[] | select(.status.allocatable[$r] != null)
-       | "\(.metadata.name) \($r)=\(.status.allocatable[$r])"'
+    '.items[] | select(.status.allocatable[$r] != null)
+    | "\(.metadata.name) \($r)=\(.status.allocatable[$r])"'
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
   register: passthrough_capacity
