@@ -156,6 +156,63 @@ finishes. Two consequences:
   a fence is a stop and a start. See
   [fencing-on-aws.md](fencing-on-aws.md).
 
+## Where run 1 stopped
+
+Torn down deliberately mid-run, not because of a failure. Stages reached:
+
+| Stage | Result |
+|---|---|
+| `make infra` | **passed** — VPC, private hosted zone, bastion, all three bastion services |
+| `make tnf` | **reached bootstrap** — both `g4dn.metal` up, ignition served, `wait-for bootstrap-complete` in progress when it was stopped |
+| `make gpu` | not reached |
+| `make virt-acm` | not reached |
+| `make guests` | not reached |
+| `make guest-gpu` | not reached |
+
+Confirmed working against real hardware:
+
+- **The Redfish → EC2 fencing shim.** Both nodes resolved by `Name` tag and
+  reported live power state: `master-0 {"PowerState":"On","ec2":"running"}`.
+  The BMC credentials were accepted. This is the piece of the repo with no
+  upstream equivalent, and it works.
+- Both `g4dn.metal` launched with data volumes attached at `/dev/sdf`.
+- `openshift-install` produced a **302 KB `bootstrap.ign`** against a 16 KiB
+  user-data limit, which is the whole reason for the pointer indirection. Good
+  to have that confirmed rather than assumed.
+- haproxy validated its own config and came up; the ignition server served both
+  configs.
+- The bootstrap node reached the point of answering the Kubernetes API.
+
+Still unproven, in order of risk:
+
+1. `bootstrap-complete` and `install-complete` on a two-node `platform: none`
+   cluster — in particular whether the nodes register as `master-0` / `master-1`
+   from the ignition `/etc/hostname`, which `finish.yml` asserts.
+2. Whether the TNF controller creates `fence_redfish` stonith devices pointing
+   at the shim, and whether `pcs stonith status` reports them Started.
+3. Everything from `make gpu` onward: the IOMMU MachineConfig rollout on a
+   two-node control plane, the GPU Operator's sandbox workload split, LVM
+   Storage finding the EBS volume by id, ACM on two nodes, and the
+   `hcp --host-device-name` flag.
+
+## Resuming
+
+The environment was destroyed, so start from scratch:
+
+```bash
+cd deploy/
+make doctor      # confirm quota and AZ capacity again -- both can change
+make infra       # ~5 minutes
+make tnf         # picks up from a clean slate
+```
+
+`config/instance.env` is gitignored and was left in place, as is the
+`tnf-gp-key` EC2 key pair. Nothing else survives.
+
+Budget roughly 20 minutes of teardown into any retry cycle: a failed stack
+cannot be recreated until its rollback finishes, and rolling back two
+`g4dn.metal` is most of that time.
+
 ## What this says about the static checks
 
 They caught nothing here, and that is the honest lesson. Every one of these
