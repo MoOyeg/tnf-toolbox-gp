@@ -54,14 +54,19 @@ make all           # infra -> tnf -> gpu -> virt-acm -> guests -> guest-gpu
 
 Each stage is independently re-runnable:
 
-| Stage | What it does | Roughly |
+| Stage | What it does | Measured |
 |---|---|---|
-| `make infra` | VPC, subnet, private DNS, bastion, fencing endpoint | 5 min |
-| `make tnf` | install TNF 4.22 on two `g4dn.metal` nodes | 60–90 min |
-| `make gpu` | IOMMU, NFD, GPU Operator, workload-mode labels | 30–45 min |
-| `make virt-acm` | LVM Storage, OpenShift Virtualization, ACM | 45–60 min |
-| `make guests` | the virtualized control-plane guest clusters | 30–45 min |
-| `make guest-gpu` | NFD + GPU Operator inside each guest | 30 min |
+| `make infra` | VPC, subnet, private DNS, bastion, fencing endpoint | 2 min |
+| `make tnf` | install TNF 4.22 on two `g4dn.metal` nodes | 57 min |
+| `make gpu` | IOMMU, NFD, GPU Operator, workload-mode labels | 45 min |
+| `make virt-acm` | LVM Storage, OpenShift Virtualization, ACM | 15 min |
+| `make guests` | the virtualized control-plane guest clusters | 30–45 min* |
+| `make guest-gpu` | NFD + GPU Operator inside each guest | 30 min* |
+
+Timings are from a real run in `eu-west-1`; `*` are still estimates. Most of
+`make tnf` is `wait-for bootstrap-complete` (32 min) and `install-complete`
+(18 min). Most of `make gpu` is a single MachineConfig: adding kernel arguments
+reboots both nodes serially, and **a `g4dn.metal` takes ~17 minutes to reboot**.
 
 `make status` summarises stacks, instance power state, bastion services and
 cluster health at any point. `make destroy` removes everything.
