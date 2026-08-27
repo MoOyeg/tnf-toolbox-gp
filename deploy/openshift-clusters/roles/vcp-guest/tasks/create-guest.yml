@@ -42,6 +42,21 @@
       {{ gpu_resource_name }}. The cluster would come up without GPUs.
     success_msg: "{{ guest_name }} requests {{ guest_gpus_per_node }}x {{ gpu_resource_name }} per worker"
 
+# hcp names the NodePool itself. It happens to match the cluster name today,
+# but the waits below should not depend on that -- reading it back from the
+# manifest that was actually applied costs nothing and cannot drift.
+- name: "{{ guest_name }}: read the NodePool name out of the rendered manifest"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    awk '/^kind: NodePool$/{f=1} f&&/^  name: /{print $2; exit}'
+    {{ install_dir }}/guest-manifests/{{ guest_name }}.yaml
+  register: rendered_nodepool
+  changed_when: false
+
+- name: "{{ guest_name }}: use the rendered NodePool name"
+  ansible.builtin.set_fact:
+    guest_nodepool_name: "{{ rendered_nodepool.stdout | trim | default(guest_name, true) }}"
+
 - name: "{{ guest_name }}: apply the manifests"
   ansible.builtin.command: "oc apply -f {{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
   environment:
@@ -63,9 +78,9 @@
 
 - name: "{{ guest_name }}: wait for the worker VMs to join"
   block:
-    - name: "{{ guest_name }}: poll the NodePool"
+    - name: "{{ guest_name }}: poll NodePool {{ guest_nodepool_name }}"
       ansible.builtin.command: >-
-        oc get nodepool {{ guest_name }} -n {{ hcp_namespace }}
+        oc get nodepool {{ guest_nodepool_name }} -n {{ hcp_namespace }}
         -o jsonpath={.status.replicas}
       environment:
         KUBECONFIG: "{{ op_kubeconfig }}"
@@ -81,8 +96,10 @@
     # number of them.
     - name: "{{ guest_name }}: collect NodePool diagnostics"
       ansible.builtin.shell: |
-        echo "--- nodepool ---"
-        oc get nodepool {{ guest_name }} -n {{ hcp_namespace }} -o yaml 2>&1 | tail -40
+        echo "--- nodepools in {{ hcp_namespace }} ---"
+        oc get nodepool -n {{ hcp_namespace }} 2>&1
+        echo "--- nodepool {{ guest_nodepool_name }} ---"
+        oc get nodepool {{ guest_nodepool_name }} -n {{ hcp_namespace }} -o yaml 2>&1 | tail -40
         echo "--- virtual machines ---"
         oc get vmi -n {{ hcp_namespace }}-{{ guest_name }} -o wide 2>&1
         echo "--- unschedulable pods ---"
