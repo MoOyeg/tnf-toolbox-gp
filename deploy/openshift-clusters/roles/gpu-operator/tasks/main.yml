@@ -1,0 +1,103 @@
+---
+# NVIDIA GPU Operator.
+#
+# On the base cluster this runs with sandboxWorkloads enabled, which is what
+# lets a node be assigned to vfio-pci instead of the NVIDIA driver. Inside a
+# guest cluster the GPU is already an ordinary PCI device on the VM, so it runs
+# in plain container mode.
+
+- name: Install the GPU Operator
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: install-operator
+  vars:
+    op_package: gpu-operator-certified
+    op_namespace: "{{ gpu_operator_namespace }}"
+    op_channel: "{{ gpu_operator_channel }}"
+    # NVIDIA ships through the certified catalog, not redhat-operators.
+    op_source: certified-operators
+    op_operator_group_scope: own
+    op_csv_timeout: "{{ operator_csv_timeout }}"
+
+# The ClusterPolicy is derived from the CSV's own alm-examples rather than
+# written out here. The CRD is large and changes shape between releases; taking
+# the operator's example and patching the handful of fields that matter keeps
+# this working across upgrades instead of breaking on a new required field.
+- name: Read the installed CSV name
+  ansible.builtin.command: >-
+    oc get subscription gpu-operator-certified -n {{ gpu_operator_namespace }}
+    -o jsonpath={.status.installedCSV}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: gpu_csv
+  changed_when: false
+
+- name: Build the ClusterPolicy from the operator's own example
+  ansible.builtin.shell: |
+    set -o pipefail
+    oc get csv {{ gpu_csv.stdout }} -n {{ gpu_operator_namespace }} \
+      -o jsonpath='{.metadata.annotations.alm-examples}' \
+    | jq '[.[] | select(.kind == "ClusterPolicy")][0]
+          | .metadata.name = "{{ gpu_cluster_policy_name }}"
+          | .spec.sandboxWorkloads.enabled = {{ gpu_sandbox_workloads | lower }}
+          | .spec.sandboxWorkloads.defaultWorkload = "{{ gpu_default_workload }}"
+          | .spec.sandboxDevicePlugin.enabled = {{ gpu_sandbox_workloads | lower }}
+          | .spec.vfioManager.enabled = {{ gpu_sandbox_workloads | lower }}
+          | .spec.driver.enabled = true
+          | .spec.toolkit.enabled = true
+          | .spec.devicePlugin.enabled = true' \
+    > /tmp/clusterpolicy-{{ cluster_name }}.json
+    test -s /tmp/clusterpolicy-{{ cluster_name }}.json
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: policy_built
+  changed_when: true
+
+- name: Apply the ClusterPolicy
+  ansible.builtin.command: "oc apply -f /tmp/clusterpolicy-{{ cluster_name }}.json"
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: policy_applied
+  changed_when: "'unchanged' not in policy_applied.stdout"
+
+- name: Wait for the ClusterPolicy to become ready
+  block:
+    - name: Poll the ClusterPolicy state
+      ansible.builtin.command: >-
+        oc get clusterpolicy {{ gpu_cluster_policy_name }} -o jsonpath={.status.state}
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: policy_state
+      changed_when: false
+      retries: "{{ (gpu_policy_timeout | int / 30) | int }}"
+      delay: 30
+      until: policy_state.stdout == "ready"
+  rescue:
+    # Driver builds are the usual culprit and the reason is always in a pod.
+    - name: Collect GPU Operator pod state
+      ansible.builtin.shell: |
+        echo "--- clusterpolicy ---"
+        oc get clusterpolicy {{ gpu_cluster_policy_name }} -o yaml 2>&1 | tail -40
+        echo "--- pods ---"
+        oc get pods -n {{ gpu_operator_namespace }} -o wide 2>&1
+        echo "--- not running ---"
+        oc get pods -n {{ gpu_operator_namespace }} --no-headers 2>&1 \
+          | awk '$3 != "Running" && $3 != "Completed" {print $1}' \
+          | while read -r pod; do
+              echo "== $pod =="
+              oc logs -n {{ gpu_operator_namespace }} "$pod" --all-containers --tail=30 2>&1
+            done
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: gpu_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: Report and fail
+      ansible.builtin.fail:
+        msg: |
+          The GPU ClusterPolicy did not become ready within {{ gpu_policy_timeout }}s.
+          {{ gpu_diagnostics.stdout }}
+
+- name: Verify GPUs are advertised as schedulable resources
+  ansible.builtin.include_tasks: verify.yml

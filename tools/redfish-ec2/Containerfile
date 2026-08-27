@@ -1,0 +1,13 @@
+FROM registry.access.redhat.com/ubi9/python-311:latest
+
+USER 0
+RUN pip install --no-cache-dir boto3 && \
+    mkdir -p /etc/redfish-ec2 && \
+    chown -R 1001:0 /etc/redfish-ec2
+
+COPY redfish_ec2.py /usr/local/bin/redfish-ec2
+RUN chmod 0755 /usr/local/bin/redfish-ec2
+
+USER 1001
+EXPOSE 8000
+ENTRYPOINT ["/usr/local/bin/redfish-ec2"]

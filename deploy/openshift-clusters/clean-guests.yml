@@ -1,0 +1,59 @@
+---
+# Delete the guest clusters, leaving the hub untouched.
+#
+# Useful for reclaiming the passthrough GPUs, or for re-creating the guests with
+# a different GPU count without rebuilding two bare metal machines.
+- name: Delete the virtualized control-plane guest clusters
+  hosts: bastion
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
+
+  tasks:
+    - name: List the hosted clusters
+      ansible.builtin.command: >-
+        oc get hostedcluster -n clusters -o jsonpath={.items[*].metadata.name}
+      register: hosted_clusters
+      changed_when: false
+      failed_when: false
+
+    - name: Report what will be deleted
+      ansible.builtin.debug:
+        msg: >-
+          {{ ('Deleting: ' ~ hosted_clusters.stdout) if hosted_clusters.stdout
+             else 'No hosted clusters found; nothing to do.' }}
+
+    # hcp destroy, not 'oc delete hostedcluster': deleting the CR alone can
+    # orphan the VMs, PVCs and the hosted control-plane namespace.
+    - name: Destroy each hosted cluster
+      ansible.builtin.command: >-
+        {{ bin_dir }}/hcp destroy cluster kubevirt
+        --name {{ item }} --namespace clusters
+      loop: "{{ hosted_clusters.stdout.split() }}"
+      when: hosted_clusters.stdout | length > 0
+      register: guest_destroy
+      changed_when: true
+      # Destroy is slow: it waits for the worker VMs to stop and their volumes
+      # to be released.
+      async: 1800
+      poll: 30
+
+    - name: Remove the stored guest kubeconfigs
+      ansible.builtin.file:
+        path: "{{ install_root }}/guests"
+        state: absent
+
+    - name: Confirm the passthrough GPUs are free again
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        oc get nodes -o json
+        | jq -r --arg r "{{ gpu_resource_name }}"
+          '.items[] | select(.status.allocatable[$r] != null)
+           | "\(.metadata.name) allocatable=\(.status.allocatable[$r])"'
+      register: freed_gpus
+      changed_when: false
+
+    - name: Report the free GPU capacity
+      ansible.builtin.debug:
+        msg: "{{ freed_gpus.stdout_lines }}"

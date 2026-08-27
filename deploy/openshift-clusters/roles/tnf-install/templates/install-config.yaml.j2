@@ -1,0 +1,49 @@
+# Rendered by the tnf-install role. Regenerating is 'make tnf'.
+#
+# Follows the two-node-with-fencing UPI sample: platform:none, no
+# platform.baremetal, controlPlane.fencing.credentials, compute.replicas 0.
+# https://docs.okd.io/latest/installing/installing_two_node_cluster/installing_tnf/install-tnf.html
+apiVersion: v1
+baseDomain: {{ base_domain }}
+metadata:
+  name: {{ cluster_name }}
+{% if feature_set | default('') %}
+featureSet: {{ feature_set }}
+{% endif %}
+controlPlane:
+  name: master
+  replicas: 2
+  # The only fencing agent OpenShift wires up is fence_redfish, and EC2 has no
+  # BMC -- these addresses point at the redfish-ec2 shim on the bastion, which
+  # translates Redfish resets into EC2 Stop/StartInstances.
+  #
+  # hostname must equal the node's Kubernetes name, which ignition pins through
+  # /etc/hostname. A mismatch produces a stonith device aimed at a node
+  # Pacemaker does not know, and it only fails when it is first needed.
+  fencing:
+    credentials:
+{% for node in control_plane_nodes %}
+      - hostname: {{ node.name }}
+        address: {{ fencing_base_url }}/{{ node.name }}
+        username: "{{ bmc_username }}"
+        password: "{{ bmc_password }}"
+        # The shim serves a self-signed certificate, so the fence agent runs
+        # with --ssl-insecure.
+        certificateVerification: Disabled
+{% endfor %}
+compute:
+  - name: worker
+    replicas: 0
+networking:
+  networkType: {{ network_type }}
+  machineNetwork:
+    - cidr: {{ subnet_cidr }}
+  clusterNetwork:
+    - cidr: {{ cluster_network_cidr }}
+      hostPrefix: {{ cluster_network_host_prefix }}
+  serviceNetwork:
+    - {{ service_network_cidr }}
+platform:
+  none: {}
+pullSecret: '{{ pull_secret }}'
+sshKey: '{{ ssh_public_key }}'

@@ -1,0 +1,4 @@
+instance.env
+pull-secret.json
+*.pem
+*.key

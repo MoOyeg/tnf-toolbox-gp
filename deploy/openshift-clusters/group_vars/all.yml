@@ -1,0 +1,80 @@
+---
+# Defaults and derived values. Anything a user is meant to change lives in
+# config/instance.env and arrives as an extra var via scripts/run-playbook.sh,
+# which always wins over what is set here.
+
+# ------------------------------------------------------------------ paths
+# Everything the installer produces stays on the bastion. It is the only host
+# that can resolve api-int, so it is the only host that can drive an install.
+install_root: "/home/{{ ansible_user }}/clusters"
+install_dir: "{{ install_root }}/{{ cluster_name }}"
+kubeconfig: "{{ install_dir }}/auth/kubeconfig"
+bin_dir: "/usr/local/bin"
+
+# ------------------------------------------------------------------ release
+ocp_version: "4.22.0"
+ocp_mirror: "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp"
+# TNF sits behind a feature gate in 4.21. Set FEATURE_SET="" in instance.env if
+# it has gone GA in the release you are installing and the key is dropped.
+feature_set: "TechPreviewNoUpgrade"
+
+# ------------------------------------------------------------------ topology
+control_plane_nodes:
+  - name: master-0
+    private_ip: "{{ master0_private_ip }}"
+    gpu_workload: "{{ master0_gpu_workload }}"
+    data_volume: "{{ master0_data_volume | default('') }}"
+  - name: master-1
+    private_ip: "{{ master1_private_ip }}"
+    gpu_workload: "{{ master1_gpu_workload }}"
+    data_volume: "{{ master1_data_volume | default('') }}"
+
+# The hostname each node reports must equal the name in
+# controlPlane.fencing.credentials, or the TNF controller builds a stonith
+# device targeting a node Pacemaker has never heard of. Ignition sets
+# /etc/hostname to these values.
+network_type: OVNKubernetes
+cluster_network_cidr: 10.128.0.0/14
+cluster_network_host_prefix: 23
+service_network_cidr: 172.30.0.0/16
+
+# ------------------------------------------------------------------ fencing
+# Bare metal EC2 instances take minutes to stop, where a real BMC cuts power in
+# seconds. Pacemaker's defaults assume the latter, so they are raised after
+# install. See docs/fencing-on-aws.md.
+stonith_timeout: 600s
+stonith_power_timeout: 600
+stonith_reboot_timeout: 900
+
+# ------------------------------------------------------------------ operators
+# Channels are auto-detected from the package manifest when left as 'auto', so
+# the toolbox does not go stale every time a channel is renamed.
+nfd_channel: auto
+gpu_operator_channel: auto
+lvms_channel: auto
+cnv_channel: auto
+acm_channel: auto
+
+nfd_namespace: openshift-nfd
+gpu_operator_namespace: nvidia-gpu-operator
+lvms_namespace: openshift-storage
+cnv_namespace: openshift-cnv
+acm_namespace: open-cluster-management
+
+# ------------------------------------------------------------------ GPU
+# g4dn.metal carries eight Tesla T4s. 10DE:1EB8 is the PCI id KubeVirt matches
+# on; nvidia.com/TU104GL_Tesla_T4 is the resource name the GPU Operator's
+# sandbox device plugin advertises for them.
+gpu_pci_vendor_device: "10DE:1EB8"
+gpu_resource_name: "nvidia.com/TU104GL_Tesla_T4"
+gpu_device_label: "nvidia.com/gpu.workload.config"
+storage_class: "lvms-vg1"
+
+# ------------------------------------------------------------------ timeouts
+# Generous, because these run against two-node clusters where a rollout that
+# needs a reboot has to drain half the cluster to do it.
+operator_csv_timeout: 900
+mcp_rollout_timeout: 3600
+bootstrap_timeout: 3600
+install_timeout: 5400
+hosted_cluster_timeout: 3600

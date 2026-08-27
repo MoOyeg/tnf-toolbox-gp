@@ -1,0 +1,39 @@
+---
+# Wait for a MachineConfigPool to finish applying.
+#
+# Polled in two stages deliberately. A pool that has not started updating yet
+# still reports Updated=True, so waiting only for "Updated" can return
+# immediately and let the playbook race ahead of a reboot that has not begun.
+
+- name: Wait for the {{ target_mcp }} pool to pick up the change
+  ansible.builtin.command: >-
+    oc get mcp {{ target_mcp }}
+    -o jsonpath={.status.conditions[?(@.type=="Updating")].status}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: mcp_updating
+  changed_when: false
+  retries: 20
+  delay: 15
+  until: mcp_updating.stdout == "True"
+  # A MachineConfig identical to what is already applied never triggers an
+  # update; that is a success, not a failure.
+  failed_when: false
+
+- name: Wait for the {{ target_mcp }} pool to finish updating
+  ansible.builtin.command: >-
+    oc get mcp {{ target_mcp }} -o jsonpath={.status.machineCount}/{.status.updatedMachineCount}/{.status.degradedMachineCount}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: mcp_state
+  changed_when: false
+  retries: "{{ (mcp_rollout_timeout | int / 30) | int }}"
+  delay: 30
+  until:
+    - mcp_state.rc == 0
+    - mcp_state.stdout.split('/')[0] == mcp_state.stdout.split('/')[1]
+    - mcp_state.stdout.split('/')[2] == "0"
+
+- name: Report the pool state
+  ansible.builtin.debug:
+    msg: "{{ target_mcp }} pool: {{ mcp_state.stdout }} (machines/updated/degraded)"

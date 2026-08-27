@@ -1,0 +1,4 @@
+---
+ignition_port: 8080
+ignition_root: /srv/ignition
+haproxy_stats_port: 9000

@@ -1,0 +1,126 @@
+---
+# Advanced Cluster Management, and the hosted control-plane machinery it brings
+# with it.
+#
+# ACM installs MultiCluster Engine, which carries the HyperShift operator. That
+# operator, with the KubeVirt provider, is what "virtualized control planes"
+# means in practice: each guest cluster's control plane runs as pods on this
+# hub, and its workers are KubeVirt VMs on these same two nodes.
+
+- name: Install the ACM operator
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: install-operator
+  vars:
+    op_package: advanced-cluster-management
+    op_namespace: "{{ acm_namespace }}"
+    op_channel: "{{ acm_channel }}"
+    op_source: redhat-operators
+    op_operator_group_scope: own
+    op_csv_timeout: "{{ operator_csv_timeout }}"
+
+- name: Create the MultiClusterHub
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: operator.open-cluster-management.io/v1
+      kind: MultiClusterHub
+      metadata:
+        name: "{{ multiclusterhub_name }}"
+        namespace: "{{ acm_namespace }}"
+      spec:
+        # Basic, not High. High runs two replicas of every hub component, and
+        # this cluster has two nodes that are also carrying OpenShift
+        # Virtualization and every guest cluster's control plane.
+        availabilityConfig: Basic
+
+- name: Wait for the MultiClusterHub to reach Running
+  block:
+    - name: Poll the MultiClusterHub phase
+      ansible.builtin.command: >-
+        oc get multiclusterhub {{ multiclusterhub_name }} -n {{ acm_namespace }}
+        -o jsonpath={.status.phase}
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: mch_phase
+      changed_when: false
+      retries: "{{ (mch_timeout | int / 30) | int }}"
+      delay: 30
+      until: mch_phase.stdout == "Running"
+  rescue:
+    - name: Collect hub diagnostics
+      ansible.builtin.shell: |
+        echo "--- multiclusterhub ---"
+        oc get multiclusterhub {{ multiclusterhub_name }} -n {{ acm_namespace }} -o yaml 2>&1 | tail -60
+        echo "--- pods not running ---"
+        oc get pods -n {{ acm_namespace }} --no-headers 2>&1 | grep -v 'Running\|Completed' || true
+        echo "--- events ---"
+        oc get events -n {{ acm_namespace }} --sort-by=.lastTimestamp 2>&1 | tail -20
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: mch_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: Report and fail
+      ansible.builtin.fail:
+        msg: |
+          MultiClusterHub did not reach Running within {{ mch_timeout }}s.
+          On a two-node cluster the usual cause is insufficient capacity or a
+          pod with no schedulable node.
+          {{ mch_diagnostics.stdout }}
+
+# MCE ships the HyperShift operator but leaves it switched off. Both components
+# are needed: 'hypershift' installs the operator, and 'hypershift-local-hosting'
+# is what makes this hub itself a valid hosting cluster.
+- name: Enable the hosted control-plane components in MultiCluster Engine
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: patched
+    api_version: multicluster.openshift.io/v1
+    kind: MultiClusterEngine
+    name: multiclusterengine
+    definition:
+      spec:
+        overrides:
+          components:
+            - name: hypershift
+              enabled: true
+            - name: hypershift-local-hosting
+              enabled: true
+  register: mce_patch
+  retries: 20
+  delay: 15
+  until: mce_patch is not failed
+
+- name: Wait for the local-cluster managed cluster to be available
+  ansible.builtin.command: >-
+    oc get managedcluster local-cluster
+    -o jsonpath={.status.conditions[?(@.type=="ManagedClusterConditionAvailable")].status}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: local_cluster
+  changed_when: false
+  retries: 60
+  delay: 20
+  until: local_cluster.stdout == "True"
+
+- name: Wait for the hypershift addon to be available on local-cluster
+  ansible.builtin.command: >-
+    oc get managedclusteraddon hypershift-addon -n local-cluster
+    -o jsonpath={.status.conditions[?(@.type=="Available")].status}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: hypershift_addon
+  changed_when: false
+  retries: 60
+  delay: 20
+  until: hypershift_addon.stdout == "True"
+
+- name: Report the hub state
+  ansible.builtin.debug:
+    msg:
+      - "ACM hub is Running and local-cluster is available."
+      - "The HyperShift addon is ready, so this cluster can host virtualized control planes."
+      - "Console: https://console-openshift-console.apps.{{ cluster_domain }}"

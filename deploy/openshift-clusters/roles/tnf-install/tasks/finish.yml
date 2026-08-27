@@ -1,0 +1,59 @@
+---
+- name: Wait for install-complete
+  ansible.builtin.command: >-
+    {{ bin_dir }}/openshift-install wait-for install-complete
+    --dir {{ install_dir }} --log-level info
+  register: install_wait
+  async: "{{ install_timeout | int }}"
+  poll: 60
+  changed_when: true
+
+- name: Wait for both nodes to be Ready
+  ansible.builtin.command: oc get nodes --no-headers
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: node_status
+  changed_when: false
+  retries: 60
+  delay: 20
+  until:
+    - node_status.rc == 0
+    - node_status.stdout_lines | select('search', ' Ready') | list | length == 2
+
+- name: Confirm the node names match the fencing credentials
+  ansible.builtin.assert:
+    that:
+      - node_status.stdout_lines | map('split') | map('first') | list | sort
+        == control_plane_nodes | map(attribute='name') | list | sort
+    fail_msg: >-
+      Nodes registered as
+      {{ node_status.stdout_lines | map('split') | map('first') | list }}
+      but the fencing credentials name
+      {{ control_plane_nodes | map(attribute='name') | list }}. Pacemaker will
+      have built stonith devices for names that do not exist. The usual cause
+      is /etc/hostname not being applied by the ignition pointer.
+    success_msg: "Node names match the fencing credentials."
+
+- name: Wait for the cluster operators to settle
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get clusteroperators --no-headers
+    | awk '$3 != "True" || $4 != "False" || $5 != "False"'
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: co_status
+  changed_when: false
+  retries: 60
+  delay: 30
+  until: co_status.stdout == ""
+
+- name: Report the console URL
+  ansible.builtin.debug:
+    msg:
+      - "Cluster {{ cluster_name }} is installed."
+      - "Console: https://console-openshift-console.apps.{{ cluster_domain }}"
+      - "kubeconfig on the bastion: {{ kubeconfig }}"
+      - "Reaching it from your workstation needs these /etc/hosts entries:"
+      - "  {{ bastion_public_ip }} api.{{ cluster_domain }}"
+      - "  {{ bastion_public_ip }} console-openshift-console.apps.{{ cluster_domain }}"
+      - "  {{ bastion_public_ip }} oauth-openshift.apps.{{ cluster_domain }}"

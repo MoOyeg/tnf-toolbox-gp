@@ -1,0 +1,32 @@
+---
+# Stage 2: make the eight T4s per node usable, and decide which node's GPUs
+# serve containers and which node's are handed to virtual machines.
+- name: Enable GPUs on the base cluster
+  hosts: bastion
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
+
+  tasks:
+    - name: Enable the IOMMU and label the workload modes
+      ansible.builtin.include_role:
+        name: gpu-passthrough
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+
+    - name: Install Node Feature Discovery
+      ansible.builtin.include_role:
+        name: nfd
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+
+    - name: Install the NVIDIA GPU Operator
+      ansible.builtin.include_role:
+        name: gpu-operator
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+        # Sandbox workloads is what allows one node's GPUs to be bound to
+        # vfio-pci for passthrough while the other node's drive containers.
+        gpu_sandbox_workloads: true
+        gpu_default_workload: container

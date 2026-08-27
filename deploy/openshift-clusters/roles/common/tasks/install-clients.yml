@@ -1,0 +1,43 @@
+---
+# Put oc and openshift-install on the bastion.
+#
+# Both run here rather than on a workstation because api-int resolves only
+# inside the VPC, through the Route53 private hosted zone.
+
+- name: Check for an existing openshift-install of the right version
+  ansible.builtin.command: "{{ bin_dir }}/openshift-install version"
+  register: installer_version
+  changed_when: false
+  failed_when: false
+
+- name: Download and unpack the OpenShift clients
+  when: ocp_version not in (installer_version.stdout | default(''))
+  become: true
+  block:
+    - name: Download openshift-install
+      ansible.builtin.unarchive:
+        src: "{{ ocp_mirror }}/{{ ocp_version }}/openshift-install-linux-{{ ocp_version }}.tar.gz"
+        dest: "{{ bin_dir }}"
+        remote_src: true
+        include:
+          - openshift-install
+        mode: '0755'
+
+    - name: Download oc
+      ansible.builtin.unarchive:
+        src: "{{ ocp_mirror }}/{{ ocp_version }}/openshift-client-linux-{{ ocp_version }}.tar.gz"
+        dest: "{{ bin_dir }}"
+        remote_src: true
+        include:
+          - oc
+          - kubectl
+        mode: '0755'
+
+- name: Record the installed versions
+  ansible.builtin.command: "{{ bin_dir }}/openshift-install version"
+  register: installer_final
+  changed_when: false
+
+- name: Show the installer version
+  ansible.builtin.debug:
+    msg: "{{ installer_final.stdout_lines | first }}"

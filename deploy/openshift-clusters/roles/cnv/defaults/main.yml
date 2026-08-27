@@ -1,0 +1,5 @@
+---
+op_kubeconfig: ""
+cnv_namespace: openshift-cnv
+hco_name: kubevirt-hyperconverged
+hco_timeout: 1800

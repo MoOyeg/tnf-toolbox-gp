@@ -1,0 +1,97 @@
+---
+# Prepare the bare metal nodes for GPU passthrough, and record which node's
+# GPUs go to containers and which node's go to virtual machines.
+#
+# The split is per node, not per GPU. The GPU Operator binds every GPU on a
+# node to one driver: either the NVIDIA driver (containers) or vfio-pci (VM
+# passthrough). There is no supported way to split a single node's GPUs between
+# the two. With two nodes and eight T4s each, one node's worth of GPUs serves
+# container workloads on the base cluster and the other's is passed into the
+# virtualized clusters. See docs/gpu-allocation.md.
+
+- name: Confirm the GPUs are visible to the nodes
+  ansible.builtin.command: >-
+    oc debug node/{{ item.name }} --quiet --
+    chroot /host bash -c "lspci -d 10de: -nn | wc -l"
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  loop: "{{ control_plane_nodes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: gpu_count
+  changed_when: false
+
+- name: Report the GPU count per node
+  ansible.builtin.debug:
+    msg: "{{ item.item.name }}: {{ item.stdout | trim }} NVIDIA devices"
+  loop: "{{ gpu_count.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Fail if a node reports no GPUs
+  ansible.builtin.assert:
+    that: item.stdout | trim | int > 0
+    fail_msg: >-
+      {{ item.item.name }} reports no NVIDIA devices. It is probably not a
+      g4dn.metal instance -- only bare metal instance types expose the T4s as
+      PCI devices.
+  loop: "{{ gpu_count.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"
+
+- name: Enable the IOMMU on the control-plane nodes
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig | default(kubeconfig) }}"
+    state: present
+    definition:
+      apiVersion: machineconfiguration.openshift.io/v1
+      kind: MachineConfig
+      metadata:
+        name: "{{ machine_config_name }}"
+        labels:
+          machineconfiguration.openshift.io/role: "{{ target_mcp }}"
+      spec:
+        kernelArguments: "{{ iommu_kernel_args }}"
+  register: iommu_mc
+
+# This reboots both nodes, one at a time. On a two-node cluster that means
+# running on a single control-plane node for part of it, so it is worth doing
+# before anything is deployed on top rather than after.
+- name: Wait for the MachineConfig rollout
+  ansible.builtin.include_tasks: wait-mcp.yml
+
+- name: Label each node with its GPU workload mode
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig | default(kubeconfig) }}"
+    state: patched
+    kind: Node
+    name: "{{ item.name }}"
+    definition:
+      metadata:
+        labels:
+          "{{ gpu_device_label }}": "{{ item.gpu_workload }}"
+  loop: "{{ control_plane_nodes }}"
+  loop_control:
+    label: "{{ item.name }} -> {{ item.gpu_workload }}"
+
+- name: Verify the IOMMU is actually on
+  ansible.builtin.command: >-
+    oc debug node/{{ item.name }} --quiet --
+    chroot /host bash -c "test -d /sys/kernel/iommu_groups && ls /sys/kernel/iommu_groups | wc -l"
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  loop: "{{ control_plane_nodes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: iommu_groups
+  changed_when: false
+  failed_when: iommu_groups.rc != 0 or (iommu_groups.stdout | trim | int) == 0
+
+- name: Report the IOMMU group count
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.name }}: {{ item.stdout | trim }} IOMMU groups,
+      GPUs assigned to {{ item.item.gpu_workload }}
+  loop: "{{ iommu_groups.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"

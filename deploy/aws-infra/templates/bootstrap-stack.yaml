@@ -1,0 +1,71 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  The temporary bootstrap node. Kept in its own stack so that tearing it down
+  after bootstrap-complete is a stack delete rather than a stack update -- the
+  control-plane nodes are never touched.
+
+  Not a metal instance: bootstrap runs a temporary etcd and control plane, and
+  needs no GPU.
+
+Parameters:
+  ClusterName:
+    Type: String
+    AllowedPattern: '[a-z0-9][-a-z0-9]{0,24}[a-z0-9]'
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  ClusterSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  RhcosAmi:
+    Type: AWS::EC2::Image::Id
+  BootstrapInstanceType:
+    Type: String
+    Default: m5.xlarge
+  SshKeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+  BootstrapPrivateIp:
+    Type: String
+    Default: 10.0.0.9
+  BootstrapUserData:
+    Type: String
+    Description: >-
+      Ignition pointer that replaces itself with bootstrap.ign fetched from the
+      bastion. bootstrap.ign is several hundred KiB, far past the 16 KiB
+      user-data limit, so it cannot be inlined.
+    NoEcho: true
+  RootVolumeSizeGiB:
+    Type: Number
+    Default: 120
+
+Resources:
+  Bootstrap:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref RhcosAmi
+      InstanceType: !Ref BootstrapInstanceType
+      KeyName: !Ref SshKeyName
+      SubnetId: !Ref SubnetId
+      PrivateIpAddress: !Ref BootstrapPrivateIp
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroupId
+      UserData:
+        Fn::Base64: !Ref BootstrapUserData
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref RootVolumeSizeGiB
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-bootstrap'
+        - Key: tnf-cluster
+          Value: !Ref ClusterName
+        - Key: tnf-role
+          Value: bootstrap
+
+Outputs:
+  BootstrapInstanceId:
+    Value: !Ref Bootstrap
+  BootstrapPrivateIp:
+    Value: !Ref BootstrapPrivateIp

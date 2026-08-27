@@ -1,0 +1,118 @@
+---
+# LVM Storage on the EBS data volume attached to each node.
+#
+# The device is pinned rather than auto-discovered, and that is the whole point
+# of this role. g4dn.metal also carries two 900 GiB instance-store NVMe drives,
+# which LVM Storage would happily claim if left to find its own disks -- and
+# instance store does not survive a stop/start. Fencing is a stop/start. The
+# guest clusters' hosted control-plane etcd lives on this storage, so letting it
+# land on instance store would mean a fence quietly destroying every guest
+# cluster's state.
+
+- name: Install the LVM Storage operator
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: install-operator
+  vars:
+    op_package: lvms-operator
+    op_namespace: "{{ lvms_namespace }}"
+    op_channel: "{{ lvms_channel }}"
+    op_source: redhat-operators
+    op_operator_group_scope: own
+    op_csv_timeout: "{{ operator_csv_timeout }}"
+
+# AWS exposes an EBS volume's id as the NVMe serial, so udev names it
+# predictably. Knowing the volume id from CloudFormation means the right disk
+# can be named outright instead of inferred from size or mount state.
+- name: Derive the expected device path for each node's data volume
+  ansible.builtin.set_fact:
+    lvm_device_paths: >-
+      {{ control_plane_nodes
+         | map(attribute='data_volume')
+         | select('truthy')
+         | map('regex_replace', '-', '')
+         | map('regex_replace', '^', '/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_')
+         | list }}
+
+- name: Fail if no data volumes were recorded
+  ansible.builtin.assert:
+    that: lvm_device_paths | length == control_plane_nodes | length
+    fail_msg: >-
+      Expected one data volume per control-plane node but found
+      {{ lvm_device_paths }}. Re-run 'make tnf' so the compute stack outputs are
+      recorded in deploy/aws-infra/instance-data/.
+
+- name: Confirm the data volume is present on each node
+  ansible.builtin.command: >-
+    oc debug node/{{ item.0.name }} --quiet --
+    chroot /host bash -c "test -e {{ item.1 }} && lsblk -no SIZE {{ item.1 }}"
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  loop: "{{ control_plane_nodes | zip(lvm_device_paths) | list }}"
+  loop_control:
+    label: "{{ item.0.name }} -> {{ item.1 }}"
+  register: device_check
+  changed_when: false
+  failed_when: device_check.rc != 0
+
+- name: Report the data volumes
+  ansible.builtin.debug:
+    msg: "{{ item.item.0.name }}: {{ item.item.1 }} ({{ item.stdout | trim }})"
+  loop: "{{ device_check.results }}"
+  loop_control:
+    label: "{{ item.item.0.name }}"
+
+- name: Create the LVMCluster
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: lvm.topolvm.io/v1alpha1
+      kind: LVMCluster
+      metadata:
+        name: "{{ lvm_cluster_name }}"
+        namespace: "{{ lvms_namespace }}"
+      spec:
+        storage:
+          deviceClasses:
+            - name: "{{ lvm_device_class }}"
+              default: true
+              fstype: xfs
+              deviceSelector:
+                # optionalPaths, not paths: each node has its own volume id, so
+                # every node matches exactly one entry and ignores the other.
+                # 'paths' would require every listed device on every node.
+                optionalPaths: "{{ lvm_device_paths }}"
+              thinPoolConfig:
+                name: thin-pool-1
+                sizePercent: 90
+                overprovisionRatio: 10
+
+- name: Wait for the LVMCluster to become ready
+  ansible.builtin.command: >-
+    oc get lvmcluster {{ lvm_cluster_name }} -n {{ lvms_namespace }}
+    -o jsonpath={.status.state}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: lvm_state
+  changed_when: false
+  retries: "{{ (lvms_timeout | int / 20) | int }}"
+  delay: 20
+  until: lvm_state.stdout == "Ready"
+
+- name: Make the LVM storage class the cluster default
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: patched
+    kind: StorageClass
+    name: "lvms-{{ lvm_device_class }}"
+    definition:
+      metadata:
+        annotations:
+          storageclass.kubernetes.io/is-default-class: "true"
+
+- name: Report the storage class
+  ansible.builtin.debug:
+    msg: >-
+      LVM Storage is ready. Default storage class: lvms-{{ lvm_device_class }},
+      backed by one {{ (control_plane_nodes | length) }}x EBS gp3 volume.

@@ -1,0 +1,13 @@
+---
+- name: restart haproxy
+  become: true
+  ansible.builtin.systemd:
+    name: haproxy
+    state: restarted
+
+- name: restart tnf-ignition
+  become: true
+  ansible.builtin.systemd:
+    name: tnf-ignition
+    state: restarted
+    daemon_reload: true

@@ -1,0 +1,53 @@
+---
+# Render install-config.yaml and turn it into ignition.
+
+- name: Create the install directory
+  ansible.builtin.file:
+    path: "{{ install_dir }}"
+    state: directory
+    mode: '0700'
+
+- name: Render install-config.yaml
+  ansible.builtin.template:
+    src: install-config.yaml.j2
+    dest: "{{ install_dir }}/install-config.yaml"
+    mode: '0600'
+
+# openshift-install consumes install-config.yaml in place, so keep a copy.
+# Reconstructing what was actually installed is otherwise guesswork.
+- name: Archive a copy of install-config.yaml
+  ansible.builtin.copy:
+    src: "{{ install_dir }}/install-config.yaml"
+    dest: "{{ install_dir }}/install-config.yaml.bak"
+    remote_src: true
+    mode: '0600'
+
+- name: Create manifests
+  ansible.builtin.command: "{{ bin_dir }}/openshift-install create manifests --dir {{ install_dir }}"
+  args:
+    creates: "{{ install_dir }}/manifests"
+
+# With compute.replicas 0 the installer already makes the control plane
+# schedulable, but there is nowhere else for the router and every operator to
+# run, so it is asserted rather than assumed.
+- name: Make the control plane schedulable
+  ansible.builtin.lineinfile:
+    path: "{{ install_dir }}/manifests/cluster-scheduler-02-config.yml"
+    regexp: '^(\s*)mastersSchedulable:'
+    line: '  mastersSchedulable: true'
+    backrefs: false
+
+- name: Create ignition configs
+  ansible.builtin.command: "{{ bin_dir }}/openshift-install create ignition-configs --dir {{ install_dir }}"
+  args:
+    creates: "{{ install_dir }}/bootstrap.ign"
+
+- name: Publish bootstrap.ign and master.ign to the ignition server
+  ansible.builtin.copy:
+    src: "{{ install_dir }}/{{ item }}"
+    dest: "{{ ignition_root }}/{{ item }}"
+    remote_src: true
+    mode: '0644'
+  loop:
+    - bootstrap.ign
+    - master.ign

@@ -1,0 +1,5 @@
+#!/bin/bash
+# Install with: make install-pre-commit
+set -e
+echo "Running 'make verify' before commit..."
+make verify

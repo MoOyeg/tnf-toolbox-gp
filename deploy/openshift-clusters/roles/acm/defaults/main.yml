@@ -1,0 +1,6 @@
+---
+op_kubeconfig: ""
+acm_namespace: open-cluster-management
+mce_namespace: multicluster-engine
+multiclusterhub_name: multiclusterhub
+mch_timeout: 2400

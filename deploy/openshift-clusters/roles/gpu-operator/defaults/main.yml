@@ -1,0 +1,11 @@
+---
+op_kubeconfig: ""
+gpu_operator_namespace: nvidia-gpu-operator
+gpu_cluster_policy_name: gpu-cluster-policy
+
+# Sandbox workloads is what makes vfio-pci binding possible, so it is on for
+# the base cluster and off inside the guest clusters, where the GPU is already
+# a plain PCI device on the VM and only ever serves containers.
+gpu_sandbox_workloads: false
+gpu_default_workload: container
+gpu_policy_timeout: 1800

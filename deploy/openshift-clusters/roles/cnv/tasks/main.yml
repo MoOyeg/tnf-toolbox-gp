@@ -1,0 +1,78 @@
+---
+# OpenShift Virtualization, plus the host-device permission that lets a VM take
+# a physical T4.
+#
+# This runs on real hardware, not inside a VM, so there is no nested
+# virtualization anywhere in the stack: the guest clusters' worker VMs sit
+# directly on the g4dn.metal nodes and their GPUs are one passthrough hop from
+# the metal.
+
+- name: Install OpenShift Virtualization
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: install-operator
+  vars:
+    op_package: kubevirt-hyperconverged
+    op_namespace: "{{ cnv_namespace }}"
+    op_channel: "{{ cnv_channel }}"
+    op_source: redhat-operators
+    op_operator_group_scope: own
+    op_csv_timeout: "{{ operator_csv_timeout }}"
+
+- name: Create the HyperConverged instance
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: hco.kubevirt.io/v1beta1
+      kind: HyperConverged
+      metadata:
+        name: "{{ hco_name }}"
+        namespace: "{{ cnv_namespace }}"
+      spec:
+        # Without this a VM may not request the GPU at all: KubeVirt refuses to
+        # attach any host device that is not on the permitted list.
+        permittedHostDevices:
+          pciHostDevices:
+            - pciDeviceSelector: "{{ gpu_pci_vendor_device }}"
+              resourceName: "{{ gpu_resource_name }}"
+              # The GPU Operator's sandbox device plugin already advertises this
+              # resource and owns the vfio-pci binding. Telling KubeVirt the
+              # provider is external stops the two from fighting over it.
+              externalResourceProvider: true
+
+- name: Wait for HyperConverged to report Available
+  ansible.builtin.command: >-
+    oc get hyperconverged {{ hco_name }} -n {{ cnv_namespace }}
+    -o jsonpath={.status.conditions[?(@.type=="Available")].status}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: hco_available
+  changed_when: false
+  retries: "{{ (hco_timeout | int / 30) | int }}"
+  delay: 30
+  until: hco_available.stdout == "True"
+
+# The resource has to be schedulable, not merely permitted. If vfio-manager has
+# not bound the GPUs, this stays absent and every guest cluster NodePool would
+# sit Pending with no obvious reason.
+- name: Confirm the GPU resource is allocatable on the passthrough node
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get nodes -o json
+    | jq -r --arg r "{{ gpu_resource_name }}"
+      '.items[] | select(.status.allocatable[$r] != null)
+       | "\(.metadata.name) \($r)=\(.status.allocatable[$r])"'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: passthrough_capacity
+  changed_when: false
+  retries: 30
+  delay: 20
+  until: passthrough_capacity.rc == 0 and passthrough_capacity.stdout != ""
+
+- name: Report the passthrough capacity
+  ansible.builtin.debug:
+    msg:
+      - "OpenShift Virtualization is ready."
+      - "GPUs available for VM passthrough: {{ passthrough_capacity.stdout_lines }}"

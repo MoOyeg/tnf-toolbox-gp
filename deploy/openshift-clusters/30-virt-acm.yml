@@ -1,0 +1,30 @@
+---
+# Stage 3: storage, OpenShift Virtualization and ACM -- everything the guest
+# clusters need to exist before they can be created.
+- name: Prepare the hub for virtualized control planes
+  hosts: bastion
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
+
+  tasks:
+    # Storage first: both OpenShift Virtualization and every hosted control
+    # plane's etcd need a default storage class to bind against.
+    - name: Install LVM Storage on the EBS data volumes
+      ansible.builtin.include_role:
+        name: lvm-storage
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+
+    - name: Install OpenShift Virtualization
+      ansible.builtin.include_role:
+        name: cnv
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+
+    - name: Install Advanced Cluster Management
+      ansible.builtin.include_role:
+        name: acm
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"

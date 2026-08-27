@@ -1,0 +1,40 @@
+---
+# Wait for the permanent control plane to take over, then remove the bootstrap
+# node and the config that only it needed.
+
+- name: Wait for bootstrap-complete
+  ansible.builtin.command: >-
+    {{ bin_dir }}/openshift-install wait-for bootstrap-complete
+    --dir {{ install_dir }} --log-level info
+  register: bootstrap_wait
+  # Two bare metal instances take longer to reach a running kubelet than the
+  # virtual machines this timeout is usually tuned for.
+  async: "{{ bootstrap_timeout | int }}"
+  poll: 30
+  changed_when: true
+
+- name: Show the bootstrap result
+  ansible.builtin.debug:
+    msg: "{{ bootstrap_wait.stdout_lines | default([]) | last | default('bootstrap complete') }}"
+
+- name: Destroy the bootstrap node
+  ansible.builtin.command:
+    cmd: "{{ repo_root }}/deploy/aws-infra/scripts/destroy-bootstrap.sh"
+  delegate_to: localhost
+  changed_when: true
+
+- name: Drop the bootstrap node from haproxy
+  ansible.builtin.include_role:
+    name: loadbalancer
+  vars:
+    include_bootstrap: false
+
+# master.ign stays served so a rebuilt node can re-fetch it. bootstrap.ign
+# carries the bootstrap certificates and is served over plain HTTP -- the
+# pattern the UPI documentation prescribes, and why port 8080 is restricted to
+# the VPC -- so it is removed the moment it stops being needed.
+- name: Remove bootstrap.ign from the ignition server
+  ansible.builtin.file:
+    path: "{{ ignition_root }}/bootstrap.ign"
+    state: absent
+  become: true

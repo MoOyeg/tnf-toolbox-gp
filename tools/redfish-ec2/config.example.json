@@ -1,0 +1,9 @@
+{
+  "region": "us-west-2",
+  "username": "admin",
+  "password": "CHANGE-ME",
+  "systems": {
+    "master-0": {"name_tag": "tnf-gp-master-0"},
+    "master-1": {"name_tag": "tnf-gp-master-1"}
+  }
+}

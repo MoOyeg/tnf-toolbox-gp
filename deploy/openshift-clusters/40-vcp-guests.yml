@@ -1,0 +1,43 @@
+---
+# Stage 4: create the virtualized control-plane guest clusters, each with real
+# T4s passed through into its worker VMs.
+- name: Create the guest clusters
+  hosts: bastion
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
+
+  tasks:
+    - name: Check the GPU budget before creating anything
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        oc get nodes -o json
+        | jq -r --arg r "{{ gpu_resource_name }}"
+          '[.items[].status.allocatable[$r] // "0" | tonumber] | add'
+      register: gpu_budget
+      changed_when: false
+
+    # Creating clusters that cannot possibly schedule wastes half an hour before
+    # failing, so the arithmetic happens up front.
+    - name: Fail if the guest clusters would ask for more GPUs than exist
+      ansible.builtin.assert:
+        that: >-
+          (guest_cluster_count | int) * (guest_nodepool_replicas | int)
+          * (guest_gpus_per_node | int) <= (gpu_budget.stdout | trim | int)
+        fail_msg: >-
+          {{ guest_cluster_count }} guest cluster(s) x
+          {{ guest_nodepool_replicas }} worker(s) x {{ guest_gpus_per_node }} GPU(s)
+          needs {{ (guest_cluster_count | int) * (guest_nodepool_replicas | int) * (guest_gpus_per_node | int) }}
+          of {{ gpu_resource_name }}, but only {{ gpu_budget.stdout | trim }} are
+          allocatable. Either lower GUEST_GPUS_PER_NODE, or move a node to
+          vm-passthrough in config/instance.env.
+        success_msg: >-
+          {{ (guest_cluster_count | int) * (guest_nodepool_replicas | int) * (guest_gpus_per_node | int) }}
+          of {{ gpu_budget.stdout | trim }} passthrough GPUs will be used.
+
+    - name: Create the guest clusters
+      ansible.builtin.include_role:
+        name: vcp-guest
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"

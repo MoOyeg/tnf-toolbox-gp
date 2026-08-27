@@ -1,0 +1,59 @@
+---
+# Put the hcp CLI on the bastion.
+#
+# The guest cluster manifests are rendered by hcp rather than written out by
+# hand. HostedCluster and NodePool are large, version-sensitive CRs, and asking
+# the CLI that ships with this MCE build to render them means the manifests
+# always match the operator that will reconcile them.
+
+- name: Check for an existing hcp CLI
+  ansible.builtin.command: "{{ bin_dir }}/hcp version"
+  register: hcp_version
+  changed_when: false
+  failed_when: false
+
+- name: Install the hcp CLI from the hub's own download link
+  when: hcp_version.rc != 0
+  block:
+    - name: Read the hcp download URL published by MCE
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        oc get consoleclidownload hcp-cli-download -o json
+        | jq -r '.spec.links[] | select(.text | test("Linux.*x86|x86.*Linux"; "i")) | .href'
+        | head -1
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: hcp_url
+      changed_when: false
+      retries: 20
+      delay: 15
+      until: hcp_url.rc == 0 and hcp_url.stdout | length > 0
+
+    - name: Download and unpack hcp
+      become: true
+      ansible.builtin.unarchive:
+        src: "{{ hcp_url.stdout }}"
+        dest: "{{ bin_dir }}"
+        remote_src: true
+        # The link is served by the hub's own route, which uses the cluster's
+        # ingress certificate.
+        validate_certs: false
+        include:
+          - hcp
+        mode: '0755'
+
+- name: Confirm hcp can render KubeVirt clusters with host devices
+  ansible.builtin.shell: "{{ bin_dir }}/hcp create cluster kubevirt --help"
+  register: hcp_help
+  changed_when: false
+
+# GPU passthrough is the entire reason these guest clusters exist, so an hcp
+# build without the flag is a hard stop rather than a silently GPU-less cluster.
+- name: Fail if this hcp build cannot attach host devices
+  ansible.builtin.assert:
+    that: "'--host-device-name' in hcp_help.stdout"
+    fail_msg: >-
+      This hcp build has no --host-device-name flag, so it cannot pass GPUs into
+      the guest clusters' worker VMs. Upgrade MCE, or add
+      spec.platform.kubevirt.hostDevices to the NodePool by hand.
+    success_msg: "hcp supports --host-device-name"

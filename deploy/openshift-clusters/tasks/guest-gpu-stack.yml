@@ -1,0 +1,36 @@
+---
+# NFD plus the GPU Operator inside one guest cluster.
+
+- name: "{{ guest_kubeconfig | basename }}: install Node Feature Discovery"
+  ansible.builtin.include_role:
+    name: nfd
+  vars:
+    op_kubeconfig: "{{ guest_kubeconfig }}"
+
+- name: "{{ guest_kubeconfig | basename }}: install the NVIDIA GPU Operator"
+  ansible.builtin.include_role:
+    name: gpu-operator
+  vars:
+    op_kubeconfig: "{{ guest_kubeconfig }}"
+    # Plain container mode: the VM already owns the GPU outright.
+    gpu_sandbox_workloads: false
+    gpu_default_workload: container
+
+- name: "{{ guest_kubeconfig | basename }}: confirm the driver advertises nvidia.com/gpu"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get nodes -o json
+    | jq -r '.items[] | "\(.metadata.name) nvidia.com/gpu=\(.status.allocatable["nvidia.com/gpu"] // "0")"'
+  environment:
+    KUBECONFIG: "{{ guest_kubeconfig }}"
+  register: guest_gpu_capacity
+  changed_when: false
+  retries: 40
+  delay: 30
+  until:
+    - guest_gpu_capacity.rc == 0
+    - guest_gpu_capacity.stdout is search('nvidia\.com/gpu=[1-9]')
+
+- name: "{{ guest_kubeconfig | basename }}: report"
+  ansible.builtin.debug:
+    msg: "{{ guest_gpu_capacity.stdout_lines }}"

@@ -1,0 +1,10 @@
+{
+  "region": "{{ region }}",
+  "username": "{{ bmc_username }}",
+  "password": "{{ bmc_password }}",
+  "systems": {
+{% for node in control_plane_nodes %}
+    "{{ node.name }}": {"name_tag": "{{ cluster_name }}-{{ node.name }}"}{{ "," if not loop.last else "" }}
+{% endfor %}
+  }
+}

@@ -1,0 +1,85 @@
+# Managed by the loadbalancer role. Local edits are overwritten.
+#
+# platform:none means the installer stands up neither keepalived nor an AWS
+# load balancer, so api, api-int and *.apps all terminate here. api and api-int
+# resolve to this host through the Route53 private hosted zone.
+
+global
+    log         127.0.0.1 local2
+    maxconn     4000
+    daemon
+
+defaults
+    mode                    tcp
+    log                     global
+    option                  tcplog
+    option                  dontlognull
+    retries                 3
+    timeout connect         10s
+    timeout client          10m
+    timeout server          10m
+    timeout check           10s
+    maxconn                 3000
+
+listen stats
+    mode http
+    bind *:{{ haproxy_stats_port }}
+    stats enable
+    stats uri /
+    stats refresh 10s
+
+# ---------------------------------------------------------------- kube API
+frontend api
+    bind *:6443
+    default_backend api
+
+backend api
+    balance source
+    option httpchk GET /readyz HTTP/1.0
+    http-check expect status 200
+{% if include_bootstrap | default(false) %}
+    # The bootstrap node serves the API until the permanent control plane takes
+    # over. The health check removes it on its own once it is destroyed, so
+    # this line does not have to be pulled out by hand.
+    server bootstrap {{ bootstrap_private_ip }}:6443 check check-ssl verify none inter 5s fall 2 rise 3
+{% endif %}
+{% for node in control_plane_nodes %}
+    server {{ node.name }} {{ node.private_ip }}:6443 check check-ssl verify none inter 5s fall 2 rise 3
+{% endfor %}
+
+# ---------------------------------------------------------------- machine config
+# Only used while nodes are igniting, but harmless afterwards.
+frontend machine-config
+    bind *:22623
+    default_backend machine-config
+
+backend machine-config
+    balance source
+{% if include_bootstrap | default(false) %}
+    server bootstrap {{ bootstrap_private_ip }}:22623 check check-ssl verify none inter 5s fall 2 rise 3
+{% endif %}
+{% for node in control_plane_nodes %}
+    server {{ node.name }} {{ node.private_ip }}:22623 check check-ssl verify none inter 5s fall 2 rise 3
+{% endfor %}
+
+# ---------------------------------------------------------------- ingress
+# Never includes bootstrap: no router runs there.
+frontend ingress-http
+    bind *:80
+    default_backend ingress-http
+
+backend ingress-http
+    balance source
+{% for node in control_plane_nodes %}
+    server {{ node.name }} {{ node.private_ip }}:80 check inter 5s fall 2 rise 3
+{% endfor %}
+
+frontend ingress-https
+    bind *:443
+    default_backend ingress-https
+
+backend ingress-https
+    balance source
+{% for node in control_plane_nodes %}
+    server {{ node.name }} {{ node.private_ip }}:443 check inter 5s fall 2 rise 3
+{% endfor %}

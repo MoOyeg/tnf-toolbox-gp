@@ -1,0 +1,106 @@
+---
+# Build the per-node ignition pointers and launch the instances.
+#
+# The nodes fetch their real config from the bastion rather than carrying it in
+# user-data: bootstrap.ign is several hundred KiB against a 16 KiB user-data
+# limit. The master pointer is the same shape for consistency, and because it
+# means a rebuilt node re-fetches a current config instead of an inlined stale
+# one.
+
+- name: Reconfigure haproxy to include the bootstrap node
+  ansible.builtin.include_role:
+    name: loadbalancer
+  vars:
+    include_bootstrap: true
+
+- name: Render the master ignition pointers
+  ansible.builtin.template:
+    src: pointer-master.ign.j2
+    dest: "{{ install_dir }}/pointer-{{ item.name }}.ign"
+    mode: '0600'
+  loop: "{{ control_plane_nodes }}"
+  vars:
+    node_name: "{{ item.name }}"
+
+- name: Render the bootstrap ignition pointer
+  ansible.builtin.template:
+    src: pointer-bootstrap.ign.j2
+    dest: "{{ install_dir }}/pointer-bootstrap.ign"
+    mode: '0600'
+
+- name: Fetch the pointers to the control host
+  ansible.builtin.fetch:
+    src: "{{ install_dir }}/pointer-{{ item }}.ign"
+    dest: "{{ repo_root }}/deploy/aws-infra/instance-data/pointer-{{ item }}.ign"
+    flat: true
+  loop: "{{ (control_plane_nodes | map(attribute='name') | list) + ['bootstrap'] }}"
+
+# The AMI comes from the installer's own CoreOS stream metadata, so the boot
+# image always matches the release being installed.
+- name: Resolve the RHCOS AMI for this release
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    {{ bin_dir }}/openshift-install coreos print-stream-json
+    | jq -r '.architectures.x86_64.images.aws.regions["{{ region }}"].image'
+  register: rhcos_ami
+  changed_when: false
+
+- name: Fail if no AMI is published for this region
+  ansible.builtin.assert:
+    that:
+      - rhcos_ami.stdout | length > 0
+      - rhcos_ami.stdout != "null"
+    fail_msg: "No RHCOS AMI published for {{ region }} in the {{ ocp_version }} stream."
+
+- name: Show the RHCOS AMI
+  ansible.builtin.debug:
+    msg: "RHCOS AMI for {{ region }}: {{ rhcos_ami.stdout }}"
+
+# CloudFormation runs from the control host, which holds the operator's AWS
+# credentials. The bastion's instance profile is deliberately limited to
+# starting and stopping this cluster's own nodes.
+- name: Launch the control-plane nodes
+  ansible.builtin.command:
+    cmd: >-
+      {{ repo_root }}/deploy/aws-infra/scripts/create-compute.sh
+      {{ rhcos_ami.stdout }}
+      {{ repo_root }}/deploy/aws-infra/instance-data/pointer-master-0.ign
+      {{ repo_root }}/deploy/aws-infra/instance-data/pointer-master-1.ign
+  delegate_to: localhost
+  register: compute_launch
+  changed_when: "'CREATE_COMPLETE' in compute_launch.stdout or 'UPDATE_COMPLETE' in compute_launch.stdout"
+
+- name: Launch the bootstrap node
+  ansible.builtin.command:
+    cmd: >-
+      {{ repo_root }}/deploy/aws-infra/scripts/create-bootstrap.sh
+      {{ rhcos_ami.stdout }}
+      {{ repo_root }}/deploy/aws-infra/instance-data/pointer-bootstrap.ign
+  delegate_to: localhost
+  register: bootstrap_launch
+  changed_when: "'CREATE_COMPLETE' in bootstrap_launch.stdout or 'UPDATE_COMPLETE' in bootstrap_launch.stdout"
+
+# Now that the instances exist the shim can resolve them, so the fencing path
+# is provable before the install has spent an hour depending on it.
+- name: Verify the Redfish shim reports power state for every node
+  ansible.builtin.uri:
+    url: "{{ fencing_base_url }}/{{ item.name }}"
+    validate_certs: false
+    url_username: "{{ bmc_username }}"
+    url_password: "{{ bmc_password }}"
+    force_basic_auth: true
+    return_content: true
+  loop: "{{ control_plane_nodes }}"
+  register: power_check
+  retries: 12
+  delay: 10
+  until: power_check is not failed and power_check.json.PowerState is defined
+
+- name: Show the power state of each node
+  ansible.builtin.debug:
+    msg: >-
+      {{ item.item.name }}: PowerState={{ item.json.PowerState }}
+      (EC2 {{ item.json.Oem.Ec2.State }})
+  loop: "{{ power_check.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"

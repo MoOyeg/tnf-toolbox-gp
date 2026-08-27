@@ -1,0 +1,23 @@
+[Unit]
+Description=Redfish power endpoint backed by the EC2 API (TNF fencing)
+Documentation=https://github.com/{{ repo_slug | default('your-org/tnf-toolbox-gp') }}/blob/main/tools/redfish-ec2/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User={{ redfish_shim_user }}
+ExecStart={{ redfish_shim_dir }}/venv/bin/python {{ redfish_shim_dir }}/redfish_ec2.py \
+    --config {{ redfish_shim_conf_dir }}/config.json \
+    --port {{ redfish_shim_port }} \
+    --cert-file {{ redfish_shim_conf_dir }}/cert.pem \
+    --key-file {{ redfish_shim_conf_dir }}/key.pem
+# Pacemaker treats an unreachable fence device as a failed fence, so this must
+# come back on its own rather than wait for someone to notice.
+Restart=always
+RestartSec=5
+# AWS credentials come from the instance profile over IMDS; nothing on disk.
+Environment=AWS_REGION={{ region }}
+
+[Install]
+WantedBy=multi-user.target

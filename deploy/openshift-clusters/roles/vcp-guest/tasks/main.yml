@@ -1,0 +1,41 @@
+---
+# Create the virtualized control-plane guest clusters.
+#
+# Each guest cluster's control plane runs as pods on this hub; its worker nodes
+# are KubeVirt VMs on the same two g4dn.metal machines, each holding real T4s
+# passed through from the node labelled vm-passthrough.
+
+- name: Install the hcp CLI
+  ansible.builtin.include_tasks: install-hcp-cli.yml
+
+- name: Create the hosted cluster namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ hcp_namespace }}"
+
+- name: Create the guest artifact directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    mode: '0700'
+  loop:
+    - "{{ guest_kubeconfig_dir }}"
+    - "{{ install_dir }}/guest-manifests"
+
+- name: Write the pull secret for the guest clusters
+  ansible.builtin.copy:
+    content: "{{ pull_secret }}"
+    dest: "{{ install_dir }}/pull-secret.json"
+    mode: '0600'
+
+- name: Create each guest cluster
+  ansible.builtin.include_tasks: create-guest.yml
+  loop: "{{ range(1, (guest_cluster_count | int) + 1) | list }}"
+  loop_control:
+    loop_var: guest_index
+    label: "{{ guest_cluster_prefix }}-{{ guest_index }}"

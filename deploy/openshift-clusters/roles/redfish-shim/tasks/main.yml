@@ -1,0 +1,146 @@
+---
+# Stand up the Redfish endpoint that Pacemaker fences through.
+#
+# This has to exist and answer before the cluster is installed. The fencing
+# address is baked into install-config.yaml, and a TNF cluster whose stonith
+# device does not respond installs happily and then degrades later -- a much
+# more expensive way to discover the same problem.
+
+- name: Create the service account for the shim
+  become: true
+  ansible.builtin.user:
+    name: "{{ redfish_shim_user }}"
+    system: true
+    shell: /sbin/nologin
+    home: "{{ redfish_shim_dir }}"
+    create_home: false
+
+- name: Create the shim directories
+  become: true
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ redfish_shim_user }}"
+    group: "{{ redfish_shim_user }}"
+    mode: '0750'
+  loop:
+    - "{{ redfish_shim_dir }}"
+    - "{{ redfish_shim_conf_dir }}"
+
+- name: Install python tooling
+  become: true
+  ansible.builtin.dnf:
+    name:
+      - python3
+      - python3-pip
+      - openssl
+    state: present
+
+- name: Copy the shim
+  become: true
+  ansible.builtin.copy:
+    src: "{{ repo_root }}/tools/redfish-ec2/redfish_ec2.py"
+    dest: "{{ redfish_shim_dir }}/redfish_ec2.py"
+    owner: "{{ redfish_shim_user }}"
+    group: "{{ redfish_shim_user }}"
+    mode: '0750'
+  notify: restart redfish-ec2
+
+- name: Create the virtualenv
+  become: true
+  ansible.builtin.command: "python3 -m venv {{ redfish_shim_dir }}/venv"
+  args:
+    creates: "{{ redfish_shim_dir }}/venv/bin/python"
+
+- name: Install boto3 into the virtualenv
+  become: true
+  ansible.builtin.pip:
+    name: boto3>=1.34
+    virtualenv: "{{ redfish_shim_dir }}/venv"
+    state: present
+
+- name: Write the system-to-instance mapping
+  become: true
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ redfish_shim_conf_dir }}/config.json"
+    owner: "{{ redfish_shim_user }}"
+    group: "{{ redfish_shim_user }}"
+    # Contains the BMC password, which is also in the cluster's fencing secret.
+    mode: '0600'
+  notify: restart redfish-ec2
+
+- name: Generate the TLS certificate
+  become: true
+  ansible.builtin.command: >-
+    openssl req -x509 -nodes -newkey rsa:2048 -days 3650
+    -keyout {{ redfish_shim_conf_dir }}/key.pem
+    -out {{ redfish_shim_conf_dir }}/cert.pem
+    -subj "/CN={{ bastion_private_ip }}"
+    -addext "subjectAltName=IP:{{ bastion_private_ip }}"
+  args:
+    creates: "{{ redfish_shim_conf_dir }}/cert.pem"
+  notify: restart redfish-ec2
+
+- name: Own the certificate as the service account
+  become: true
+  ansible.builtin.file:
+    path: "{{ redfish_shim_conf_dir }}/{{ item.name }}"
+    owner: "{{ redfish_shim_user }}"
+    group: "{{ redfish_shim_user }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - {name: cert.pem, mode: '0644'}
+    - {name: key.pem, mode: '0600'}
+
+- name: Install the systemd unit
+  become: true
+  ansible.builtin.template:
+    src: redfish-ec2.service.j2
+    dest: /etc/systemd/system/redfish-ec2.service
+    mode: '0644'
+  notify: restart redfish-ec2
+
+- name: Enable and start the shim
+  become: true
+  ansible.builtin.systemd:
+    name: redfish-ec2
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Flush handlers so the checks below test the current configuration
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the shim to answer
+  ansible.builtin.uri:
+    url: "https://{{ bastion_private_ip }}:{{ redfish_shim_port }}/healthz"
+    validate_certs: false
+    return_content: true
+  register: shim_health
+  retries: 12
+  delay: 5
+  until: shim_health.status is defined and shim_health.status == 200
+
+- name: Confirm the shim serves every control-plane node
+  ansible.builtin.assert:
+    that:
+      - shim_health.json.systems | sort == control_plane_nodes | map(attribute='name') | list | sort
+    fail_msg: >-
+      The shim serves {{ shim_health.json.systems }} but the cluster expects
+      {{ control_plane_nodes | map(attribute='name') | list }}. The fencing
+      addresses in install-config.yaml would point at systems that do not exist.
+    success_msg: "Redfish shim is serving {{ shim_health.json.systems | join(', ') }}"
+
+# Authentication is checked separately from reachability: a shim that answers
+# but rejects the BMC password produces stonith devices that fail only when
+# they are first needed, which is the worst possible moment to find out.
+- name: Verify the BMC credentials are accepted
+  ansible.builtin.uri:
+    url: "https://{{ bastion_private_ip }}:{{ redfish_shim_port }}/redfish/v1/Systems"
+    validate_certs: false
+    url_username: "{{ bmc_username }}"
+    url_password: "{{ bmc_password }}"
+    force_basic_auth: true
+  register: shim_auth
+  failed_when: shim_auth.status != 200

@@ -1,0 +1,18 @@
+# Secrets and per-user configuration
+config/instance.env
+config/pull-secret.json
+config/*.pem
+config/*.key
+
+# Generated state
+deploy/aws-infra/instance-data/
+deploy/openshift-clusters/inventory.ini
+deploy/openshift-clusters/inventory.ini.*
+deploy/openshift-clusters/clusters/
+logs/
+
+# Installer artifacts
+*.ign
+auth/
+metadata.json
+.openshift_install*

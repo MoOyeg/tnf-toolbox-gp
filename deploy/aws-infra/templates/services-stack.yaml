@@ -1,0 +1,182 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Bastion for a TNF cluster on g4dn.metal. It carries the three services that
+  a platform:none cluster on EC2 has nowhere else to put:
+
+    * haproxy   - api, api-int and *.apps, since no in-cluster keepalived runs
+    * redfish-ec2 - the Redfish endpoint Pacemaker fences the peer node through
+    * an ignition HTTP server - bootstrap.ign is far past the 16 KiB user-data cap
+
+  It also holds the cluster DNS records and is the only host reachable from
+  outside the VPC.
+
+Parameters:
+  ClusterName:
+    Type: String
+    AllowedPattern: '[a-z0-9][-a-z0-9]{0,24}[a-z0-9]'
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  BastionSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  HostedZoneId:
+    Type: String
+  ClusterDomain:
+    Type: String
+    Description: e.g. tnf-gp.tnf.local
+  BastionPrivateIp:
+    Type: String
+    Default: 10.0.0.5
+    Description: >-
+      Fixed, because the fencing address in install-config.yaml has to be
+      written before this stack is even created.
+  BastionInstanceType:
+    Type: String
+    Default: m5.large
+  SshKeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+  BastionAmi:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
+    Description: >-
+      Amazon Linux 2023 rather than RHEL: haproxy, podman and python3 are all in
+      its default repos, so the bastion needs no Red Hat subscription.
+  BastionVolumeSizeGiB:
+    Type: Number
+    Default: 50
+
+Resources:
+  BastionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: redfish-ec2-power
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              # DescribeInstances cannot be resource-scoped in IAM; it is
+              # read-only, so the wildcard is acceptable.
+              - Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceStatus
+                  - ec2:DescribeVolumes
+                Resource: '*'
+              # Power actions are scoped by tag, so a stray fence request can
+              # only ever touch this cluster's own nodes.
+              - Effect: Allow
+                Action:
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    'ec2:ResourceTag/tnf-cluster': !Ref ClusterName
+
+  BastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+        - !Ref BastionRole
+
+  Bastion:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref BastionAmi
+      InstanceType: !Ref BastionInstanceType
+      KeyName: !Ref SshKeyName
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      SubnetId: !Ref SubnetId
+      PrivateIpAddress: !Ref BastionPrivateIp
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroupId
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref BastionVolumeSizeGiB
+            DeleteOnTermination: true
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          set -euxo pipefail
+          # Only the packages Ansible needs to be able to connect and work.
+          # Everything else is configured by the redfish-shim and loadbalancer
+          # roles, so that reconfiguring does not mean replacing the instance.
+          dnf install -y podman haproxy python3 python3-pip jq
+          mkdir -p /etc/redfish-ec2 /srv/ignition
+          hostnamectl set-hostname ${ClusterName}-bastion
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-bastion'
+        - Key: tnf-cluster
+          Value: !Ref ClusterName
+
+  BastionEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-bastion-eip'
+
+  BastionEipAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt BastionEip.AllocationId
+      InstanceId: !Ref Bastion
+
+  # All three records point at the bastion's haproxy. With platform:none there
+  # is no in-cluster VIP to point them at: the installer stands up neither
+  # keepalived nor an AWS load balancer.
+  ApiRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'api.${ClusterDomain}'
+      Type: A
+      TTL: 60
+      ResourceRecords:
+        - !Ref BastionPrivateIp
+
+  ApiIntRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub 'api-int.${ClusterDomain}'
+      Type: A
+      TTL: 60
+      ResourceRecords:
+        - !Ref BastionPrivateIp
+
+  AppsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref HostedZoneId
+      Name: !Sub '*.apps.${ClusterDomain}'
+      Type: A
+      TTL: 60
+      ResourceRecords:
+        - !Ref BastionPrivateIp
+
+Outputs:
+  BastionInstanceId:
+    Value: !Ref Bastion
+  BastionPrivateIp:
+    Value: !Ref BastionPrivateIp
+  BastionPublicIp:
+    Value: !Ref BastionEip
+  FencingBaseUrl:
+    Description: Prefix for controlPlane.fencing.credentials[].address
+    Value: !Sub 'https://${BastionPrivateIp}:8000/redfish/v1/Systems'
+  IgnitionBaseUrl:
+    Value: !Sub 'http://${BastionPrivateIp}:8080'

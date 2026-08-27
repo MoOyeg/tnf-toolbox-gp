@@ -1,0 +1,7 @@
+---
+- name: restart redfish-ec2
+  become: true
+  ansible.builtin.systemd:
+    name: redfish-ec2
+    state: restarted
+    daemon_reload: true

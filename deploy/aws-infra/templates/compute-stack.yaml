@@ -1,0 +1,174 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  The two g4dn.metal control-plane nodes. Bare metal, so the eight Tesla T4s
+  are real PCI devices on the OpenShift nodes -- no nested virtualization
+  between OpenShift Virtualization and the hardware.
+
+  Each node gets a dedicated EBS data volume for LVM Storage. The instance-store
+  NVMe drives that come with g4dn.metal are deliberately left unused: fencing
+  stops and starts the instance, and instance store does not survive that.
+  Hosted control-plane etcd for the guest clusters lives on these volumes.
+
+Parameters:
+  ClusterName:
+    Type: String
+    AllowedPattern: '[a-z0-9][-a-z0-9]{0,24}[a-z0-9]'
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+  ClusterSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  AvailabilityZone:
+    Type: String
+  RhcosAmi:
+    Type: AWS::EC2::Image::Id
+    Description: >-
+      From: openshift-install coreos print-stream-json |
+      jq -r '.architectures.x86_64.images.aws.regions["<region>"].image'
+  MasterInstanceType:
+    Type: String
+    Default: g4dn.metal
+  SshKeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: >-
+      Break-glass access only. Ignition installs the install-config sshKey as
+      core@; this exists so a node that never finishes ignition is still
+      reachable.
+  Master0PrivateIp:
+    Type: String
+    Default: 10.0.0.10
+  Master1PrivateIp:
+    Type: String
+    Default: 10.0.0.11
+  Master0UserData:
+    Type: String
+    Description: >-
+      Compact ignition pointer for master-0: merges the installer's master.ign
+      from the bastion and adds /etc/hostname. The hostname must match the
+      controlPlane.fencing.credentials hostname, or Pacemaker builds a stonith
+      device for a node name that does not exist.
+    NoEcho: true
+  Master1UserData:
+    Type: String
+    NoEcho: true
+  RootVolumeSizeGiB:
+    Type: Number
+    Default: 200
+  DataVolumeSizeGiB:
+    Type: Number
+    Default: 500
+    Description: EBS gp3 volume backing LVM Storage on each node.
+
+Resources:
+  Master0:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref RhcosAmi
+      InstanceType: !Ref MasterInstanceType
+      KeyName: !Ref SshKeyName
+      SubnetId: !Ref SubnetId
+      PrivateIpAddress: !Ref Master0PrivateIp
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroupId
+      UserData:
+        Fn::Base64: !Ref Master0UserData
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref RootVolumeSizeGiB
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-master-0'
+        # The Redfish shim resolves systems by this tag, and the bastion's IAM
+        # policy scopes StopInstances to it.
+        - Key: tnf-cluster
+          Value: !Ref ClusterName
+        - Key: tnf-role
+          Value: master-0
+
+  Master1:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref RhcosAmi
+      InstanceType: !Ref MasterInstanceType
+      KeyName: !Ref SshKeyName
+      SubnetId: !Ref SubnetId
+      PrivateIpAddress: !Ref Master1PrivateIp
+      SecurityGroupIds:
+        - !Ref ClusterSecurityGroupId
+      UserData:
+        Fn::Base64: !Ref Master1UserData
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeType: gp3
+            VolumeSize: !Ref RootVolumeSizeGiB
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-master-1'
+        - Key: tnf-cluster
+          Value: !Ref ClusterName
+        - Key: tnf-role
+          Value: master-1
+
+  # Data volumes are separate resources rather than BlockDeviceMappings so that
+  # rebuilding a node does not destroy the storage the guest clusters live on.
+  Master0DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Delete
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      Size: !Ref DataVolumeSizeGiB
+      VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-master-0-data'
+        - Key: tnf-cluster
+          Value: !Ref ClusterName
+
+  Master1DataVolume:
+    Type: AWS::EC2::Volume
+    DeletionPolicy: Delete
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      Size: !Ref DataVolumeSizeGiB
+      VolumeType: gp3
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-master-1-data'
+        - Key: tnf-cluster
+          Value: !Ref ClusterName
+
+  Master0DataAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      InstanceId: !Ref Master0
+      VolumeId: !Ref Master0DataVolume
+      Device: /dev/xvdb
+
+  Master1DataAttachment:
+    Type: AWS::EC2::VolumeAttachment
+    Properties:
+      InstanceId: !Ref Master1
+      VolumeId: !Ref Master1DataVolume
+      Device: /dev/xvdb
+
+Outputs:
+  Master0InstanceId:
+    Value: !Ref Master0
+  Master1InstanceId:
+    Value: !Ref Master1
+  Master0PrivateIp:
+    Value: !Ref Master0PrivateIp
+  Master1PrivateIp:
+    Value: !Ref Master1PrivateIp
+  Master0DataVolumeId:
+    Description: >-
+      Used by the lvm-storage role to pick the right disk. On Nitro this
+      surfaces as /dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_<id-without-dash>.
+    Value: !Ref Master0DataVolume
+  Master1DataVolumeId:
+    Value: !Ref Master1DataVolume

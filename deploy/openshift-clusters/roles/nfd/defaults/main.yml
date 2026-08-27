@@ -1,0 +1,6 @@
+---
+# The cluster to act on. The base cluster and each guest cluster both run this
+# role; only the kubeconfig differs.
+op_kubeconfig: ""
+nfd_namespace: openshift-nfd
+nfd_instance_name: nfd-instance

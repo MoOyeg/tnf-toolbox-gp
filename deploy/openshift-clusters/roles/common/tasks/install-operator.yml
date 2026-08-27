@@ -1,0 +1,121 @@
+---
+# Install one OLM operator and wait for its CSV to succeed.
+#
+# Reused for NFD, the GPU Operator, LVM Storage, OpenShift Virtualization and
+# ACM, on the base cluster and inside every guest cluster. Callers set the
+# op_* variables; op_kubeconfig selects the cluster.
+
+- name: "{{ op_package }}: create the namespace"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ op_namespace }}"
+        labels:
+          openshift.io/cluster-monitoring: "true"
+
+- name: "{{ op_package }}: create the OperatorGroup"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: "{{ op_package }}"
+        namespace: "{{ op_namespace }}"
+      # An AllNamespaces operator must have no targetNamespaces at all -- an
+      # empty list is not the same thing and OLM rejects it.
+      spec: "{{ {'targetNamespaces': [op_namespace]} if op_operator_group_scope == 'own' else {} }}"
+
+- name: "{{ op_package }}: wait for the package manifest to appear"
+  ansible.builtin.command: >-
+    oc get packagemanifest {{ op_package }} -n {{ op_source_namespace }}
+    -o jsonpath={.status.defaultChannel}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: default_channel
+  changed_when: false
+  retries: 30
+  delay: 20
+  until: default_channel.rc == 0 and default_channel.stdout != ""
+
+- name: "{{ op_package }}: resolve the channel"
+  ansible.builtin.set_fact:
+    resolved_channel: "{{ default_channel.stdout if op_channel == 'auto' else op_channel }}"
+
+- name: "{{ op_package }}: subscribe on channel {{ resolved_channel }}"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: "{{ op_package }}"
+        namespace: "{{ op_namespace }}"
+      spec:
+        channel: "{{ resolved_channel }}"
+        name: "{{ op_package }}"
+        source: "{{ op_source }}"
+        sourceNamespace: "{{ op_source_namespace }}"
+        installPlanApproval: Automatic
+
+# The CSV name is read back from the Subscription rather than guessed from the
+# package name. They differ often enough to matter: package
+# 'kubevirt-hyperconverged' installs CSV 'kubevirt-hyperconverged-operator.vX'.
+- name: "{{ op_package }}: wait for OLM to resolve a CSV"
+  ansible.builtin.command: >-
+    oc get subscription {{ op_package }} -n {{ op_namespace }}
+    -o jsonpath={.status.installedCSV}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: installed_csv
+  changed_when: false
+  retries: 40
+  delay: 15
+  until: installed_csv.rc == 0 and installed_csv.stdout != ""
+
+- name: "{{ op_package }}: wait for CSV {{ installed_csv.stdout }} to succeed"
+  block:
+    - name: "{{ op_package }}: poll the CSV phase"
+      ansible.builtin.command: >-
+        oc get csv {{ installed_csv.stdout }} -n {{ op_namespace }}
+        -o jsonpath={.status.phase}
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: csv_phase
+      changed_when: false
+      retries: "{{ (op_csv_timeout | int / 15) | int }}"
+      delay: 15
+      until: csv_phase.stdout == "Succeeded"
+  rescue:
+    # A CSV stuck in Pending or Failed almost always has the reason in either
+    # the CSV message or a namespace event; printing both saves a round trip.
+    - name: "{{ op_package }}: collect failure detail"
+      ansible.builtin.shell: |
+        echo "--- csv ---"
+        oc get csv -n {{ op_namespace }} -o wide 2>&1
+        echo "--- message ---"
+        oc get csv {{ installed_csv.stdout }} -n {{ op_namespace }} \
+          -o jsonpath='{.status.phase}{": "}{.status.message}{"\n"}' 2>&1
+        echo "--- events ---"
+        oc get events -n {{ op_namespace }} --sort-by=.lastTimestamp 2>&1 | tail -20
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: csv_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ op_package }}: report and fail"
+      ansible.builtin.fail:
+        msg: |
+          {{ op_package }} did not install within {{ op_csv_timeout }}s.
+          {{ csv_diagnostics.stdout }}
+
+- name: "{{ op_package }}: installed"
+  ansible.builtin.debug:
+    msg: "{{ installed_csv.stdout }} is Succeeded in {{ op_namespace }}"

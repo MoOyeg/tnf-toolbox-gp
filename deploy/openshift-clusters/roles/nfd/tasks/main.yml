@@ -1,0 +1,61 @@
+---
+# Node Feature Discovery. The GPU Operator will not deploy anything to a node
+# until NFD has labelled it as having an NVIDIA device, so this comes first on
+# every cluster -- base and guest alike.
+
+- name: Install the NFD operator
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: install-operator
+  vars:
+    op_package: nfd
+    op_namespace: "{{ nfd_namespace }}"
+    op_channel: "{{ nfd_channel }}"
+    op_source: redhat-operators
+    op_operator_group_scope: own
+    op_csv_timeout: "{{ operator_csv_timeout }}"
+
+- name: Create the NodeFeatureDiscovery instance
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: nfd.openshift.io/v1
+      kind: NodeFeatureDiscovery
+      metadata:
+        name: "{{ nfd_instance_name }}"
+        namespace: "{{ nfd_namespace }}"
+      spec:
+        operand:
+          servicePort: 12000
+        workerConfig:
+          # PCI class 03 is display controllers, which is what the T4 presents
+          # as. Labelling by vendor is what produces
+          # feature.node.kubernetes.io/pci-10de.present, the label the GPU
+          # Operator selects on.
+          configData: |
+            core:
+              sleepInterval: 60s
+            sources:
+              pci:
+                deviceClassWhitelist:
+                  - "0200"
+                  - "03"
+                deviceLabelFields:
+                  - "vendor"
+
+- name: Wait for NFD to label the nodes with the NVIDIA vendor id
+  ansible.builtin.command: >-
+    oc get nodes -l feature.node.kubernetes.io/pci-10de.present=true
+    -o jsonpath={.items[*].metadata.name}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: nfd_labelled
+  changed_when: false
+  retries: 40
+  delay: 15
+  until: nfd_labelled.rc == 0 and nfd_labelled.stdout | length > 0
+
+- name: Report the labelled nodes
+  ansible.builtin.debug:
+    msg: "NFD labelled these nodes as having NVIDIA devices: {{ nfd_labelled.stdout }}"

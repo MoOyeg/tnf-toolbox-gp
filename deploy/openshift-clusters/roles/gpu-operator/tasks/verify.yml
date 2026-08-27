@@ -1,0 +1,58 @@
+---
+# Prove the GPUs actually reached the scheduler.
+#
+# 'ClusterPolicy: ready' only says the operator finished reconciling. What
+# matters is whether a node advertises allocatable nvidia.com/* capacity --
+# that is what a pod or a KubeVirt VM will fail on if the driver never loaded
+# or the vfio binding did not take.
+#
+# The two modes advertise different resource names:
+#   container      -> nvidia.com/gpu
+#   vm-passthrough -> nvidia.com/TU104GL_Tesla_T4  (the sandbox device plugin)
+
+- name: Wait for at least one node to advertise GPU capacity
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get nodes -o json
+    | jq -r '.items[]
+             | .metadata.name as $n
+             | .status.allocatable
+             | to_entries[]
+             | select(.key | startswith("nvidia.com/"))
+             | select(.value != "0")
+             | "\($n) \(.key)=\(.value)"'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: gpu_resources
+  changed_when: false
+  retries: 40
+  delay: 30
+  until: gpu_resources.rc == 0 and gpu_resources.stdout != ""
+
+- name: Report the GPU inventory
+  ansible.builtin.debug:
+    msg: "{{ gpu_resources.stdout_lines }}"
+
+# On the base cluster each mode should have produced its own resource name. A
+# vm-passthrough node advertising nvidia.com/gpu means vfio-manager did not
+# take the GPUs, and every later hostDevices request would fail to schedule.
+- name: Confirm each node advertises the resource its workload mode implies
+  when: gpu_sandbox_workloads | bool
+  ansible.builtin.assert:
+    that:
+      - >-
+        gpu_resources.stdout_lines
+        | select('search', '^' ~ item.name ~ ' ' ~ expected_resource)
+        | list | length > 0
+    fail_msg: >-
+      {{ item.name }} is labelled {{ item.gpu_workload }} but does not
+      advertise {{ expected_resource }}. Found:
+      {{ gpu_resources.stdout_lines | select('search', '^' ~ item.name) | list }}
+    success_msg: "{{ item.name }} ({{ item.gpu_workload }}) advertises {{ expected_resource }}"
+  vars:
+    expected_resource: >-
+      {{ 'nvidia.com/gpu' if item.gpu_workload == 'container'
+         else gpu_resource_name }}
+  loop: "{{ control_plane_nodes }}"
+  loop_control:
+    label: "{{ item.name }}"

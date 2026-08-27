@@ -1,0 +1,32 @@
+---
+- name: Check whether this cluster has already been installed
+  ansible.builtin.stat:
+    path: "{{ kubeconfig }}"
+  register: existing_kubeconfig
+
+- name: Install a new TNF cluster
+  when: not existing_kubeconfig.stat.exists
+  block:
+    - name: Generate install-config and ignition
+      ansible.builtin.include_tasks: render.yml
+
+    - name: Launch the control plane and bootstrap nodes
+      ansible.builtin.include_tasks: launch.yml
+
+    - name: Wait for bootstrap and tear it down
+      ansible.builtin.include_tasks: bootstrap.yml
+
+    - name: Wait for the install to complete
+      ansible.builtin.include_tasks: finish.yml
+
+- name: Report an existing cluster
+  when: existing_kubeconfig.stat.exists
+  ansible.builtin.debug:
+    msg: >-
+      {{ kubeconfig }} already exists, so the install is being skipped. Run
+      'make clean' to delete the cluster and its nodes before reinstalling.
+
+# Always run: idempotent, and it is the step most likely to need re-applying
+# after the TNF controller reconciles the stonith devices.
+- name: Tune and verify fencing
+  ansible.builtin.include_tasks: fencing.yml

@@ -1,0 +1,66 @@
+---
+# haproxy for api/api-int/*.apps, plus an HTTP server for bootstrap.ign.
+#
+# Both exist because platform:none on EC2 has nowhere else to put them: no
+# in-cluster VIP, and bootstrap.ign is far larger than the 16 KiB EC2 user-data
+# limit, so it cannot ride in user-data the way the master configs do.
+
+- name: Install haproxy
+  become: true
+  ansible.builtin.dnf:
+    name: haproxy
+    state: present
+
+- name: Allow haproxy to reach the non-standard cluster ports
+  become: true
+  ansible.posix.seboolean:
+    name: haproxy_connect_any
+    state: true
+    persistent: true
+  # SELinux is not always enabled on the bastion AMI; when it is not, the
+  # boolean does not exist and its absence is not a problem.
+  failed_when: false
+
+- name: Write the haproxy configuration
+  become: true
+  ansible.builtin.template:
+    src: haproxy.cfg.j2
+    dest: /etc/haproxy/haproxy.cfg
+    mode: '0644'
+    validate: 'haproxy -c -f %s'
+  notify: restart haproxy
+
+- name: Enable and start haproxy
+  become: true
+  ansible.builtin.systemd:
+    name: haproxy
+    enabled: true
+    state: started
+
+- name: Create the ignition document root
+  become: true
+  ansible.builtin.file:
+    path: "{{ ignition_root }}"
+    state: directory
+    owner: "{{ ansible_user }}"
+    group: "{{ ansible_user }}"
+    mode: '0755'
+
+- name: Install the ignition server unit
+  become: true
+  ansible.builtin.template:
+    src: tnf-ignition.service.j2
+    dest: /etc/systemd/system/tnf-ignition.service
+    mode: '0644'
+  notify: restart tnf-ignition
+
+- name: Enable and start the ignition server
+  become: true
+  ansible.builtin.systemd:
+    name: tnf-ignition
+    enabled: true
+    state: started
+    daemon_reload: true
+
+- name: Flush handlers
+  ansible.builtin.meta: flush_handlers

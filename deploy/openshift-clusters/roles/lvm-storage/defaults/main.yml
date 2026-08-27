@@ -1,0 +1,6 @@
+---
+op_kubeconfig: ""
+lvms_namespace: openshift-storage
+lvm_device_class: vg1
+lvm_cluster_name: lvmcluster
+lvms_timeout: 900

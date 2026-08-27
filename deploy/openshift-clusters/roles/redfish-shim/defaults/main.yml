@@ -1,0 +1,5 @@
+---
+redfish_shim_port: 8000
+redfish_shim_dir: /opt/redfish-ec2
+redfish_shim_conf_dir: /etc/redfish-ec2
+redfish_shim_user: redfish

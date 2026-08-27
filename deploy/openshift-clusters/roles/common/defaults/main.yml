@@ -1,0 +1,11 @@
+---
+# Defaults for the reusable task files in this role. Callers override them via
+# include_role vars; they are declared here so a typo in a caller surfaces as a
+# wrong value rather than an undefined-variable failure deep in a shell task.
+op_namespace: ""
+op_package: ""
+op_channel: auto
+op_source: redhat-operators
+op_source_namespace: openshift-marketplace
+op_operator_group_scope: own      # 'own' = targetNamespaces: [ns]; 'all' = cluster-wide
+op_csv_timeout: 900

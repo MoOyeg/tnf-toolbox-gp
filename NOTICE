@@ -1,0 +1,13 @@
+tnf-toolbox-gp
+Copyright 2026 the tnf-toolbox-gp authors
+
+This project is an independent work whose repository layout, Makefile-driven
+workflow, and Ansible role conventions were modelled on:
+
+    openshift-eng/two-node-toolbox
+    https://github.com/openshift-eng/two-node-toolbox
+    Licensed under the Apache License, Version 2.0
+
+No source is vendored from that project; the structure was reimplemented for a
+different target (AWS g4dn.metal bare metal, GPU passthrough, ACM + virtualized
+control planes). Credit for the original design belongs to its authors.

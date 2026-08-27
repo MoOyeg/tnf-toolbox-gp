@@ -1,0 +1,186 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Network for a TNF cluster on g4dn.metal: one VPC, one public subnet, the two
+  security groups, and a private hosted zone for the cluster domain.
+
+  A single public subnet is deliberate. platform:none clusters need no
+  AWS-managed load balancer, node addresses are all private and fixed, and the
+  only inbound path is the bastion. A private subnet would add a NAT gateway
+  (and its hourly cost) to solve a problem this topology does not have.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Cluster name; prefixes every resource and the hosted zone.
+    AllowedPattern: '[a-z0-9][-a-z0-9]{0,24}[a-z0-9]'
+  BaseDomain:
+    Type: String
+    Description: Base domain. The hosted zone becomes <ClusterName>.<BaseDomain>.
+    Default: tnf.local
+  VpcCidr:
+    Type: String
+    Default: 10.0.0.0/16
+  SubnetCidr:
+    Type: String
+    Default: 10.0.0.0/24
+  AvailabilityZone:
+    Type: String
+    Description: >-
+      Single AZ for every node. g4dn.metal capacity is uneven across AZs, so
+      pin this to one you have confirmed with describe-instance-type-offerings.
+  AllowedSshCidr:
+    Type: String
+    Description: CIDR permitted to reach the bastion on 22/6443/443.
+    Default: 0.0.0.0/0
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      # Both are required: RHCOS resolves api-int through the VPC resolver,
+      # which only answers for the private hosted zone when these are on.
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-vpc'
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-igw'
+
+  GatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  Subnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref SubnetCidr
+      AvailabilityZone: !Ref AvailabilityZone
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-subnet'
+
+  RouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-rtb'
+
+  DefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: GatewayAttachment
+    Properties:
+      RouteTableId: !Ref RouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  SubnetRouteTableAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref Subnet
+      RouteTableId: !Ref RouteTable
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bastion - SSH in, plus haproxy and the Redfish shim.
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - Description: SSH
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref AllowedSshCidr
+        - Description: Kubernetes API via haproxy
+          IpProtocol: tcp
+          FromPort: 6443
+          ToPort: 6443
+          CidrIp: !Ref AllowedSshCidr
+        - Description: Ingress via haproxy
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: !Ref AllowedSshCidr
+        - Description: Ingress via haproxy (plain HTTP)
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref AllowedSshCidr
+        - Description: Everything inside the VPC (MCS, ignition, Redfish shim)
+          IpProtocol: -1
+          CidrIp: !Ref VpcCidr
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-bastion-sg'
+
+  ClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      # Node-to-node rules are added below rather than inline, because a
+      # self-referencing rule cannot be expressed inside the group that
+      # defines it.
+      GroupDescription: Cluster nodes - open to each other and to the bastion.
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-cluster-sg'
+
+  ClusterSelfIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: >-
+        Node to node. OVN-Kubernetes geneve, etcd peer traffic, kubelet and
+        Pacemaker/corosync all live here; enumerating them buys nothing when
+        both members are cluster nodes.
+      GroupId: !Ref ClusterSecurityGroup
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref ClusterSecurityGroup
+
+  ClusterBastionIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      Description: Bastion to nodes (SSH, API, MCS, ingress backends)
+      GroupId: !Ref ClusterSecurityGroup
+      IpProtocol: -1
+      SourceSecurityGroupId: !Ref BastionSecurityGroup
+
+  HostedZone:
+    Type: AWS::Route53::HostedZone
+    Properties:
+      Name: !Sub '${ClusterName}.${BaseDomain}'
+      HostedZoneConfig:
+        Comment: !Sub 'TNF cluster ${ClusterName}'
+      VPCs:
+        - VPCId: !Ref Vpc
+          VPCRegion: !Ref 'AWS::Region'
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+  VpcCidr:
+    Value: !Ref VpcCidr
+  SubnetId:
+    Value: !Ref Subnet
+  AvailabilityZone:
+    Value: !Ref AvailabilityZone
+  BastionSecurityGroupId:
+    Value: !Ref BastionSecurityGroup
+  ClusterSecurityGroupId:
+    Value: !Ref ClusterSecurityGroup
+  HostedZoneId:
+    Value: !Ref HostedZone
+  ClusterDomain:
+    Value: !Sub '${ClusterName}.${BaseDomain}'

@@ -1,0 +1,30 @@
+---
+# Stage 5: NFD and the NVIDIA drivers inside each guest cluster.
+#
+# The same two roles as the base cluster, pointed at a different kubeconfig.
+# Sandbox workloads is off here: inside the guest the T4 is already an ordinary
+# PCI device on the VM, and there is no second level of passthrough to arrange.
+- name: Enable GPUs inside the guest clusters
+  hosts: bastion
+  gather_facts: false
+  environment:
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
+
+  tasks:
+    - name: Find the guest kubeconfigs
+      ansible.builtin.find:
+        paths: "{{ install_root }}/guests"
+        patterns: "*.kubeconfig"
+      register: guest_kubeconfigs
+
+    - name: Fail if no guest clusters exist yet
+      ansible.builtin.assert:
+        that: guest_kubeconfigs.files | length > 0
+        fail_msg: "No guest kubeconfigs under {{ install_root }}/guests. Run 'make guests' first."
+
+    - name: Install the GPU stack in each guest cluster
+      ansible.builtin.include_tasks: tasks/guest-gpu-stack.yml
+      loop: "{{ guest_kubeconfigs.files | map(attribute='path') | list }}"
+      loop_control:
+        loop_var: guest_kubeconfig
+        label: "{{ guest_kubeconfig | basename }}"

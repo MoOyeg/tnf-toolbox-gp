@@ -1,0 +1,32 @@
+---
+# Stage 1: install the Two-Node with Fencing cluster on two g4dn.metal nodes.
+#
+# Everything runs on the bastion. It is the only host inside the VPC, and so
+# the only host that can resolve api-int through the private hosted zone.
+- name: Install the TNF base cluster
+  hosts: bastion
+  gather_facts: true
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH }}"
+
+  tasks:
+    - name: Install the OpenShift clients
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: install-clients
+
+    # Fencing first. A TNF cluster whose stonith devices cannot reach their
+    # Redfish endpoint installs perfectly well and only fails when a node
+    # actually misbehaves -- an expensive way to discover a typo.
+    - name: Stand up the Redfish fencing endpoint
+      ansible.builtin.include_role:
+        name: redfish-shim
+
+    - name: Configure haproxy and the ignition server
+      ansible.builtin.include_role:
+        name: loadbalancer
+
+    - name: Install the cluster
+      ansible.builtin.include_role:
+        name: tnf-install

@@ -1,0 +1,162 @@
+---
+- name: Set the name for this guest cluster
+  ansible.builtin.set_fact:
+    guest_name: "{{ guest_cluster_prefix }}-{{ guest_index }}"
+
+# Rendering to a file first, rather than letting hcp create directly, keeps the
+# exact manifests that produced a cluster on disk. When a NodePool sits Pending
+# a week later, that file is the difference between reading what was asked for
+# and guessing.
+- name: "{{ guest_name }}: render the manifests"
+  ansible.builtin.command:
+    cmd: >-
+      {{ bin_dir }}/hcp create cluster kubevirt
+      --name {{ guest_name }}
+      --namespace {{ hcp_namespace }}
+      --release-image {{ guest_release_image }}
+      --pull-secret {{ install_dir }}/pull-secret.json
+      --node-pool-replicas {{ guest_nodepool_replicas }}
+      --cores {{ guest_vm_cores }}
+      --memory {{ guest_vm_memory }}
+      --root-volume-size {{ guest_vm_root_disk | regex_replace('Gi$', '') }}
+      --root-volume-storage-class {{ storage_class }}
+      --etcd-storage-class {{ storage_class }}
+      --host-device-name "{{ gpu_resource_name }},count:{{ guest_gpus_per_node }}"
+      --render
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: hcp_render
+  changed_when: false
+
+- name: "{{ guest_name }}: save the manifests"
+  ansible.builtin.copy:
+    content: "{{ hcp_render.stdout }}"
+    dest: "{{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
+    mode: '0600'
+
+- name: "{{ guest_name }}: confirm the GPU request survived rendering"
+  ansible.builtin.assert:
+    that: gpu_resource_name in hcp_render.stdout
+    fail_msg: >-
+      The rendered manifests for {{ guest_name }} do not mention
+      {{ gpu_resource_name }}. The cluster would come up without GPUs.
+    success_msg: "{{ guest_name }} requests {{ guest_gpus_per_node }}x {{ gpu_resource_name }} per worker"
+
+- name: "{{ guest_name }}: apply the manifests"
+  ansible.builtin.command: "oc apply -f {{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: guest_applied
+  changed_when: "'created' in guest_applied.stdout or 'configured' in guest_applied.stdout"
+
+- name: "{{ guest_name }}: wait for the hosted control plane to become available"
+  ansible.builtin.command: >-
+    oc get hostedcluster {{ guest_name }} -n {{ hcp_namespace }}
+    -o jsonpath={.status.conditions[?(@.type=="Available")].status}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: hc_available
+  changed_when: false
+  retries: "{{ (hosted_cluster_timeout | int / 30) | int }}"
+  delay: 30
+  until: hc_available.stdout == "True"
+
+- name: "{{ guest_name }}: wait for the worker VMs to join"
+  block:
+    - name: "{{ guest_name }}: poll the NodePool"
+      ansible.builtin.command: >-
+        oc get nodepool {{ guest_name }} -n {{ hcp_namespace }}
+        -o jsonpath={.status.replicas}
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: np_replicas
+      changed_when: false
+      retries: "{{ (nodepool_timeout | int / 30) | int }}"
+      delay: 30
+      until: np_replicas.stdout | default('0') | int >= (guest_nodepool_replicas | int)
+  rescue:
+    # A NodePool that never becomes ready is almost always a VM that cannot be
+    # scheduled, and on this rig that is almost always the GPU request: only the
+    # node labelled vm-passthrough advertises the resource, and it has a finite
+    # number of them.
+    - name: "{{ guest_name }}: collect NodePool diagnostics"
+      ansible.builtin.shell: |
+        echo "--- nodepool ---"
+        oc get nodepool {{ guest_name }} -n {{ hcp_namespace }} -o yaml 2>&1 | tail -40
+        echo "--- virtual machines ---"
+        oc get vmi -n {{ hcp_namespace }}-{{ guest_name }} -o wide 2>&1
+        echo "--- unschedulable pods ---"
+        oc get pods -n {{ hcp_namespace }}-{{ guest_name }} --field-selector=status.phase=Pending -o wide 2>&1
+        echo "--- gpu capacity ---"
+        oc get nodes -o json 2>/dev/null | jq -r --arg r "{{ gpu_resource_name }}" \
+          '.items[] | "\(.metadata.name) allocatable=\(.status.allocatable[$r] // "none")"'
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: np_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ guest_name }}: report and fail"
+      ansible.builtin.fail:
+        msg: |
+          {{ guest_name }}'s NodePool did not reach {{ guest_nodepool_replicas }}
+          replica(s) within {{ nodepool_timeout }}s.
+
+          Each worker asks for {{ guest_gpus_per_node }}x {{ gpu_resource_name }}.
+          Across {{ guest_cluster_count }} guest clusters that is
+          {{ (guest_cluster_count | int) * (guest_nodepool_replicas | int) * (guest_gpus_per_node | int) }}
+          GPUs, and only the node labelled vm-passthrough supplies them.
+          {{ np_diagnostics.stdout }}
+
+- name: "{{ guest_name }}: extract the kubeconfig"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get secret {{ guest_name }}-admin-kubeconfig -n {{ hcp_namespace }}
+    -o jsonpath={.data.kubeconfig} | base64 -d
+    > {{ guest_kubeconfig_dir }}/{{ guest_name }}.kubeconfig
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: guest_kubeconfig_extract
+  changed_when: true
+  retries: 20
+  delay: 15
+  until: guest_kubeconfig_extract.rc == 0
+
+- name: "{{ guest_name }}: protect the kubeconfig"
+  ansible.builtin.file:
+    path: "{{ guest_kubeconfig_dir }}/{{ guest_name }}.kubeconfig"
+    mode: '0600'
+
+- name: "{{ guest_name }}: wait for the worker nodes to be Ready"
+  ansible.builtin.command: oc get nodes --no-headers
+  environment:
+    KUBECONFIG: "{{ guest_kubeconfig_dir }}/{{ guest_name }}.kubeconfig"
+  register: guest_nodes
+  changed_when: false
+  retries: 60
+  delay: 30
+  until:
+    - guest_nodes.rc == 0
+    - guest_nodes.stdout_lines | select('search', ' Ready') | list | length >= (guest_nodepool_replicas | int)
+
+# The point of the whole exercise: confirm a real T4 is visible inside the
+# guest cluster's VM, as a PCI device the guest's own kernel can see.
+- name: "{{ guest_name }}: confirm the GPU reached the guest's worker VM"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc debug node/{{ guest_nodes.stdout_lines[0].split()[0] }} --quiet --
+    chroot /host bash -c "lspci -d 10de: -nn"
+  environment:
+    KUBECONFIG: "{{ guest_kubeconfig_dir }}/{{ guest_name }}.kubeconfig"
+  register: guest_lspci
+  changed_when: false
+  retries: 10
+  delay: 20
+  until: guest_lspci.rc == 0 and '10de' in guest_lspci.stdout
+
+- name: "{{ guest_name }}: report"
+  ansible.builtin.debug:
+    msg:
+      - "{{ guest_name }} is up with {{ np_replicas.stdout }} worker VM(s)."
+      - "GPUs inside the VM: {{ guest_lspci.stdout_lines }}"
+      - "kubeconfig: {{ guest_kubeconfig_dir }}/{{ guest_name }}.kubeconfig"

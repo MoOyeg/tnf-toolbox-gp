@@ -1,0 +1,15 @@
+---
+exclude_paths:
+  - .git/
+  - collections/
+
+skip_list:
+  # The playbooks shell out to oc/aws far more than they use modules; that is
+  # deliberate so the same commands can be copy-pasted when debugging a run.
+  - command-instead-of-shell
+  - no-changed-when
+  - risky-shell-pipe
+  - name[casing]
+
+warn_list:
+  - experimental
