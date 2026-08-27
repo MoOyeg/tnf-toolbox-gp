@@ -29,18 +29,26 @@
       delay: 15
       until: hcp_url.rc == 0 and hcp_url.stdout | length > 0
 
+    # No `include:` filter here on purpose. MCE packages the binary as "./hcp",
+    # and unarchive's include list matches member names exactly -- "hcp" finds
+    # nothing and the task fails with a misleading "could not handle archive".
+    # The tarball holds only the binary, so extracting all of it is both simpler
+    # and immune to the leading "./" appearing or disappearing.
     - name: Download and unpack hcp
       become: true
       ansible.builtin.unarchive:
         src: "{{ hcp_url.stdout }}"
         dest: "{{ bin_dir }}"
         remote_src: true
-        # The link is served by the hub's own route, which uses the cluster's
-        # ingress certificate.
+        # Served by the hub's own route, which uses the cluster's ingress
+        # certificate.
         validate_certs: false
-        include:
-          - hcp
         mode: '0755'
+
+    - name: Confirm hcp landed on the PATH
+      ansible.builtin.command: "{{ bin_dir }}/hcp version"
+      register: hcp_installed
+      changed_when: false
 
 - name: Confirm hcp can render KubeVirt clusters with host devices
   ansible.builtin.shell: "{{ bin_dir }}/hcp create cluster kubevirt --help"

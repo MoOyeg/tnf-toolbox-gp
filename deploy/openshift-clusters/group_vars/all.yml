@@ -14,9 +14,10 @@ bin_dir: "/usr/local/bin"
 # ------------------------------------------------------------------ release
 ocp_version: "4.22.0"
 ocp_mirror: "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp"
-# TNF sits behind a feature gate in 4.21. Set FEATURE_SET="" in instance.env if
-# it has gone GA in the release you are installing and the key is dropped.
-feature_set: "TechPreviewNoUpgrade"
+# Empty for 4.22, where two-node fencing is GA. Setting TechPreviewNoUpgrade
+# there also enables ClusterAPIMachineManagement, which breaks the HyperShift
+# operator install on platform:none -- see config/instance.env.template.
+feature_set: ""
 
 # ------------------------------------------------------------------ topology
 control_plane_nodes:

@@ -313,3 +313,96 @@ Observed during the IOMMU rollout:
 
 A two-node pool reboots serially, so **any MachineConfig change costs ~40
 minutes**. Worth knowing before adding kernel arguments casually.
+
+### 15. `unarchive`'s include filter needs the archive's exact member name
+
+MCE packages the `hcp` CLI as `./hcp`. The role asked for `include: [hcp]`,
+which matches nothing, and the module reported a misleading "Failed to find
+handler ... Make sure the required command to extract the file is installed" —
+as though gzip were missing.
+
+*Fix:* drop the filter. The tarball holds only the binary, so extracting all of
+it is simpler and immune to the leading `./` appearing or disappearing.
+
+### 16. ACM reports the HyperShift addon Available while it is broken
+
+The role waited for `Available=True` on the `hypershift-addon`
+ManagedClusterAddOn. It got it — while the addon was also `Degraded=True` with
+`reason=HypershiftDeployed msg=OperatorNotFound`. Available only means the
+addon's *agent* is running; it says nothing about whether the HyperShift
+operator was installed.
+
+The stage passed, and the failure surfaced one stage later as:
+
+```
+no matches for kind "HostedCluster" in version "hypershift.openshift.io/v1beta1"
+ensure CRDs are installed first
+```
+
+*Fix:* require `Available=True Degraded=False`, then wait for the
+`hostedclusters.hypershift.openshift.io` CRD to be established — the thing that
+actually has to exist. The failure path dumps the addon conditions and the
+install job log.
+
+### 17. ACM 2.17's HyperShift installer lacks RBAC for OCP 4.22's Cluster CAPI API
+
+With the addon's real state visible, the install job's failure was:
+
+```
+ClusterAPI API detected, coordinating with Cluster CAPI Operator
+failed to apply ClusterAPI config: clusterapis.operator.openshift.io "cluster"
+is forbidden: User "system:serviceaccount:open-cluster-management-agent-addon:
+hypershift-addon-agent-sa" cannot patch resource "clusterapis"
+```
+
+OCP 4.22 ships the Cluster CAPI Operator, which owns
+`clusterapis.operator.openshift.io`. ACM 2.17's addon service account has no
+rule for it.
+
+*Fix:* the `acm` role grants that one permission. Removable once ACM ships the
+rule itself.
+
+### 18. The real blocker: TechPreviewNoUpgrade makes HyperShift wait forever
+
+With the RBAC granted, the install job got further and then stopped:
+
+```
+Applied ClusterAPI config with 54 unmanaged CRDs
+Waiting for Cluster CAPI Operator to sync...
+```
+
+It never syncs. The operator's own log says why:
+
+```
+capi-operator: MachineAPIMigration not implemented for platform None,
+               nothing to do. Waiting for termination signal.
+```
+
+On `platform: none` the Cluster CAPI Operator does nothing and never writes
+status to the `clusterapis` resource, so HyperShift waits indefinitely. The job
+times out, is recreated, and repeats.
+
+The chain that produces it:
+
+1. The toolbox set `featureSet: TechPreviewNoUpgrade`, believing TNF needed it.
+2. That enables the `ClusterAPIMachineManagement` gate.
+3. Which creates `clusterapis.operator.openshift.io/cluster`.
+4. Which makes HyperShift's installer coordinate with the Cluster CAPI Operator.
+5. Which is a no-op on `platform: none` and never reports sync.
+6. So the HyperShift operator is never installed and no guest cluster can exist.
+
+**Two-node fencing is GA in 4.22 and does not need the feature set.** Verified
+directly: `openshift-install create manifests` accepts an install-config with
+`controlPlane.fencing.credentials` and `controlPlane.replicas: 2` and no
+`featureSet` key at all.
+
+*Fix:* `FEATURE_SET` now defaults to empty, with the reasoning recorded in
+`config/instance.env.template`. Set it only on 4.21 or older.
+
+The feature set is **irreversible on a running cluster**, so correcting it means
+reinstalling. That is the cost of this particular mistake, and the reason the
+template now argues against setting it "just in case".
+
+There is no workaround on an already-TechPreview cluster: the `hcp` binary MCE
+ships has no `install` subcommand (only `create`, `destroy`, `version`), so the
+addon's install job cannot be bypassed.
