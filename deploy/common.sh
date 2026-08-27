@@ -98,26 +98,36 @@ create_or_update_stack() {
     args+=(--parameters "file://${params_file}")
   fi
 
+  local current_status
+  current_status="$(stack_status "${stack}")"
+
+  # Settle any operation already in flight. This polls rather than chaining
+  # `aws cloudformation wait` calls: waiting for stack-delete-complete on a
+  # stack that is merely rolled back blocks for an hour on a deletion nobody
+  # asked for. Rolling back a pair of g4dn.metal takes 10-20 minutes on its
+  # own, so the ceiling is generous.
+  local waited=0 announced=false
+  while [[ "${current_status}" == *_IN_PROGRESS ]] \
+        && [ "${current_status}" != "REVIEW_IN_PROGRESS" ] \
+        && [ "${waited}" -lt "${STACK_SETTLE_TIMEOUT:-3600}" ]; do
+    if [ "${announced}" = false ]; then
+      info "stack ${stack} is ${current_status}; waiting for it to settle"
+      announced=true
+    fi
+    sleep 20
+    waited=$((waited + 20))
+    current_status="$(stack_status "${stack}")"
+  done
+  [ "${announced}" = true ] && info "stack ${stack} settled at ${current_status}"
+
   # A stack that rolled back during creation never existed as far as AWS is
   # concerned: it cannot be updated, only deleted and recreated. Without this a
   # retry after a failed create fails again with an unhelpful
   # "is in ROLLBACK_COMPLETE state and can not be updated".
-  local current_status
-  current_status="$(stack_status "${stack}")"
   case "${current_status}" in
     ROLLBACK_COMPLETE|ROLLBACK_FAILED|CREATE_FAILED|REVIEW_IN_PROGRESS)
       info "stack ${stack} is ${current_status}; deleting it so it can be recreated"
       delete_stack "${stack}"
-      ;;
-    *_IN_PROGRESS)
-      info "stack ${stack} is ${current_status}; waiting for it to settle"
-      aws cloudformation wait stack-create-complete --stack-name "${stack}" 2>/dev/null || true
-      aws cloudformation wait stack-rollback-complete --stack-name "${stack}" 2>/dev/null || true
-      aws cloudformation wait stack-delete-complete --stack-name "${stack}" 2>/dev/null || true
-      current_status="$(stack_status "${stack}")"
-      if [ "${current_status}" = "ROLLBACK_COMPLETE" ]; then
-        delete_stack "${stack}"
-      fi
       ;;
   esac
 

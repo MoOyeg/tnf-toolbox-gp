@@ -112,6 +112,50 @@ failed at the first k8s task in stage 2 — three stages after the mistake.
 *Fix:* the `common` role installs it and then asserts the interpreter Ansible
 actually uses can import it.
 
+### 9. The fix for bug 6 had its own bug
+
+The ROLLBACK_COMPLETE recovery chained three `aws cloudformation wait` calls to
+settle any in-flight operation:
+
+```bash
+aws cloudformation wait stack-create-complete   ... || true
+aws cloudformation wait stack-rollback-complete ... || true
+aws cloudformation wait stack-delete-complete   ... || true   # <-- hangs here
+```
+
+Once the rollback finished, the third call sat waiting for a deletion nobody
+had requested — and `wait stack-delete-complete` polls for an hour before
+giving up. The deploy hung for twenty minutes on a stack that was ready to be
+deleted immediately.
+
+*Fix:* poll `describe-stacks` until the status stops ending in `_IN_PROGRESS`,
+then decide what to do. `REVIEW_IN_PROGRESS` is excluded from that test, since
+it is a resting state rather than an operation in flight.
+
+Worth stating plainly: this bug was introduced *by a fix* and caught by the very
+next run. Chained `|| true` waits look defensive and are not — each one is an
+unconditional hour-long timer for a condition that may never arrive.
+
+### 10. Not a bug: bare metal is slow in both directions
+
+Worth knowing before planning a debugging session around it.
+
+| Operation | `g4dn.metal` | a normal instance |
+|---|---|---|
+| launch to `running` | 2-4 min | ~30 s |
+| terminate to `terminated` | **10-20 min** | ~1 min |
+
+A failed stack therefore takes 10-20 minutes to roll back before it can even be
+deleted and retried, and CloudFormation will not let you start over until it
+finishes. Two consequences:
+
+- The retry logic added for transient launch failures costs ~20 minutes per
+  attempt, almost all of it teardown. That is still far cheaper than losing a
+  healthy node and rebuilding by hand.
+- The same slowness is what makes fencing take 5-15 minutes on this rig, since
+  a fence is a stop and a start. See
+  [fencing-on-aws.md](fencing-on-aws.md).
+
 ## What this says about the static checks
 
 They caught nothing here, and that is the honest lesson. Every one of these
