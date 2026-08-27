@@ -152,20 +152,15 @@ means it is the only host that can drive an install.
   CloudFormation `Ref`/`GetAtt` resolves to something declared.
 - **Playbook syntax checks** for all seven playbooks.
 
-**None of this has been run against real hardware.** It has not been deployed
-end to end, no `g4dn.metal` has been launched, and the shim has not been
-exercised by a real `fence_redfish` binary. The parts most likely to need
-adjustment on a first run, roughly in order:
+**This has now been run against real `g4dn.metal` hardware in AWS**, which
+found eight bugs that no amount of static checking would have caught — a
+package missing from a repository, a CLI that cannot encode an ignition config
+as a parameter, a device name already claimed by instance store, an
+idempotency guard checking a file the installer creates too early. Each one and
+its fix is written up in [docs/deploy-log.md](docs/deploy-log.md).
 
-1. The `hcp create cluster kubevirt --host-device-name` flag and the exact
-   `NodePool` shape it renders. The role asserts the flag exists and that the
-   GPU resource survives rendering, so a mismatch fails loudly and early.
-2. NVIDIA `ClusterPolicy` field names. The role patches the operator's own
-   `alm-examples` rather than writing the CR out, which should survive most
-   churn, but sandbox-workload field names have moved before.
-3. `/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_<volume-id>` on RHCOS. The
-   `lvm-storage` role verifies the path exists on each node before creating the
-   `LVMCluster`, so a wrong guess fails with the path it looked for.
+Progress of that run is recorded there too, including which stages are
+confirmed working end to end and which are still unproven.
 
 Guest cluster **ingress is a known gap** — the KubeVirt provider expects a
 `LoadBalancer` service, which needs MetalLB, and MetalLB's L2 mode does not work
@@ -185,3 +180,5 @@ strategy and work; guest `*.apps` does not. The workaround is in
   and the ingress gap
 - [tools/redfish-ec2/README.md](tools/redfish-ec2/README.md) — the shim in
   detail
+- [docs/deploy-log.md](docs/deploy-log.md) — what actually broke on real
+  hardware, and what fixed it

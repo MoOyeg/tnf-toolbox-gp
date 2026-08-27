@@ -8,12 +8,12 @@ load_config
 require_tools aws jq
 
 create_or_update_stack "${NETWORK_STACK}" "${TEMPLATE_DIR}/network-stack.yaml" \
-  "ParameterKey=ClusterName,ParameterValue=${CLUSTER_NAME}" \
-  "ParameterKey=BaseDomain,ParameterValue=${BASE_DOMAIN}" \
-  "ParameterKey=VpcCidr,ParameterValue=${VPC_CIDR}" \
-  "ParameterKey=SubnetCidr,ParameterValue=${SUBNET_CIDR}" \
-  "ParameterKey=AvailabilityZone,ParameterValue=${AVAILABILITY_ZONE}" \
-  "ParameterKey=AllowedSshCidr,ParameterValue=${ALLOWED_SSH_CIDR}"
+  "ClusterName=${CLUSTER_NAME}" \
+  "BaseDomain=${BASE_DOMAIN}" \
+  "VpcCidr=${VPC_CIDR}" \
+  "SubnetCidr=${SUBNET_CIDR}" \
+  "AvailabilityZone=${AVAILABILITY_ZONE}" \
+  "AllowedSshCidr=${ALLOWED_SSH_CIDR}"
 
 save_state vpc_id           "$(stack_output "${NETWORK_STACK}" VpcId)"
 save_state subnet_id        "$(stack_output "${NETWORK_STACK}" SubnetId)"

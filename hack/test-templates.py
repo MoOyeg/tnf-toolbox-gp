@@ -81,6 +81,10 @@ def test_every_template_renders():
     print("\nJinja templates")
     for path in sorted(glob.glob(f"{ROOT}/deploy/**/*.j2", recursive=True)):
         rel = os.path.relpath(path, ROOT)
+        # Galaxy collections install into the tree and ship their own test
+        # templates, which are not ours to render.
+        if "ansible_collections" in rel:
+            continue
         try:
             render(path)
             check(rel, True)

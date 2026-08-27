@@ -1,13 +1,18 @@
 ---
 # ansible-galaxy collection install -r collections/requirements.yml
+#
+# Only what is actually used. amazon.aws and community.general were listed here
+# once and used nowhere: CloudFormation is driven by the scripts in
+# deploy/aws-infra/, not by Ansible. community.general also pulled in a version
+# that does not support ansible-core 2.14, which broke every playbook before it
+# ran a single task.
 collections:
+  # Every k8s object in every role. Note this executes on the bastion, so the
+  # 'kubernetes' Python library has to be installed there too -- the common
+  # role does that.
   - name: kubernetes.core
-    version: ">=3.0.0"
-  - name: amazon.aws
-    version: ">=7.0.0"
+    version: ">=3.0.0,<7.0.0"
+
+  # seboolean, in the loadbalancer role.
   - name: ansible.posix
     version: ">=1.5.0"
-  - name: community.general
-    version: ">=8.0.0"
-  - name: containers.podman
-    version: ">=1.13.0"

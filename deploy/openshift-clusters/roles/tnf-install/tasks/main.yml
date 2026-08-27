@@ -1,11 +1,35 @@
 ---
-- name: Check whether this cluster has already been installed
+# The presence of auth/kubeconfig proves nothing. `openshift-install create
+# ignition-configs` writes it, so a run that failed before launching a single
+# instance still leaves one behind -- and treating that as "installed" skips
+# the install and then fences a cluster that does not exist.
+#
+# The only trustworthy signal is the cluster answering.
+- name: Look for an existing kubeconfig
   ansible.builtin.stat:
     path: "{{ kubeconfig }}"
   register: existing_kubeconfig
 
+- name: Ask the cluster whether it is actually installed
+  ansible.builtin.command: >-
+    oc --request-timeout=15s get clusterversion version
+    -o jsonpath={.status.conditions[?(@.type=="Available")].status}
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+  register: existing_clusterversion
+  changed_when: false
+  failed_when: false
+  when: existing_kubeconfig.stat.exists
+
+- name: Record whether a working cluster is already present
+  ansible.builtin.set_fact:
+    cluster_already_installed: >-
+      {{ existing_kubeconfig.stat.exists
+         and existing_clusterversion.rc | default(1) == 0
+         and existing_clusterversion.stdout | default('') == 'True' }}
+
 - name: Install a new TNF cluster
-  when: not existing_kubeconfig.stat.exists
+  when: not cluster_already_installed
   block:
     - name: Generate install-config and ignition
       ansible.builtin.include_tasks: render.yml
@@ -20,13 +44,14 @@
       ansible.builtin.include_tasks: finish.yml
 
 - name: Report an existing cluster
-  when: existing_kubeconfig.stat.exists
+  when: cluster_already_installed
   ansible.builtin.debug:
     msg: >-
       {{ kubeconfig }} already exists, so the install is being skipped. Run
       'make clean' to delete the cluster and its nodes before reinstalling.
 
-# Always run: idempotent, and it is the step most likely to need re-applying
-# after the TNF controller reconciles the stonith devices.
+# Idempotent, and the step most likely to need re-applying after the TNF
+# controller reconciles the stonith devices -- but only against a cluster that
+# is actually up.
 - name: Tune and verify fencing
   ansible.builtin.include_tasks: fencing.yml

@@ -1,0 +1,123 @@
+# Deploy log
+
+What actually broke on real hardware, and what fixed it. Kept because the
+failures are more useful than the successes: every one of these was invisible
+to static checking and would have cost someone else the same hour.
+
+## Run 1 — 2026-08-27, us-east-2, account 749168934378
+
+`g4dn.metal` in `us-east-2b`, OCP 4.22.10, G/VT vCPU quota 768.
+
+### 1. Bastion user-data died on a package that does not exist
+
+`dnf install -y podman haproxy python3 python3-pip jq` under `set -e`.
+**`podman` is not in the Amazon Linux 2023 repositories.** The install failed,
+`set -e` aborted the script, and everything after it — `hostnamectl`, the
+directory creation — never ran. cloud-init reported `status: error` and the
+bastion came up with the wrong hostname and no haproxy.
+
+Nothing needed podman: it was left over from the shim's container deployment
+path, which Ansible does not use (it runs the shim from a venv under systemd).
+
+*Fix:* user-data now does one thing, sets the hostname, and does not abort. Every
+package is installed by the roles, which are idempotent and re-runnable —
+whereas user-data runs once, at first boot, and fixing it means replacing the
+instance. `containers.podman` was also dropped from the collection requirements.
+
+### 2. A no-op stack update hung forever
+
+`create_or_update_stack` piped `aws cloudformation update-stack` into
+`grep -q 'No updates are to be performed'` to detect a no-op. Under
+`set -o pipefail` the pipeline inherits the CLI's **non-zero** exit even when
+the grep matched, so the `if !` branch ran `aws cloudformation wait
+stack-update-complete` against a stack that was never going to update. It sat
+there until killed.
+
+*Fix:* capture the output and exit code separately and branch on both.
+
+### 3. CloudFormation could not carry an ignition config at all
+
+```
+Error parsing parameter '--parameters': Expected: '=', received: '"'
+ParameterKey=Master0UserData,ParameterValue={"ignition":{"version":"3.4.0",...
+```
+
+The CLI's shorthand `--parameters` syntax cannot carry a value containing `=`,
+`,` or a quote. An ignition pointer is all three. This made the master node
+user-data impossible to pass — the core mechanism of the whole install.
+
+*Fix:* parameters are built as JSON with `jq` and passed as `--parameters
+file://...`. Values are split on the *first* `=` only, so a password containing
+one survives. Covered now by `hack/test-common-sh.sh`, which round-trips a real
+ignition config and a password containing `"`, `,` and `=`.
+
+### 4. "Already installed" was checked against a file the installer creates early
+
+The idempotency guard skipped the install when `auth/kubeconfig` existed. But
+`openshift-install create ignition-configs` writes that file — so a run that
+failed *before launching a single instance* left one behind. The next run
+concluded the cluster was installed, skipped the install entirely, and went
+straight to configuring Pacemaker fencing on a cluster that did not exist.
+
+*Fix:* the guard asks the cluster (`oc get clusterversion`), not the filesystem.
+A related fix in `render.yml` discards ignition from an attempt that never
+launched, so corrected install-config changes cannot be silently paired with
+stale ignition.
+
+### 5. `/dev/xvdb` is already in use on `g4dn.metal`
+
+```
+Invalid value '/dev/xvdb' for unixDevice. Attachment point /dev/xvdb is
+already in use
+```
+
+`g4dn.metal` ships two 900 GiB instance-store NVMe drives, and the AMI's block
+device mapping already claims the early names. Both instances launched fine —
+only the EBS data volume attachment failed, which rolled the whole stack back.
+
+*Fix:* the data volume attaches at `/dev/sdf`, the range AWS reserves for
+additional EBS volumes, and it is a parameter now. On Nitro the name is
+cosmetic anyway; the `lvm-storage` role finds the volume by id under
+`/dev/disk/by-id`, which is why that design choice survived this bug unchanged.
+
+### 6. A rolled-back stack blocked every retry
+
+A stack in `ROLLBACK_COMPLETE` cannot be updated, only deleted and recreated, so
+the retry after bug 5 would have failed with an unhelpful "is in
+ROLLBACK_COMPLETE state and can not be updated".
+
+*Fix:* `create_or_update_stack` deletes a stack found in `ROLLBACK_COMPLETE`,
+`ROLLBACK_FAILED`, `CREATE_FAILED` or `REVIEW_IN_PROGRESS`, and waits out any
+`*_IN_PROGRESS` state before deciding.
+
+### 7. Ansible configuration would not load at all
+
+Two problems at once: `stdout_callback = yaml` resolves to
+`community.general.yaml`, **removed in community.general 12**, and the
+`community.general` version Galaxy installed does not support ansible-core
+2.14. Every playbook failed before running a task.
+
+Neither `community.general` nor `amazon.aws` was used anywhere —
+CloudFormation is driven by the scripts, not by Ansible.
+
+*Fix:* the requirements list only `kubernetes.core` and `ansible.posix`, and
+`ansible.cfg` uses the built-in default callback with `result_format = yaml`.
+
+### 8. `kubernetes.core` had no client library to import
+
+`kubernetes.core.k8s` executes on the target, so the `kubernetes` Python
+library has to be on the bastion. It was not installed anywhere, and would have
+failed at the first k8s task in stage 2 — three stages after the mistake.
+
+*Fix:* the `common` role installs it and then asserts the interpreter Ansible
+actually uses can import it.
+
+## What this says about the static checks
+
+They caught nothing here, and that is the honest lesson. Every one of these
+bugs lived in the seam between components — the CLI's parameter encoding, a
+package repository's contents, a device-name namespace, a file's meaning.
+
+Two are now covered by tests that would have caught them
+(`hack/test-common-sh.sh` for the parameter encoding, and the same suite could
+be extended). The rest are the kind only a real deploy finds.

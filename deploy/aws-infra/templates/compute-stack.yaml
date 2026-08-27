@@ -58,6 +58,17 @@ Parameters:
     Type: Number
     Default: 500
     Description: EBS gp3 volume backing LVM Storage on each node.
+  DataVolumeDevice:
+    Type: String
+    Default: /dev/sdf
+    Description: >-
+      Attachment point for the data volume. Must not be /dev/xvdb or /dev/xvdc:
+      g4dn.metal ships two instance-store NVMe drives that already occupy those
+      names, and the attachment fails with "Attachment point /dev/xvdb is
+      already in use". /dev/sd[f-p] is the range AWS reserves for additional
+      EBS volumes. On Nitro the name is cosmetic anyway -- the volume shows up
+      as an NVMe device, which is why the lvm-storage role finds it by volume id
+      under /dev/disk/by-id rather than by this name.
 
 Resources:
   Master0:
@@ -147,14 +158,14 @@ Resources:
     Properties:
       InstanceId: !Ref Master0
       VolumeId: !Ref Master0DataVolume
-      Device: /dev/xvdb
+      Device: !Ref DataVolumeDevice
 
   Master1DataAttachment:
     Type: AWS::EC2::VolumeAttachment
     Properties:
       InstanceId: !Ref Master1
       VolumeId: !Ref Master1DataVolume
-      Device: /dev/xvdb
+      Device: !Ref DataVolumeDevice
 
 Outputs:
   Master0InstanceId:

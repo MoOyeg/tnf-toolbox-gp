@@ -4,6 +4,36 @@
 # Both run here rather than on a workstation because api-int resolves only
 # inside the VPC, through the Route53 private hosted zone.
 
+# Named explicitly rather than assumed. Several roles shell out to jq, and it
+# only happens to be preinstalled on Amazon Linux 2023.
+- name: Install the host packages the roles shell out to
+  become: true
+  ansible.builtin.dnf:
+    name:
+      - jq
+      - tar
+      - gzip
+      - python3-pip
+      - openssl
+    state: present
+
+# kubernetes.core.k8s executes on the target, not the controller, so the client
+# library has to be importable by the bastion's interpreter. Without it every
+# k8s task fails with a bare "Failed to import the required Python library",
+# which is a confusing way to learn about a missing dependency four stages in.
+- name: Install the Kubernetes client library for kubernetes.core
+  become: true
+  ansible.builtin.pip:
+    name:
+      - kubernetes>=24.2.0
+      - PyYAML
+    state: present
+    extra_args: --upgrade
+
+- name: Confirm the interpreter Ansible uses can import it
+  ansible.builtin.command: "{{ ansible_python_interpreter | default('/usr/bin/python3') }} -c 'import kubernetes'"
+  changed_when: false
+
 - name: Check for an existing openshift-install of the right version
   ansible.builtin.command: "{{ bin_dir }}/openshift-install version"
   register: installer_version

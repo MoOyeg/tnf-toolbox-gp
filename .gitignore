@@ -9,10 +9,18 @@ deploy/aws-infra/instance-data/
 deploy/openshift-clusters/inventory.ini
 deploy/openshift-clusters/inventory.ini.*
 deploy/openshift-clusters/clusters/
-logs/
+logs/*
+!logs/.gitkeep
 
 # Installer artifacts
 *.ign
 auth/
 metadata.json
 .openshift_install*
+
+# Installed by 'ansible-galaxy collection install -r collections/requirements.yml'
+deploy/openshift-clusters/collections/ansible_collections/
+
+# Python bytecode
+__pycache__/
+*.pyc

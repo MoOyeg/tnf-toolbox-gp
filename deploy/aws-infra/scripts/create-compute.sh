@@ -24,20 +24,24 @@ M1_USERDATA="$(cat "$3")"
 [ ${#M0_USERDATA} -le 4096 ] || die "master-0 user-data is ${#M0_USERDATA} bytes; CloudFormation caps parameters at 4096"
 [ ${#M1_USERDATA} -le 4096 ] || die "master-1 user-data is ${#M1_USERDATA} bytes; CloudFormation caps parameters at 4096"
 
+# Two bare metal instances at once is exactly where "Internal error on launch"
+# shows up, and a failure on one rolls back the other. Retry before giving up.
+export STACK_CREATE_ATTEMPTS="${COMPUTE_STACK_ATTEMPTS:-3}"
+
 create_or_update_stack "${COMPUTE_STACK}" "${TEMPLATE_DIR}/compute-stack.yaml" \
-  "ParameterKey=ClusterName,ParameterValue=${CLUSTER_NAME}" \
-  "ParameterKey=SubnetId,ParameterValue=$(read_state subnet_id)" \
-  "ParameterKey=ClusterSecurityGroupId,ParameterValue=$(read_state cluster_sg_id)" \
-  "ParameterKey=AvailabilityZone,ParameterValue=${AVAILABILITY_ZONE}" \
-  "ParameterKey=RhcosAmi,ParameterValue=${AMI}" \
-  "ParameterKey=MasterInstanceType,ParameterValue=${MASTER_INSTANCE_TYPE}" \
-  "ParameterKey=SshKeyName,ParameterValue=${SSH_KEY_NAME}" \
-  "ParameterKey=Master0PrivateIp,ParameterValue=${MASTER0_PRIVATE_IP}" \
-  "ParameterKey=Master1PrivateIp,ParameterValue=${MASTER1_PRIVATE_IP}" \
-  "ParameterKey=Master0UserData,ParameterValue=${M0_USERDATA}" \
-  "ParameterKey=Master1UserData,ParameterValue=${M1_USERDATA}" \
-  "ParameterKey=RootVolumeSizeGiB,ParameterValue=${ROOT_VOLUME_GIB}" \
-  "ParameterKey=DataVolumeSizeGiB,ParameterValue=${DATA_VOLUME_GIB}"
+  "ClusterName=${CLUSTER_NAME}" \
+  "SubnetId=$(read_state subnet_id)" \
+  "ClusterSecurityGroupId=$(read_state cluster_sg_id)" \
+  "AvailabilityZone=${AVAILABILITY_ZONE}" \
+  "RhcosAmi=${AMI}" \
+  "MasterInstanceType=${MASTER_INSTANCE_TYPE}" \
+  "SshKeyName=${SSH_KEY_NAME}" \
+  "Master0PrivateIp=${MASTER0_PRIVATE_IP}" \
+  "Master1PrivateIp=${MASTER1_PRIVATE_IP}" \
+  "Master0UserData=${M0_USERDATA}" \
+  "Master1UserData=${M1_USERDATA}" \
+  "RootVolumeSizeGiB=${ROOT_VOLUME_GIB}" \
+  "DataVolumeSizeGiB=${DATA_VOLUME_GIB}"
 
 save_state master0_instance_id  "$(stack_output "${COMPUTE_STACK}" Master0InstanceId)"
 save_state master1_instance_id  "$(stack_output "${COMPUTE_STACK}" Master1InstanceId)"

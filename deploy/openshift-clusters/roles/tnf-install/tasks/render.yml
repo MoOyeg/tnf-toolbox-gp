@@ -1,6 +1,26 @@
 ---
 # Render install-config.yaml and turn it into ignition.
 
+# Ignition has to match the install-config it came from. If a previous attempt
+# left artifacts behind but never launched anything, they are regenerated from
+# scratch -- otherwise a corrected install-config (a fixed fencing address, say)
+# would be silently paired with the old ignition, because the `creates:` guards
+# below would skip regeneration.
+#
+# Once the nodes exist they are already igniting against the current config, so
+# it is left alone and the run resumes instead.
+- name: Check whether the control-plane nodes have already been launched
+  ansible.builtin.stat:
+    path: "{{ repo_root }}/deploy/aws-infra/instance-data/master0_instance_id"
+  delegate_to: localhost
+  register: nodes_launched
+
+- name: Discard artifacts from an attempt that never launched
+  ansible.builtin.file:
+    path: "{{ install_dir }}"
+    state: absent
+  when: not nodes_launched.stat.exists
+
 - name: Create the install directory
   ansible.builtin.file:
     path: "{{ install_dir }}"

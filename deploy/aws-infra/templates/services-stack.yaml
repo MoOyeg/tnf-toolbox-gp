@@ -41,8 +41,9 @@ Parameters:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-6.1-x86_64
     Description: >-
-      Amazon Linux 2023 rather than RHEL: haproxy, podman and python3 are all in
-      its default repos, so the bastion needs no Red Hat subscription.
+      Amazon Linux 2023 rather than RHEL: haproxy, python3 and jq are all in its
+      default repos, so the bastion needs no Red Hat subscription. (podman is
+      not, which is why nothing here depends on it.)
   BastionVolumeSizeGiB:
     Type: Number
     Default: 50
@@ -108,13 +109,17 @@ Resources:
       UserData:
         Fn::Base64: !Sub |
           #!/bin/bash
-          set -euxo pipefail
-          # Only the packages Ansible needs to be able to connect and work.
-          # Everything else is configured by the redfish-shim and loadbalancer
-          # roles, so that reconfiguring does not mean replacing the instance.
-          dnf install -y podman haproxy python3 python3-pip jq
-          mkdir -p /etc/redfish-ec2 /srv/ignition
-          hostnamectl set-hostname ${ClusterName}-bastion
+          # Deliberately minimal. Every package and directory this host needs is
+          # installed by the redfish-shim and loadbalancer roles, which are
+          # idempotent and re-runnable -- whereas user-data runs exactly once,
+          # at first boot, and fixing a mistake in it means replacing the
+          # instance. Anything that can be done by Ansible is done by Ansible.
+          #
+          # It also must not abort. An earlier version installed packages here
+          # with 'set -e' and one unavailable package (podman, which is not in
+          # the Amazon Linux 2023 repositories) took the hostname with it.
+          set -uxo pipefail
+          hostnamectl set-hostname ${ClusterName}-bastion || true
       Tags:
         - Key: Name
           Value: !Sub '${ClusterName}-bastion'

@@ -13,14 +13,14 @@ AMI="$1"
 USERDATA="$(cat "$2")"
 
 create_or_update_stack "${BOOTSTRAP_STACK}" "${TEMPLATE_DIR}/bootstrap-stack.yaml" \
-  "ParameterKey=ClusterName,ParameterValue=${CLUSTER_NAME}" \
-  "ParameterKey=SubnetId,ParameterValue=$(read_state subnet_id)" \
-  "ParameterKey=ClusterSecurityGroupId,ParameterValue=$(read_state cluster_sg_id)" \
-  "ParameterKey=RhcosAmi,ParameterValue=${AMI}" \
-  "ParameterKey=BootstrapInstanceType,ParameterValue=${BOOTSTRAP_INSTANCE_TYPE}" \
-  "ParameterKey=SshKeyName,ParameterValue=${SSH_KEY_NAME}" \
-  "ParameterKey=BootstrapPrivateIp,ParameterValue=${BOOTSTRAP_PRIVATE_IP}" \
-  "ParameterKey=BootstrapUserData,ParameterValue=${USERDATA}"
+  "ClusterName=${CLUSTER_NAME}" \
+  "SubnetId=$(read_state subnet_id)" \
+  "ClusterSecurityGroupId=$(read_state cluster_sg_id)" \
+  "RhcosAmi=${AMI}" \
+  "BootstrapInstanceType=${BOOTSTRAP_INSTANCE_TYPE}" \
+  "SshKeyName=${SSH_KEY_NAME}" \
+  "BootstrapPrivateIp=${BOOTSTRAP_PRIVATE_IP}" \
+  "BootstrapUserData=${USERDATA}"
 
 save_state bootstrap_instance_id "$(stack_output "${BOOTSTRAP_STACK}" BootstrapInstanceId)"
 green "bootstrap node launched"

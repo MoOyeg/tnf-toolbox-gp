@@ -57,7 +57,29 @@ stack_output() {
     --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" --output text 2>/dev/null
 }
 
-# create_or_update_stack <stack> <template> [ParameterKey=..,ParameterValue=.. ...]
+# create_or_update_stack <stack> <template> [Key=Value ...]
+#
+# Parameters are passed as plain Key=Value and converted to a JSON file here.
+# The CLI's shorthand syntax (ParameterKey=..,ParameterValue=..) cannot carry a
+# value containing '=', ',' or a quote, which means it cannot carry an ignition
+# config at all -- it fails with "Expected: '=', received: '\"'". Building the
+# JSON with jq also removes every quoting question about the BMC password.
+build_stack_parameters() {
+  local out="$1"
+  shift
+  local pair key value
+  : > "${out}.entries"
+  for pair in "$@"; do
+    key="${pair%%=*}"
+    # Split on the first '=' only; values may legitimately contain more.
+    value="${pair#*=}"
+    jq -n --arg k "${key}" --arg v "${value}" \
+      '{ParameterKey: $k, ParameterValue: $v}' >> "${out}.entries"
+  done
+  jq -s '.' < "${out}.entries" > "${out}"
+  rm -f "${out}.entries"
+}
+
 create_or_update_stack() {
   local stack="$1" template="$2"
   shift 2
@@ -68,26 +90,107 @@ create_or_update_stack() {
     --capabilities CAPABILITY_IAM
     --tags "Key=tnf-cluster,Value=${CLUSTER_NAME}"
   )
-  [ $# -gt 0 ] && args+=(--parameters "$@")
+
+  local params_file=""
+  if [ $# -gt 0 ]; then
+    params_file="$(mktemp -t "${stack}-params-XXXXXX.json")"
+    build_stack_parameters "${params_file}" "$@"
+    args+=(--parameters "file://${params_file}")
+  fi
+
+  # A stack that rolled back during creation never existed as far as AWS is
+  # concerned: it cannot be updated, only deleted and recreated. Without this a
+  # retry after a failed create fails again with an unhelpful
+  # "is in ROLLBACK_COMPLETE state and can not be updated".
+  local current_status
+  current_status="$(stack_status "${stack}")"
+  case "${current_status}" in
+    ROLLBACK_COMPLETE|ROLLBACK_FAILED|CREATE_FAILED|REVIEW_IN_PROGRESS)
+      info "stack ${stack} is ${current_status}; deleting it so it can be recreated"
+      delete_stack "${stack}"
+      ;;
+    *_IN_PROGRESS)
+      info "stack ${stack} is ${current_status}; waiting for it to settle"
+      aws cloudformation wait stack-create-complete --stack-name "${stack}" 2>/dev/null || true
+      aws cloudformation wait stack-rollback-complete --stack-name "${stack}" 2>/dev/null || true
+      aws cloudformation wait stack-delete-complete --stack-name "${stack}" 2>/dev/null || true
+      current_status="$(stack_status "${stack}")"
+      if [ "${current_status}" = "ROLLBACK_COMPLETE" ]; then
+        delete_stack "${stack}"
+      fi
+      ;;
+  esac
 
   if stack_exists "${stack}"; then
     info "updating stack ${stack}"
-    # A no-op update is reported as a failure by the CLI; that is not an error.
-    if ! aws cloudformation update-stack "${args[@]}" 2>&1 | tee /dev/stderr \
-         | grep -q 'No updates are to be performed'; then
-      aws cloudformation wait stack-update-complete --stack-name "${stack}"
+    # The CLI reports a no-op update as a failure, so the exit code and the
+    # message have to be inspected separately. Piping update-stack into grep
+    # does not work here: under `set -o pipefail` the pipeline inherits the
+    # CLI's non-zero exit even when the grep matched, and the caller then waits
+    # forever for an update that is never going to start.
+    local update_output update_rc
+    set +e
+    update_output="$(aws cloudformation update-stack "${args[@]}" 2>&1)"
+    update_rc=$?
+    set -e
+
+    if [ "${update_rc}" -eq 0 ]; then
+      aws cloudformation wait stack-update-complete --stack-name "${stack}" || {
+        red "stack ${stack} failed to update; most recent failure events:"
+        aws cloudformation describe-stack-events --stack-name "${stack}" \
+          --query 'StackEvents[?contains(ResourceStatus, `FAILED`)].[LogicalResourceId,ResourceStatusReason]' \
+          --output table >&2
+        [ -n "${params_file}" ] && rm -f "${params_file}"
+        die "stack ${stack} did not update"
+      }
+    elif grep -q 'No updates are to be performed' <<< "${update_output}"; then
+      info "stack ${stack} is already up to date"
+    else
+      red "${update_output}"
+      [ -n "${params_file}" ] && rm -f "${params_file}"
+      die "stack ${stack} update failed"
     fi
   else
-    info "creating stack ${stack}"
-    aws cloudformation create-stack "${args[@]}" >/dev/null
-    aws cloudformation wait stack-create-complete --stack-name "${stack}" || {
-      red "stack ${stack} failed; most recent failure events:"
-      aws cloudformation describe-stack-events --stack-name "${stack}" \
-        --query 'StackEvents[?contains(ResourceStatus, `FAILED`)].[LogicalResourceId,ResourceStatusReason]' \
-        --output table >&2
+    # Bare metal launches fail transiently often enough to matter, and one
+    # unlucky instance rolls the whole stack back -- taking a healthy,
+    # already-running g4dn.metal with it. Retrying is worth real money here, so
+    # callers that launch metal set STACK_CREATE_ATTEMPTS above 1.
+    local attempt=1
+    local max_attempts="${STACK_CREATE_ATTEMPTS:-1}"
+    while :; do
+      info "creating stack ${stack} (attempt ${attempt}/${max_attempts})"
+      aws cloudformation create-stack "${args[@]}" >/dev/null
+
+      if aws cloudformation wait stack-create-complete --stack-name "${stack}"; then
+        break
+      fi
+
+      local reasons
+      reasons="$(aws cloudformation describe-stack-events --stack-name "${stack}" \
+        --query 'StackEvents[?ResourceStatus==`CREATE_FAILED`].[LogicalResourceId,ResourceStatusReason]' \
+        --output text 2>/dev/null)"
+      red "stack ${stack} failed to create:"
+      printf '%s\n' "${reasons}" >&2
+
+      # Retry only what AWS might do differently next time. A bad template or a
+      # rejected parameter fails identically forever, and retrying it just
+      # burns fifteen minutes per attempt.
+      if [ "${attempt}" -lt "${max_attempts}" ] && grep -qE \
+           'Internal error on launch|did not stabilize|InsufficientInstanceCapacity|Server\.InternalError|Unavailable' \
+           <<< "${reasons}"; then
+        info "that is a transient AWS-side failure; deleting and retrying"
+        delete_stack "${stack}"
+        attempt=$((attempt + 1))
+        continue
+      fi
+
+      [ -n "${params_file}" ] && rm -f "${params_file}"
       die "stack ${stack} did not create"
-    }
+    done
   fi
+
+  # The parameter file holds the BMC password and the ignition pointers.
+  [ -n "${params_file}" ] && rm -f "${params_file}"
   green "stack ${stack}: $(stack_status "${stack}")"
 }
 
