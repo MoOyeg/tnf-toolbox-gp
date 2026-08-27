@@ -33,6 +33,15 @@
   ansible.builtin.debug:
     msg: "{{ gpu_resources.stdout_lines }}"
 
+# The passthrough resource name is read back from the cluster rather than
+# assumed. It is derived from the GPU's model string and has been re-cased
+# between operator versions.
+- name: Discover the passthrough GPU resource name
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: discover-gpu-resource
+  when: gpu_sandbox_workloads | bool
+
 # On the base cluster each mode should have produced its own resource name. A
 # vm-passthrough node advertising nvidia.com/gpu means vfio-manager did not
 # take the GPUs, and every later hostDevices request would fail to schedule.

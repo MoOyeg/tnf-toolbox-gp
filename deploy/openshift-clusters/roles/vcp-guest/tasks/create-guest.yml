@@ -52,7 +52,7 @@
 - name: "{{ guest_name }}: wait for the hosted control plane to become available"
   ansible.builtin.command: >-
     oc get hostedcluster {{ guest_name }} -n {{ hcp_namespace }}
-    -o jsonpath={.status.conditions[?(@.type=="Available")].status}
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
   register: hc_available

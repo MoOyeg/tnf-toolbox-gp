@@ -17,6 +17,16 @@
       vars:
         op_kubeconfig: "{{ kubeconfig }}"
 
+    # HyperConverged's permittedHostDevices must name the resource the GPU
+    # Operator actually advertises, so it is read from the cluster rather than
+    # taken from a constant.
+    - name: Discover the passthrough GPU resource name
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: discover-gpu-resource
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+
     - name: Install OpenShift Virtualization
       ansible.builtin.include_role:
         name: cnv

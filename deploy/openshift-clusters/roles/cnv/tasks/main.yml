@@ -44,7 +44,7 @@
 - name: Wait for HyperConverged to report Available
   ansible.builtin.command: >-
     oc get hyperconverged {{ hco_name }} -n {{ cnv_namespace }}
-    -o jsonpath={.status.conditions[?(@.type=="Available")].status}
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
   register: hco_available

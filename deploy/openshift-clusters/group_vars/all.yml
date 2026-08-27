@@ -66,7 +66,7 @@ acm_namespace: open-cluster-management
 # on; nvidia.com/TU104GL_Tesla_T4 is the resource name the GPU Operator's
 # sandbox device plugin advertises for them.
 gpu_pci_vendor_device: "10DE:1EB8"
-gpu_resource_name: "nvidia.com/TU104GL_Tesla_T4"
+gpu_resource_name: "nvidia.com/TU104GL_TESLA_T4"
 gpu_device_label: "nvidia.com/gpu.workload.config"
 storage_class: "lvms-vg1"
 

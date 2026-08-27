@@ -97,7 +97,7 @@
 - name: Wait for the local-cluster managed cluster to be available
   ansible.builtin.command: >-
     oc get managedcluster local-cluster
-    -o jsonpath={.status.conditions[?(@.type=="ManagedClusterConditionAvailable")].status}
+    -o jsonpath='{.status.conditions[?(@.type=="ManagedClusterConditionAvailable")].status}'
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
   register: local_cluster
@@ -109,7 +109,7 @@
 - name: Wait for the hypershift addon to be available on local-cluster
   ansible.builtin.command: >-
     oc get managedclusteraddon hypershift-addon -n local-cluster
-    -o jsonpath={.status.conditions[?(@.type=="Available")].status}
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
   register: hypershift_addon

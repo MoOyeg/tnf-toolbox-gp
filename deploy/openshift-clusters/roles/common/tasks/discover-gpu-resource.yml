@@ -1,0 +1,45 @@
+---
+# Discover the resource name the GPU Operator advertises for passthrough GPUs.
+#
+# This is deliberately not a constant. The name is derived by the sandbox device
+# plugin from the PCI device's own model string, so it varies by GPU and has
+# been re-cased between operator versions -- a Tesla T4 shows up as
+# `nvidia.com/TU104GL_TESLA_T4`, not the `TU104GL_Tesla_T4` that NVIDIA's own
+# older documentation shows.
+#
+# Getting it wrong is expensive and quiet: HyperConverged would permit a device
+# nothing advertises, and every guest NodePool would sit Pending forever with no
+# obvious cause. Asking the cluster costs one API call.
+
+- name: Discover the passthrough GPU resource name
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get nodes -o json
+    | jq -r '[.items[].status.allocatable // {} | keys[]]
+             | unique[]
+             | select(startswith("nvidia.com/"))
+             | select(. != "nvidia.com/gpu")'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: discovered_gpu_resource
+  changed_when: false
+  retries: 30
+  delay: 20
+  until: discovered_gpu_resource.rc == 0 and discovered_gpu_resource.stdout != ""
+
+- name: Fail if more than one passthrough resource is advertised
+  ansible.builtin.assert:
+    that: discovered_gpu_resource.stdout_lines | length == 1
+    fail_msg: >-
+      Expected exactly one passthrough GPU resource but found
+      {{ discovered_gpu_resource.stdout_lines }}. Mixed GPU models are not
+      something this toolbox handles; set gpu_resource_name explicitly.
+    success_msg: "Found one passthrough GPU resource"
+
+- name: Use the discovered resource name
+  ansible.builtin.set_fact:
+    gpu_resource_name: "{{ discovered_gpu_resource.stdout_lines | first }}"
+
+- name: Report the resource name
+  ansible.builtin.debug:
+    msg: "Passthrough GPU resource: {{ gpu_resource_name }}"

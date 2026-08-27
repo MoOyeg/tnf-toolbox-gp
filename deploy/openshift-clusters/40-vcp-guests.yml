@@ -9,6 +9,13 @@
     PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
 
   tasks:
+    - name: Discover the passthrough GPU resource name
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: discover-gpu-resource
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+
     - name: Check the GPU budget before creating anything
       ansible.builtin.shell: >-
         set -o pipefail;

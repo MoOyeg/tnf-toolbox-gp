@@ -56,7 +56,7 @@
     - name: Confirm the pool is not degraded
       ansible.builtin.command: >-
         oc get mcp {{ target_mcp }}
-        -o jsonpath={.status.conditions[?(@.type=="Degraded")].status}
+        -o jsonpath='{.status.conditions[?(@.type=="Degraded")].status}'
       environment:
         KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
       register: mcp_degraded

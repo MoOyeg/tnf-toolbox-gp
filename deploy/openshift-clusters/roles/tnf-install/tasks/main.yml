@@ -13,7 +13,7 @@
 - name: Ask the cluster whether it is actually installed
   ansible.builtin.command: >-
     oc --request-timeout=15s get clusterversion version
-    -o jsonpath={.status.conditions[?(@.type=="Available")].status}
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
   environment:
     KUBECONFIG: "{{ kubeconfig }}"
   register: existing_clusterversion

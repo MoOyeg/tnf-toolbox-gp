@@ -241,6 +241,31 @@ def test_cloudformation():
         check(f"{rel}: declares outputs", bool(template.get("Outputs")))
 
 
+def test_jsonpath_filters_are_shell_quoted():
+    """A jsonpath filter passed to ansible.builtin.command must be single-quoted.
+
+    The command module splits its argument with shlex, which strips bare double
+    quotes. `jsonpath={.status.conditions[?(@.type=="Available")].status}`
+    therefore reaches oc as `@.type==Available`, matches nothing, and returns an
+    empty string -- so a wait on it never succeeds and the play hangs until it
+    times out. Wrapping the whole jsonpath in single quotes preserves them.
+    """
+    print("\njsonpath quoting")
+    offenders = []
+    playbook_dir = f"{ROOT}/deploy/openshift-clusters"
+    for path in sorted(glob.glob(f"{playbook_dir}/**/*.yml", recursive=True)):
+        if "ansible_collections" in path:
+            continue
+        for lineno, line in enumerate(open(path, encoding="utf-8"), 1):
+            if "jsonpath={" in line and '"' in line.split("jsonpath={", 1)[1]:
+                offenders.append(f"{os.path.relpath(path, ROOT)}:{lineno}")
+    check(
+        "every jsonpath filter containing a quote is single-quoted",
+        not offenders,
+        f"unquoted at {offenders}",
+    )
+
+
 def main():
     test_every_template_renders()
     test_install_config()
@@ -248,6 +273,7 @@ def main():
     test_redfish_shim_config()
     test_haproxy_config()
     test_cloudformation()
+    test_jsonpath_filters_are_shell_quoted()
 
     print()
     if FAILURES:
