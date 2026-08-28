@@ -7,6 +7,13 @@
 # exact manifests that produced a cluster on disk. When a NodePool sits Pending
 # a week later, that file is the difference between reading what was asked for
 # and guessing.
+#
+# --render-sensitive is required, not optional. Without it hcp omits every
+# Secret while the HostedCluster still references them, so the cluster is
+# created and then sits forever on
+# "failed to get pull secret: Secret \"<name>-pull-secret\" not found" with no
+# control-plane pods. It does mean the saved manifest contains the pull secret
+# and the etcd encryption key, which is why it is written 0600.
 - name: "{{ guest_name }}: render the manifests"
   ansible.builtin.command:
     cmd: >-
@@ -23,6 +30,7 @@
       --etcd-storage-class {{ storage_class }}
       --host-device-name "{{ gpu_resource_name }},count:{{ guest_gpus_per_node }}"
       --render
+      --render-sensitive
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
   register: hcp_render
@@ -45,6 +53,17 @@
 # hcp names the NodePool itself. It happens to match the cluster name today,
 # but the waits below should not depend on that -- reading it back from the
 # manifest that was actually applied costs nothing and cannot drift.
+# The pull secret is what the HostedCluster blocks on if --render-sensitive is
+# ever dropped, so its absence is caught here rather than 40 minutes later.
+- name: "{{ guest_name }}: confirm the rendered manifests carry their secrets"
+  ansible.builtin.assert:
+    that: "'kind: Secret' in hcp_render.stdout"
+    fail_msg: >-
+      The rendered manifests for {{ guest_name }} contain no Secret. hcp omits
+      them unless --render-sensitive is passed, and the HostedCluster will sit
+      on "failed to get pull secret" forever with no control-plane pods.
+    success_msg: "{{ guest_name }} manifests include the referenced secrets"
+
 - name: "{{ guest_name }}: read the NodePool name out of the rendered manifest"
   ansible.builtin.shell: >-
     set -o pipefail;
