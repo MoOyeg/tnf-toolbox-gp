@@ -15,6 +15,26 @@
 # That is the authoritative signal, it cannot be true before the rollout starts,
 # and it cannot be missed by polling too slowly.
 
+# The pool's target is itself recomputed asynchronously. Reading
+# .spec.configuration.name too soon returns the *previous* rendered config,
+# which every node already matches -- so the wait below would pass instantly
+# for a change that has not begun. Wait for the new MachineConfig to appear in
+# the pool's source list first; only then is the target the one we want.
+- name: Wait for {{ required_machine_config }} to enter the {{ target_mcp }} pool's target
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get mcp {{ target_mcp }} -o json
+    | jq -e --arg mc "{{ required_machine_config }}"
+    '[.spec.configuration.source[].name] | index($mc) != null'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: mcp_source
+  changed_when: false
+  retries: 40
+  delay: 15
+  until: mcp_source.rc == 0
+  when: required_machine_config is defined
+
 - name: Read the {{ target_mcp }} pool's target rendered config
   ansible.builtin.command: >-
     oc get mcp {{ target_mcp }} -o jsonpath={.spec.configuration.name}

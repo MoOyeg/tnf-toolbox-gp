@@ -59,6 +59,8 @@
 # before anything is deployed on top rather than after.
 - name: Wait for the MachineConfig rollout
   ansible.builtin.include_tasks: wait-mcp.yml
+  vars:
+    required_machine_config: "{{ machine_config_name }}"
 
 - name: Label each node with its GPU workload mode
   kubernetes.core.k8s:
