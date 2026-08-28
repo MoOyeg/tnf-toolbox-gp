@@ -9,9 +9,32 @@
 # container workloads on the base cluster and the other's is passed into the
 # virtualized clusters. See docs/gpu-allocation.md.
 
+# Nothing below can run against a node that is rebooting, and re-running this
+# role during an in-flight MachineConfig rollout is normal. `oc debug` on a
+# NotReady node does not fail fast -- it blocked for nearly eight minutes before
+# giving up with a confusing "pods/log ... not found".
+- name: Wait for every control-plane node to be Ready and schedulable
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get nodes -o json
+    | jq -r '.items[]
+    | "\(.metadata.name) \(([.status.conditions[] | select(.type=="Ready") | .status] | first)) \(.spec.unschedulable // false)"'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: node_readiness
+  changed_when: false
+  failed_when: false
+  retries: "{{ (mcp_rollout_timeout | int / 30) | int }}"
+  delay: 30
+  until:
+    - node_readiness.rc == 0
+    - node_readiness.stdout_lines | length == control_plane_nodes | length
+    - node_readiness.stdout_lines | select('search', ' True false$')
+      | list | length == control_plane_nodes | length
+
 - name: Confirm the GPUs are visible to the nodes
   ansible.builtin.command: >-
-    oc debug node/{{ item.name }} --quiet --
+    oc debug node/{{ item.name }} --quiet --request-timeout=120s --
     chroot /host bash -c "lspci -d 10de: -nn | wc -l"
   environment:
     KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
@@ -20,6 +43,9 @@
     label: "{{ item.name }}"
   register: gpu_count
   changed_when: false
+  retries: 5
+  delay: 30
+  until: gpu_count is not failed
 
 - name: Report the GPU count per node
   ansible.builtin.debug:
@@ -79,9 +105,11 @@
   loop_control:
     label: "{{ item.name }} -> {{ item.gpu_workload }}"
 
+# Bounded and retried for the same reason as the check above: a node that has
+# just been uncordoned can still refuse a debug pod for a few seconds.
 - name: Verify the IOMMU is actually on
   ansible.builtin.command: >-
-    oc debug node/{{ item.name }} --quiet --
+    oc debug node/{{ item.name }} --quiet --request-timeout=120s --
     chroot /host bash -c "test -d /sys/kernel/iommu_groups && ls /sys/kernel/iommu_groups | wc -l"
   environment:
     KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
@@ -90,6 +118,9 @@
     label: "{{ item.name }}"
   register: iommu_groups
   changed_when: false
+  retries: 5
+  delay: 30
+  until: iommu_groups.rc == 0 and (iommu_groups.stdout | trim | int) > 0
   failed_when: iommu_groups.rc != 0 or (iommu_groups.stdout | trim | int) == 0
 
 - name: Report the IOMMU group count
