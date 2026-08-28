@@ -33,7 +33,7 @@
 
 - name: "{{ op_package }}: wait for the package manifest to appear"
   ansible.builtin.command: >-
-    oc get packagemanifest {{ op_package }} -n {{ op_source_namespace }}
+    oc get packagemanifests.packages.operators.coreos.com {{ op_package }} -n {{ op_source_namespace }}
     -o jsonpath={.status.defaultChannel}
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
@@ -69,7 +69,7 @@
 # 'kubevirt-hyperconverged' installs CSV 'kubevirt-hyperconverged-operator.vX'.
 - name: "{{ op_package }}: wait for OLM to resolve a CSV"
   ansible.builtin.command: >-
-    oc get subscription {{ op_package }} -n {{ op_namespace }}
+    oc get subscriptions.operators.coreos.com {{ op_package }} -n {{ op_namespace }}
     -o jsonpath={.status.installedCSV}
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
@@ -83,7 +83,7 @@
   block:
     - name: "{{ op_package }}: poll the CSV phase"
       ansible.builtin.command: >-
-        oc get csv {{ installed_csv.stdout }} -n {{ op_namespace }}
+        oc get clusterserviceversions.operators.coreos.com {{ installed_csv.stdout }} -n {{ op_namespace }}
         -o jsonpath={.status.phase}
       environment:
         KUBECONFIG: "{{ op_kubeconfig }}"
@@ -98,9 +98,9 @@
     - name: "{{ op_package }}: collect failure detail"
       ansible.builtin.shell: |
         echo "--- csv ---"
-        oc get csv -n {{ op_namespace }} -o wide 2>&1
+        oc get clusterserviceversions.operators.coreos.com -n {{ op_namespace }} -o wide 2>&1
         echo "--- message ---"
-        oc get csv {{ installed_csv.stdout }} -n {{ op_namespace }} \
+        oc get clusterserviceversions.operators.coreos.com {{ installed_csv.stdout }} -n {{ op_namespace }} \
           -o jsonpath='{.status.phase}{": "}{.status.message}{"\n"}' 2>&1
         echo "--- events ---"
         oc get events -n {{ op_namespace }} --sort-by=.lastTimestamp 2>&1 | tail -20

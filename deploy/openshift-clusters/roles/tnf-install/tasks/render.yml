@@ -21,6 +21,17 @@
     state: absent
   when: not nodes_launched.stat.exists
 
+# oc caches API discovery per server address. A rebuilt cluster reuses the same
+# api.<cluster>.<domain>, so the cache from the previous cluster is served for
+# its 10-minute TTL -- and it lists CRDs the new cluster does not have. That
+# turned `oc get subscription` into a lookup against ACM's
+# subscriptions.apps.open-cluster-management.io, which failed with a NotFound
+# naming a resource nothing had asked for.
+- name: Discard the oc discovery cache from any previous cluster
+  ansible.builtin.file:
+    path: "/home/{{ ansible_user }}/.kube/cache"
+    state: absent
+
 - name: Create the install directory
   ansible.builtin.file:
     path: "{{ install_dir }}"

@@ -25,7 +25,7 @@
 # this working across upgrades instead of breaking on a new required field.
 - name: Read the installed CSV name
   ansible.builtin.command: >-
-    oc get subscription gpu-operator-certified -n {{ gpu_operator_namespace }}
+    oc get subscriptions.operators.coreos.com gpu-operator-certified -n {{ gpu_operator_namespace }}
     -o jsonpath={.status.installedCSV}
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
@@ -35,7 +35,7 @@
 - name: Build the ClusterPolicy from the operator's own example
   ansible.builtin.shell: |
     set -o pipefail
-    oc get csv {{ gpu_csv.stdout }} -n {{ gpu_operator_namespace }} \
+    oc get clusterserviceversions.operators.coreos.com {{ gpu_csv.stdout }} -n {{ gpu_operator_namespace }} \
       -o jsonpath='{.metadata.annotations.alm-examples}' \
     | jq '[.[] | select(.kind == "ClusterPolicy")][0]
           | .metadata.name = "{{ gpu_cluster_policy_name }}"
