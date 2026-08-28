@@ -406,3 +406,39 @@ template now argues against setting it "just in case".
 There is no workaround on an already-TechPreview cluster: the `hcp` binary MCE
 ships has no `install` subcommand (only `create`, `destroy`, `version`), so the
 addon's install job cannot be bypassed.
+
+### 19. Not a bug: the sandbox account stops every instance out from under you
+
+Mid-way through `install-complete`, all three instances stopped at once:
+
+```
+tnf-gp-bastion   stopped  User initiated (2026-08-28 00:06:31 GMT)
+tnf-gp-master-0  stopped  User initiated (2026-08-28 00:06:31 GMT)
+tnf-gp-master-1  stopped  User initiated (2026-08-28 00:06:32 GMT)
+```
+
+Same second, no instance tag naming a schedule, and not triggered from here —
+the account-level cost control in a Red Hat demo sandbox. Worth knowing before
+planning a multi-hour run in one: the CloudFormation stacks survive, the EBS
+volumes survive, and `aws ec2 start-instances` brings everything back, but any
+`openshift-install wait-for` running over SSH dies with the bastion.
+
+**The cluster recovered on its own.** Both nodes were `Ready` 2.5 minutes after
+the restart, and the ClusterVersion went `Available=True` with every operator
+healthy about nine minutes later, with no intervention:
+
+```
+20:33  authentication console etcd  not available
+20:40  etcd                         not available
+20:41  none                         cv_available=True
+```
+
+That is an accidental but real test of the topology. A simultaneous cold stop of
+both control-plane nodes is precisely what fencing does to one of them, and a
+two-node cluster with Pacemaker-managed etcd came back from losing *both*
+without manual repair.
+
+Re-running `make tnf` afterwards took 69 seconds: the corrected idempotency
+guard (defect 4) asked the cluster whether it was installed, got yes, skipped
+the install, and went straight to reapplying the Pacemaker timeouts — which is
+exactly the behaviour that guard was rewritten for.
