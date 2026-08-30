@@ -442,3 +442,79 @@ Re-running `make tnf` afterwards took 69 seconds: the corrected idempotency
 guard (defect 4) asked the cluster whether it was installed, got yes, skipped
 the install, and went straight to reapplying the Pacemaker timeouts — which is
 exactly the behaviour that guard was rewritten for.
+
+## Run 3 — 2026-08-30, eu-west-1, account 567296844027
+
+A third sandbox account. `make infra` and `make tnf` passed first try (52 min,
+fencing verified). `make gpu` exposed the most serious finding of the exercise.
+
+### 20. A MachineConfig rollout can split a TNF cluster permanently
+
+The IOMMU MachineConfig reboots both control-plane nodes, one at a time.
+`master-1` rebooted and rejoined. `master-0` rebooted, came back healthy at every
+level the infrastructure can see -- EC2 status checks ok, pings, `intel_iommu=on`
+in `/proc/cmdline` -- and its kubelet never started.
+
+The two nodes' corosync configuration had diverged:
+
+```
+master-0  /etc/corosync/corosync.conf:  master-0 + master-1,  two_node: 1
+master-1  /etc/corosync/corosync.conf:  master-1 only,        two_node removed
+```
+
+When `master-0` left, `master-1` rewrote corosync to a single-node cluster so it
+would keep quorum. That is TNF's designed last-man-standing behaviour. What did
+not happen is the peer being re-added when it returned:
+
+```
+master-0:  Ring 1.17  Quorate: No   partition WITHOUT quorum  Online: [ master-0 ]
+master-1:  Ring 2.16  Quorate: Yes  partition with quorum     Online: [ master-1 ]
+master-1:  corosync bound to no UDP socket; knet link lists only itself
+```
+
+No quorum on `master-0` means Pacemaker starts nothing, so kubelet stays down
+and the node sits `Ready=Unknown`. The etcd operator observes it and reports it
+but does not repair it:
+
+```
+Pacemaker error: Cluster is unhealthy: Insufficient nodes in cluster (expected 2, found 1)
+etcd: EtcdMembersDegraded: 1 of 2 members are available, NAME-PENDING-10.0.0.10 has not started
+```
+
+Ruled out: security groups permit all traffic between the nodes (verified on the
+live SG), the nodes ping each other, and no host firewall rule mentions 5405.
+
+This is an OpenShift/TNF issue rather than a toolbox defect. But the toolbox made
+it far worse than it needed to be, in two ways worth fixing:
+
+**It reported the wrong failure.** The split showed up as the GPU stage failing
+to see IOMMU groups. The actual event -- a cluster that could not re-form after a
+reboot -- was three levels below the error message.
+
+**It did the risky thing at the wrong time.** The reboot ran before the
+kubeconfig had been copied anywhere, in the middle of a stage whose name implies
+GPUs, on a cluster whose TNF health had never been asserted beyond "the stonith
+devices exist".
+
+*Fix:* the pipeline is reordered and the MachineConfig is its own stage.
+
+```
+make infra -> make tnf -> make kubeconfig -> make iommu -> make gpu -> ...
+```
+
+  * `make tnf` no longer ends at `install-complete`. It ends by asserting the
+    cluster is healthy **as TNF**: both nodes Ready, every operator Available and
+    not Degraded, etcd not degraded, and Pacemaker *and* corosync quorate with
+    both members online. "Installed" and "healthy as a two-node fencing cluster"
+    are different claims, and only the second is a safe basis for rebooting.
+  * `make kubeconfig` runs before anything that can break the cluster, so the
+    credentials are on the workstation rather than only on the bastion.
+  * `make iommu` is the sole rebooting stage. It re-runs the same health gate
+    before touching anything and again after the rollout, so a pair that fails to
+    re-form fails *that* stage with the corosync and Pacemaker state printed.
+  * `make gpu` now installs only software and asserts the IOMMU MachineConfig
+    already exists, rather than creating it.
+
+The underlying TNF recovery gap is unchanged by any of this. What changes is that
+the toolbox refuses to start a rolling reboot on a cluster that is not verifiably
+healthy, and names the real failure when one occurs.

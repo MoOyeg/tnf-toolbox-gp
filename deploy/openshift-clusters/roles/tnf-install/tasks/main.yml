@@ -55,3 +55,9 @@
 # is actually up.
 - name: Tune and verify fencing
   ansible.builtin.include_tasks: fencing.yml
+
+# The stage does not finish until the cluster is healthy *as TNF*. Everything
+# after this point assumes a two-node Pacemaker cluster that can survive losing
+# a node, and nothing downstream should have to re-establish that.
+- name: Verify the cluster is healthy as a two-node fencing cluster
+  ansible.builtin.include_tasks: health.yml

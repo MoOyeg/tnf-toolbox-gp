@@ -5,5 +5,5 @@
 iommu_kernel_args:
   - intel_iommu=on
   - iommu=pt
-machine_config_name: 100-master-gpu-passthrough
+machine_config_name: "{{ iommu_machine_config_name | default('100-master-gpu-passthrough') }}"
 target_mcp: master

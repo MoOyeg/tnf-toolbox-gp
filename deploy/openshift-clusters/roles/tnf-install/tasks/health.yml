@@ -1,0 +1,125 @@
+---
+# Assert the cluster is a fully healthy *two-node fencing* cluster.
+#
+# "Installed" and "healthy as TNF" are not the same claim, and the difference
+# is what makes this file necessary. install-complete only means the
+# ClusterVersion went Available. It says nothing about whether Pacemaker has
+# both nodes, whether corosync is quorate, or whether etcd has two members --
+# and a TNF cluster can satisfy the first while failing all three.
+#
+# That is not hypothetical. A MachineConfig rollout rebooted one node; the
+# survivor rewrote corosync.conf to a single-node cluster to keep quorum (the
+# designed last-man-standing behaviour) and never re-added the peer when it
+# returned. The result was a cluster that answered `oc` perfectly from the
+# surviving half while the other node's kubelet never started:
+#
+#   master-0: partition WITHOUT quorum, Online: [ master-0 ]
+#   master-1: partition with quorum,    Online: [ master-1 ]
+#   etcd: 1 of 2 members are available
+#
+# Every check below is one of the signals that would have caught it.
+
+- name: Wait for both nodes to be Ready
+  ansible.builtin.command: oc get nodes --no-headers
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: health_nodes
+  changed_when: false
+  failed_when: false
+  retries: "{{ (tnf_health_timeout | int / 20) | int }}"
+  delay: 20
+  until:
+    - health_nodes.rc == 0
+    - health_nodes.stdout_lines | select('search', ' Ready') | list | length
+      == control_plane_nodes | length
+
+- name: Wait for every cluster operator to be Available and not Degraded
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get clusteroperators --no-headers
+    | awk '$3 != "True" || $5 == "True" { print $1 }'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: health_operators
+  changed_when: false
+  failed_when: false
+  retries: "{{ (tnf_health_timeout | int / 30) | int }}"
+  delay: 30
+  until: health_operators.rc == 0 and health_operators.stdout == ""
+
+# etcd is the reason TNF exists. One member is a cluster that has already lost
+# its redundancy, whatever the ClusterVersion says.
+- name: Wait for etcd to report both members healthy
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get clusteroperator etcd -o json
+    | jq -r '[.status.conditions[]
+    | select(.type=="Degraded" or .type=="Available")
+    | "\(.type)=\(.status)"] | sort | join(" ")'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: health_etcd
+  changed_when: false
+  failed_when: false
+  retries: "{{ (tnf_health_timeout | int / 30) | int }}"
+  delay: 30
+  until: health_etcd.stdout == "Available=True Degraded=False"
+
+# The checks that actually distinguish a healthy TNF cluster from a split one.
+# The parsing happens in shell rather than Jinja: pcs prints "Online: [ ... ]",
+# and a bare colon inside an unquoted Ansible expression is read as YAML.
+- name: Wait for Pacemaker to be quorate with both nodes online
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc debug node/{{ control_plane_nodes[0].name }} --quiet --request-timeout=120s --
+    chroot /host pcs status
+    | awk '/partition with quorum/ {q=1} /Online:/ {gsub(/.*Online: \[ *| *\].*/, ""); n=NF} END {print "quorum=" (q?"yes":"no") " online=" n+0}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: health_pcs
+  changed_when: false
+  failed_when: false
+  retries: "{{ (tnf_health_timeout | int / 30) | int }}"
+  delay: 30
+  until: health_pcs.stdout == "quorum=yes online=" ~ (control_plane_nodes | length)
+
+- name: Wait for corosync to be quorate with both members
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc debug node/{{ control_plane_nodes[0].name }} --quiet --request-timeout=120s --
+    chroot /host corosync-quorumtool -s
+    | awk '/^Nodes:/ {n=$2} /^Quorate:/ {q=$2} END {print "quorate=" q " nodes=" n+0}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: health_quorum
+  changed_when: false
+  failed_when: false
+  retries: 10
+  delay: 30
+  until: health_quorum.stdout == "quorate=Yes nodes=" ~ (control_plane_nodes | length)
+
+- name: Report the TNF health verdict
+  ansible.builtin.assert:
+    that:
+      - health_nodes.stdout_lines | select('search', ' Ready') | list | length
+        == control_plane_nodes | length
+      - health_operators.stdout == ""
+      - health_etcd.stdout == "Available=True Degraded=False"
+      - health_pcs.stdout == "quorum=yes online=" ~ (control_plane_nodes | length)
+      - health_quorum.stdout == "quorate=Yes nodes=" ~ (control_plane_nodes | length)
+    fail_msg: |
+      The cluster is not healthy as a two-node fencing cluster.
+
+        nodes Ready ......... {{ health_nodes.stdout_lines | select('search', ' Ready') | list | length }} of {{ control_plane_nodes | length }}
+        operators unhealthy . {{ health_operators.stdout_lines | default([]) | join(', ') | default('none', true) }}
+        etcd ................ {{ health_etcd.stdout | default('unknown', true) }}
+        pacemaker ........... {{ health_pcs.stdout | default('unknown', true) }}
+        corosync ............ {{ health_quorum.stdout | default('unknown', true) }}
+
+      Do not apply a MachineConfig to a cluster in this state: the rollout
+      reboots one node at a time, and a cluster that cannot re-form a two-node
+      Pacemaker cluster will not survive it. See docs/deploy-log.md.
+    success_msg: >-
+      TNF healthy: {{ control_plane_nodes | length }} nodes Ready, all operators
+      Available, etcd not degraded, Pacemaker and corosync quorate with both
+      members online.

@@ -57,16 +57,26 @@ Each stage is independently re-runnable:
 | Stage | What it does | Measured |
 |---|---|---|
 | `make infra` | VPC, subnet, private DNS, bastion, fencing endpoint | 2 min |
-| `make tnf` | install TNF 4.22 on two `g4dn.metal` nodes | 57 min |
-| `make gpu` | IOMMU, NFD, GPU Operator, workload-mode labels | 45 min |
+| `make tnf` | install TNF 4.22 on two `g4dn.metal`, then verify it is healthy *as TNF* | 52 min |
+| `make kubeconfig` | save the cluster credentials locally | seconds |
+| `make iommu` | the IOMMU MachineConfig — **reboots both nodes** | 40 min |
+| `make gpu` | NFD + NVIDIA GPU Operator (no reboots) | 10 min |
 | `make virt-acm` | LVM Storage, OpenShift Virtualization, ACM | 15 min |
 | `make guests` | the virtualized control-plane guest clusters | 30–45 min* |
 | `make guest-gpu` | NFD + GPU Operator inside each guest | 30 min* |
 
-Timings are from a real run in `eu-west-1`; `*` are still estimates. Most of
-`make tnf` is `wait-for bootstrap-complete` (32 min) and `install-complete`
-(18 min). Most of `make gpu` is a single MachineConfig: adding kernel arguments
-reboots both nodes serially, and **a `g4dn.metal` takes ~17 minutes to reboot**.
+Timings are from real runs in `eu-west-1`; `*` are still estimates. Most of
+`make tnf` is `wait-for bootstrap-complete` (31 min) and `install-complete`
+(14 min).
+
+**The ordering is deliberate.** `make iommu` is the only stage that reboots the
+cluster, and on two nodes each reboot takes it down to one. So it runs by
+itself, after the cluster is confirmed healthy as TNF and after its credentials
+are safely on your workstation — and it re-checks TNF health afterwards, because
+a rollout that leaves the pair unable to re-form is a failure of *that* stage,
+not a mysterious GPU problem two stages later. See
+[docs/deploy-log.md](docs/deploy-log.md) for the run where that distinction was
+learned.
 
 `make status` summarises stacks, instance power state, bastion services and
 cluster health at any point. `make destroy` removes everything.

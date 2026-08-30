@@ -1,7 +1,11 @@
 ---
-# Stage 2: make the eight T4s per node usable, and decide which node's GPUs
-# serve containers and which node's are handed to virtual machines.
-- name: Enable GPUs on the base cluster
+# Stage 2: the GPU software stack.
+#
+# The IOMMU MachineConfig is *not* here -- it lives in 15-iommu.yml, because it
+# reboots both nodes and must be gated on TNF health on either side. By the time
+# this runs the kernel arguments are already in place and nothing below reboots
+# anything.
+- name: Install the GPU software stack on the base cluster
   hosts: bastion
   gather_facts: false
   environment:
@@ -9,11 +13,24 @@
     PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
 
   tasks:
-    - name: Enable the IOMMU and label the workload modes
-      ansible.builtin.include_role:
-        name: gpu-passthrough
-      vars:
-        op_kubeconfig: "{{ kubeconfig }}"
+    # Cheap, and it fails clearly if 15-iommu.yml was skipped -- the GPU
+    # Operator's vfio binding needs the IOMMU and would otherwise fail later
+    # and less legibly.
+    - name: Confirm the IOMMU MachineConfig has already been applied
+      ansible.builtin.command: >-
+        oc get mc {{ iommu_machine_config_name }}
+      register: iommu_mc_present
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if the IOMMU stage has not run
+      ansible.builtin.assert:
+        that: iommu_mc_present.rc == 0
+        fail_msg: >-
+          MachineConfig {{ iommu_machine_config_name }} does not exist. Run
+          'make iommu' first -- it reboots both nodes, so it is a separate stage
+          that runs before this one.
+        success_msg: "IOMMU MachineConfig is applied"
 
     - name: Install Node Feature Discovery
       ansible.builtin.include_role:

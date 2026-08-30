@@ -1,10 +1,13 @@
 ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 
-.PHONY: all infra tnf gpu virt-acm guests guest-gpu \
+.PHONY: all infra tnf kubeconfig iommu gpu virt-acm guests guest-gpu \
         doctor ssh status inventory clean clean-guests destroy help
 
 # ---------------------------------------------------------------- end to end
-all: infra tnf gpu virt-acm guests guest-gpu
+# Ordering is deliberate. The cluster must be fully up and healthy *as TNF*
+# before anything reboots it, and its credentials must be on your workstation
+# before the one stage that can break it.
+all: infra tnf kubeconfig iommu gpu virt-acm guests guest-gpu
 	@echo ""
 	@echo "Everything is up. 'make status' for a summary."
 
@@ -16,6 +19,9 @@ infra:
 
 tnf:
 	@$(ANSIBLE) 10-tnf-install.yml $(EXTRA_ARGS)
+
+iommu:
+	@$(ANSIBLE) 15-iommu.yml $(EXTRA_ARGS)
 
 gpu:
 	@$(ANSIBLE) 20-base-gpu.yml $(EXTRA_ARGS)
@@ -61,8 +67,13 @@ help:
 	@echo ""
 	@echo "Stages (each is resumable and safe to re-run):"
 	@echo "  make infra         - VPC, subnet, DNS, bastion (haproxy + Redfish shim)"
-	@echo "  make tnf           - install the TNF 4.22 cluster on 2x g4dn.metal"
-	@echo "  make gpu           - NFD + NVIDIA GPU Operator + IOMMU on the base cluster"
+	@echo "  make tnf           - install TNF 4.22 on 2x g4dn.metal, then verify it is"
+	@echo "                       healthy as TNF (Pacemaker quorate, both etcd members)"
+	@echo "  make kubeconfig    - save the cluster credentials locally, before anything"
+	@echo "                       risky runs against the cluster"
+	@echo "  make iommu         - the IOMMU MachineConfig. Reboots BOTH nodes serially;"
+	@echo "                       gated on TNF health before and after"
+	@echo "  make gpu           - NFD + NVIDIA GPU Operator (no reboots)"
 	@echo "  make virt-acm      - LVM Storage, OpenShift Virtualization, ACM"
 	@echo "  make guests        - virtualized control-plane guest clusters with GPUs"
 	@echo "  make guest-gpu     - NFD + GPU Operator inside each guest cluster"

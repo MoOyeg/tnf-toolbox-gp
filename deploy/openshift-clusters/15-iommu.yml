@@ -1,0 +1,46 @@
+---
+# Stage 1b: the IOMMU MachineConfig, and nothing else.
+#
+# This is deliberately its own stage, run after the cluster is fully up as TNF
+# and after its credentials have been saved locally. Applying it reboots both
+# control-plane nodes one at a time, and on a two-node cluster that is the
+# single most disruptive thing the toolbox does: each reboot takes the cluster
+# down to one node, and the survivor rewrites corosync to a single-node
+# configuration to keep quorum.
+#
+# Separating it buys three things:
+#   * it cannot run against a cluster that is not already healthy as TNF,
+#   * the kubeconfig is on your workstation before the risky step, not after,
+#   * and if the cluster fails to re-form afterwards, the failure is attributed
+#     to the reboot rather than surfacing later as a confusing GPU error.
+- name: Enable the IOMMU on the control-plane nodes
+  hosts: bastion
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ kubeconfig }}"
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
+
+  tasks:
+    # Refuse to start a rolling reboot on a cluster that is already half-broken.
+    - name: Require a healthy TNF cluster before rebooting anything
+      ansible.builtin.include_role:
+        name: tnf-install
+        tasks_from: health
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+
+    - name: Apply the IOMMU MachineConfig and wait for the rollout
+      ansible.builtin.include_role:
+        name: gpu-passthrough
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+
+    # The rollout is only really finished when the pair has re-formed. Without
+    # this the play would report success on a split cluster whose second node
+    # never rejoined -- which is exactly what happened before this stage existed.
+    - name: Verify the cluster is still healthy as TNF after the reboots
+      ansible.builtin.include_role:
+        name: tnf-install
+        tasks_from: health
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
