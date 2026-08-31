@@ -518,3 +518,113 @@ make infra -> make tnf -> make kubeconfig -> make iommu -> make gpu -> ...
 The underlying TNF recovery gap is unchanged by any of this. What changes is that
 the toolbox refuses to start a rolling reboot on a cluster that is not verifiably
 healthy, and names the real failure when one occurs.
+
+## Run 4 — 2026-08-31, eu-west-1, account 567296844027
+
+The first run with the reordered pipeline. It did what it was meant to.
+
+### 21. The reordering works
+
+```
+make infra        passed   2 min
+make tnf          passed   50 min, and ended by asserting TNF health:
+                           "2 nodes Ready, all operators Available, etcd not
+                            degraded, Pacemaker and corosync quorate with both
+                            members online"
+make kubeconfig   passed   credentials on the workstation before anything risky
+make iommu        passed   43 min. Both nodes rebooted serially and the pair
+                           re-formed; the post-rollout gate confirmed it
+make gpu          passed   master-0 nvidia.com/gpu, master-1 TU104GL_TESLA_T4
+make virt-acm     passed   LVM, OpenShift Virtualization, ACM, HyperShift CRDs
+```
+
+`make iommu` is the step that split the cluster in run 3. This time the same
+MachineConfig rolled out cleanly and the health gate proved it, which is the
+whole point of separating it.
+
+### 22. `deploy/clusters/` was never gitignored
+
+Surfaced by promoting `make kubeconfig` to a pipeline stage. The ignore rule
+named `deploy/openshift-clusters/clusters/`, a directory nothing writes to;
+`fetch-kubeconfig.yml` fetches into `deploy/clusters/`. The hub kubeconfig, every
+guest kubeconfig and the kubeadmin password sat untracked-but-unignored, one
+`git add -A` from a commit.
+
+Latent while `make kubeconfig` was an occasional manual step; reachable in
+ordinary use the moment it became part of the pipeline.
+
+*Fix:* correct rule, plus a check in `hack/test-templates.py` that reads the
+destination out of the playbook and asserts it is ignored, so renaming the
+target cannot quietly unprotect it.
+
+### 23. The guest API is published as a LoadBalancer, which never provisions
+
+`hcp create cluster kubevirt` renders `APIServer` with
+`servicePublishingStrategy: LoadBalancer` and offers no flag to change it. On
+bare metal with no load-balancer controller:
+
+```
+InfrastructureReady=False WaitingOnInfrastructureReady:
+  kube-apiserver load balancer is not provisioned; 19m since creation
+kube-apiserver  LoadBalancer  172.30.42.105  <pending>  6443:31923/TCP
+```
+
+Ignition, Konnectivity and OAuthServer were already `Route` in the same manifest.
+Only the API differed.
+
+*Fix:* the role rewrites `APIServer` to `Route` before applying and asserts the
+result. `spec.services` is immutable once the HostedCluster exists, so it has to
+happen at render time.
+
+Worth noting this was listed in `vcp-guests.md` as a known gap affecting guest
+*ingress*. That was mis-scoped: it also blocked the guest API, which is the
+difference between a cluster with an unreachable console and no cluster at all.
+
+### 24. A simultaneous cold stop of both nodes deadlocks etcd
+
+The sandbox stopped all three instances again, mid-run:
+
+```
+tnf-gp-master-0  stopping  User initiated (2026-08-31 05:00:21 GMT)
+tnf-gp-master-1  stopping  User initiated (2026-08-31 05:00:21 GMT)
+tnf-gp-bastion   stopping  User initiated (2026-08-31 05:00:22 GMT)
+```
+
+After restarting them, corosync and Pacemaker re-formed correctly -- both nodes
+online, quorate, expected votes 2, kubelet running on both. **etcd did not
+start on either node:**
+
+```
+Failed Resource Actions:
+  * etcd start on master-1 returned 'not configured'
+    (force_new_cluster attribute is set on multiple nodes (master-0 master-1))
+
+master-0:  force_new_cluster: master-0   revision: 109833
+master-1:  force_new_cluster: master-1   revision: 109833
+```
+
+Because both nodes lost their peer at the same instant, each came back believing
+it was the survivor and set itself as the etcd seed. The resource agent then
+refuses to start etcd anywhere -- correctly, since seeding from both would fork
+the cluster. The revisions are identical, so either is a safe seed, but nothing
+chooses one.
+
+The cluster is left with a working API on each node locally, kubelet up,
+Pacemaker healthy, and no etcd. It does not recover on its own.
+
+Recovery is to leave exactly one seed:
+
+```bash
+pcs node attribute master-1 force_new_cluster=
+pcs resource cleanup etcd
+```
+
+This is distinct from defect 20, which was a *staggered* reboot leaving a
+corosync split. This one is a *simultaneous* stop leaving an etcd seed conflict,
+and it is what a real double power failure would produce. Both are worth raising
+upstream.
+
+The `tnf-install/health.yml` gate detects this state -- etcd degraded, and the
+verdict names it -- but the toolbox does not attempt the repair, because
+choosing an etcd seed is a decision with data-loss consequences when the
+revisions differ.
