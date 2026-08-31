@@ -8,6 +8,11 @@ config/*.key
 deploy/aws-infra/instance-data/
 deploy/openshift-clusters/inventory.ini
 deploy/openshift-clusters/inventory.ini.*
+# Cluster credentials fetched by 'make kubeconfig' -- kubeconfigs for the hub
+# and every guest cluster, plus the kubeadmin password. The path below it was
+# the original rule and guarded a directory nothing ever wrote to; the real
+# destination is deploy/clusters/, which was consequently unprotected.
+deploy/clusters/
 deploy/openshift-clusters/clusters/
 logs/*
 !logs/.gitkeep

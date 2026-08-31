@@ -11,6 +11,7 @@ declared.
 import glob
 import json
 import os
+import re
 import sys
 
 import yaml
@@ -329,6 +330,35 @@ def test_shell_commands_are_not_split_by_stray_newlines():
           "; ".join(found))
 
 
+def test_fetched_credentials_are_gitignored():
+    """Whatever path fetch-kubeconfig writes to must be gitignored.
+
+    The rule used to name deploy/openshift-clusters/clusters/, a directory
+    nothing ever wrote to, while the playbook fetched into deploy/clusters/ --
+    so kubeconfigs and the kubeadmin password sat untracked-but-visible, one
+    `git add -A` from being committed. Reading the destination out of the
+    playbook keeps the two from drifting apart again.
+    """
+    print("\ncredential paths")
+    playbook = f"{ROOT}/deploy/openshift-clusters/fetch-kubeconfig.yml"
+    content = open(playbook, encoding="utf-8").read()
+
+    destinations = set(
+        re.findall(r'dest:\s*"\{\{\s*repo_root\s*\}\}/([^/"]+/[^/"{]+)', content)
+    )
+    check("fetch-kubeconfig declares a destination", bool(destinations),
+          "no dest: found")
+
+    ignored = open(f"{ROOT}/.gitignore", encoding="utf-8").read().splitlines()
+    for destination in sorted(destinations):
+        prefix = destination.rstrip("/") + "/"
+        check(
+            f"{prefix} is gitignored",
+            any(line.strip().rstrip("/") + "/" == prefix for line in ignored),
+            f"add '{prefix}' to .gitignore",
+        )
+
+
 def main():
     test_every_template_renders()
     test_install_config()
@@ -338,6 +368,7 @@ def main():
     test_cloudformation()
     test_jsonpath_filters_are_shell_quoted()
     test_shell_commands_are_not_split_by_stray_newlines()
+    test_fetched_credentials_are_gitignored()
 
     print()
     if FAILURES:
