@@ -55,6 +55,59 @@
 # manifest that was actually applied costs nothing and cannot drift.
 # The pull secret is what the HostedCluster blocks on if --render-sensitive is
 # ever dropped, so its absence is caught here rather than 40 minutes later.
+# hcp publishes the guest's kube-apiserver as a Service of type LoadBalancer,
+# and there is no flag to change it. On bare metal with no load-balancer
+# controller that Service never gets an address, so the hosted control plane
+# stops before it starts:
+#
+#   InfrastructureReady=False WaitingOnInfrastructureReady:
+#     kube-apiserver load balancer is not provisioned
+#   kube-apiserver  LoadBalancer  172.30.42.105  <pending>  6443:31923/TCP
+#
+# Route is what the other three services already use, and the hub has working
+# ingress, so the API is published the same way. spec.services cannot be
+# changed after the HostedCluster exists, which is why this rewrites the
+# manifest rather than patching the object.
+- name: "{{ guest_name }}: publish the guest API through a Route, not a LoadBalancer"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import sys, yaml
+        path = sys.argv[1]
+        docs = [d for d in yaml.safe_load_all(open(path)) if d]
+        changed = False
+        for doc in docs:
+            if doc.get("kind") != "HostedCluster":
+                continue
+            for svc in doc.get("spec", {}).get("services", []):
+                if svc.get("service") == "APIServer":
+                    strategy = svc.setdefault("servicePublishingStrategy", {})
+                    if strategy.get("type") != "Route":
+                        strategy["type"] = "Route"
+                        strategy.pop("loadBalancer", None)
+                        changed = True
+        if changed:
+            with open(path, "w") as fh:
+                yaml.safe_dump_all(docs, fh, default_flow_style=False)
+        print("rewritten" if changed else "already Route")
+      - "{{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
+  register: apiserver_strategy
+  changed_when: apiserver_strategy.stdout == "rewritten"
+
+- name: "{{ guest_name }}: confirm the API is not published via LoadBalancer"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    python3 -c "import sys,yaml;
+    print(next(s['servicePublishingStrategy']['type']
+    for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get('kind')=='HostedCluster'
+    for s in d['spec']['services'] if s['service']=='APIServer'))"
+    {{ install_dir }}/guest-manifests/{{ guest_name }}.yaml
+  register: apiserver_publishing
+  changed_when: false
+  failed_when: apiserver_publishing.stdout | trim != "Route"
+
 - name: "{{ guest_name }}: confirm the rendered manifests carry their secrets"
   ansible.builtin.assert:
     that: "'kind: Secret' in hcp_render.stdout"
