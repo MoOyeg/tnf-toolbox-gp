@@ -1,12 +1,12 @@
 [Unit]
-Description=Ignition config server for the TNF bootstrap node
+Description=Ignition config server for this site's bootstrap node
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory={{ ignition_root }}
-ExecStart=/usr/bin/python3 -m http.server {{ ignition_port }} --bind {{ bastion_private_ip }}
+ExecStart=/usr/bin/python3 -m http.server {{ ignition_port }} --bind {{ lb_bind_address }}
 Restart=always
 RestartSec=5
 

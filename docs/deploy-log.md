@@ -713,3 +713,40 @@ Both now skip the vendored tree, and the yamlfmt branch is POSIX. yamlfmt
 reports a repo-wide formatting backlog, to be applied when no deploy is in
 flight -- Ansible reads its task files lazily, so reformatting them mid-run
 changes what a running playbook is about to execute.
+
+### 30. The ACM site's ignition server bound to the TNF bastion's address
+
+`make acm-site` reached `wait-for bootstrap-complete` and sat there for twenty
+minutes before failing with:
+
+```
+Failed waiting for Kubernetes API. This error usually happens when there is a
+problem on the bootstrap host that prevents creating a temporary control plane.
+```
+
+There was no problem on the bootstrap host. Both ACM instances answered ping
+with 6443 closed, and `/srv/ignition` on the ACM bastion held the right files
+but nothing was listening on 8080:
+
+```
+ExecStart=/usr/bin/python3 -m http.server 8080 --bind 10.0.0.5
+  (code=exited, status=1/FAILURE)
+```
+
+`10.0.0.5` is the *TNF* bastion. The unit template used
+`{{ bastion_private_ip }}`, which is a TNF-site extra var, so on the ACM
+bastion -- `10.1.0.5` -- the bind failed, systemd restarted it every five
+seconds, and the nodes booted with no ignition to fetch. RHCOS with no config
+brings up networking and nothing else, which is exactly what "answers ping,
+6443 closed" looks like.
+
+The `loadbalancer` role already took `control_plane_nodes` and
+`bootstrap_private_ip` as caller overrides, so it was *almost* site-agnostic.
+The bind address is now derived from the host the role is configuring
+(`ansible_default_ipv4.address`) rather than passed in, because a fourth
+override across four call sites is one more thing to forget. A check fails the
+role's templates if they name a single site's variables again.
+
+The failure cost twenty minutes because the symptom is reported against the
+bootstrap host, and the cause was on the bastion. When bootstrap times out with
+nothing on 6443, check the ignition server before the node.

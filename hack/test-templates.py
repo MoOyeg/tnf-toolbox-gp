@@ -60,6 +60,9 @@ CONTEXT = dict(
     redfish_shim_port=8000,
     ignition_port=8080,
     ignition_root="/srv/ignition",
+    # A Jinja-valued role default (the bastion's own address), so role_defaults()
+    # skips it -- it keeps only literals.
+    lb_bind_address="10.0.0.5",
     haproxy_stats_port=9000,
     ansible_user="ec2-user",
     include_bootstrap=True,
@@ -496,6 +499,33 @@ def test_play_path_fallbacks_keep_the_system_directories():
                   not missing, f"fallback '{fallback}' is missing {missing}")
 
 
+def test_loadbalancer_role_names_no_single_site():
+    """The loadbalancer role fronts either site, so it must not name one.
+
+    Its templates are rendered on TNF's bastion and on the ACM site's. A
+    variable like bastion_private_ip always holds TNF's address, so on the ACM
+    bastion the ignition server bound to an address the host does not have,
+    exited 1 on every restart, and the nodes booted with nothing to fetch --
+    surfacing twenty minutes later as a bootstrap timeout blamed on the
+    bootstrap host. Site-specific values must arrive as role variables the
+    caller sets, or be derived from the host being configured.
+    """
+    print("\nloadbalancer is site-agnostic")
+    banned = ("bastion_private_ip", "cluster_domain", "cluster_name",
+              "install_dir", "acm_install_dir", "acm_bastion_private_ip")
+    role = f"{ROOT}/deploy/openshift-clusters/roles/loadbalancer"
+    for sub in ("templates", "tasks"):
+        for path in sorted(glob.glob(f"{role}/{sub}/*")):
+            text = open(path, encoding="utf-8").read()
+            # only what the templates actually interpolate, not comments
+            used = set()
+            for a, b in re.findall(r"\{\{(.*?)\}\}|\{%(.*?)%\}", text, re.S):
+                used |= set(re.findall(r"(?<![\w.])([a-z_][a-z0-9_]*)", a or b))
+            named = sorted(used & set(banned))
+            check(f"{os.path.basename(path)} names no single site",
+                  not named, f"references {named}")
+
+
 def test_fetched_credentials_are_gitignored():
     """Whatever path fetch-kubeconfig writes to must be gitignored.
 
@@ -536,6 +566,7 @@ def main():
     test_shell_commands_are_not_split_by_stray_newlines()
     test_nothing_reads_role_defaults_from_outside()
     test_play_path_fallbacks_keep_the_system_directories()
+    test_loadbalancer_role_names_no_single_site()
     test_fetched_credentials_are_gitignored()
 
     print()

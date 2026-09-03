@@ -1,2 +1,11 @@
 ---
 haproxy_stats_port: 9000
+
+# The address the ignition server binds to. Taken from the host the role is
+# running on rather than from a site variable, because this role fronts either
+# site -- TNF's bastion or the ACM site's -- and the previous
+# {{ bastion_private_ip }} was always TNF's. On the ACM bastion that is an
+# address the machine does not have, so the server exited 1 on every restart,
+# the nodes booted with no ignition to fetch, and bootstrap timed out twenty
+# minutes later with "a problem on the bootstrap host".
+lb_bind_address: "{{ ansible_default_ipv4.address }}"
