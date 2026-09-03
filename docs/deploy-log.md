@@ -750,3 +750,63 @@ role's templates if they name a single site's variables again.
 The failure cost twenty minutes because the symptom is reported against the
 bootstrap host, and the cause was on the bastion. When bootstrap times out with
 nothing on 6443, check the ignition server before the node.
+
+### 31. Extra vars outrank include_role parameters, silently
+
+The ACM site's second bootstrap attempt also failed, but further along and for a
+different reason. Both nodes fetched their ignition this time -- the bastion's
+own access log proves it:
+
+```
+10.1.0.10 - - "GET /master.ign HTTP/1.1" 200 -
+10.1.0.9  - - "GET /bootstrap.ign HTTP/1.1" 200 -
+```
+
+The bootstrap node came up and served `/readyz` with 200 on 10.1.0.9:6443. But
+`openshift-install` got EOF from `api.acm...:6443`, which resolves to the
+bastion's haproxy, and haproxy's stats said:
+
+```
+api bootstrap DOWN * L4TOUT
+api sno-0     DOWN   L4CON
+api BACKEND   DOWN
+```
+
+`L4TOUT` is a TCP connect timeout, from a host that could reach the same
+address with curl a second earlier. The rendered config explained it:
+
+```
+server bootstrap 10.0.0.9:6443 check ...
+```
+
+`10.0.0.9` is the *TNF* bootstrap, in the other VPC, long since destroyed.
+
+`sno-cluster/launch.yml` does pass the right value:
+
+```yaml
+- ansible.builtin.include_role:
+    name: loadbalancer
+  vars:
+    bootstrap_private_ip: "{{ acm_bootstrap_private_ip }}"
+```
+
+and it is silently ignored. `bootstrap_private_ip` is one of the extra vars
+run-playbook.sh supplies with `-e`, and **extra vars outrank include_role
+parameters** -- so the caller's override is accepted, discarded, and TNF's
+address is rendered instead. Nothing warns.
+
+`control_plane_nodes` in the same block *does* work, because it is defined in
+group_vars rather than passed with `-e`. That is the whole difference, and it is
+invisible at the call site: two adjacent lines in one `vars:` block, one
+effective and one not.
+
+The role's input is now `lb_bootstrap_address`, a name nothing passes with `-e`,
+defaulting to `bootstrap_private_ip` so the TNF call sites are unchanged. The
+site-agnostic check now derives its banned list from run-playbook.sh itself, so
+any name that becomes an extra var later is rejected in the loadbalancer's
+templates automatically.
+
+The general rule: a role parameter meant to be overridden must not share a name
+with an extra var. This is the same precedence trap as defect 28's PATH and the
+ACM data volume -- extra vars win over both set_fact and role params, and in
+every case the symptom appeared far from the cause.

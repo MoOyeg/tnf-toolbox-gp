@@ -63,6 +63,7 @@ CONTEXT = dict(
     # A Jinja-valued role default (the bastion's own address), so role_defaults()
     # skips it -- it keeps only literals.
     lb_bind_address="10.0.0.5",
+    lb_bootstrap_address="10.0.0.9",
     haproxy_stats_port=9000,
     ansible_user="ec2-user",
     include_bootstrap=True,
@@ -511,8 +512,13 @@ def test_loadbalancer_role_names_no_single_site():
     caller sets, or be derived from the host being configured.
     """
     print("\nloadbalancer is site-agnostic")
-    banned = ("bastion_private_ip", "cluster_domain", "cluster_name",
-              "install_dir", "acm_install_dir", "acm_bastion_private_ip")
+    # Extra vars outrank include_role parameters, so a template that names one
+    # can never be pointed at the other site: the caller's override is accepted
+    # silently and then ignored. That is how the ACM haproxy came to health-check
+    # TNF's bootstrap address across the peering connection and time out on every
+    # probe. Any name run-playbook.sh supplies is therefore unusable here.
+    banned = tuple(extra_vars_from_wrapper()) + (
+        "cluster_domain", "cluster_name", "install_dir", "acm_install_dir")
     role = f"{ROOT}/deploy/openshift-clusters/roles/loadbalancer"
     for sub in ("templates", "tasks"):
         for path in sorted(glob.glob(f"{role}/{sub}/*")):

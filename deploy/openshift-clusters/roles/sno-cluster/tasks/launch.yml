@@ -7,7 +7,7 @@
   vars:
     include_bootstrap: true
     control_plane_nodes: "{{ acm_control_plane_nodes }}"
-    bootstrap_private_ip: "{{ acm_bootstrap_private_ip }}"
+    lb_bootstrap_address: "{{ acm_bootstrap_private_ip }}"
 
 - name: Render the ignition pointers
   ansible.builtin.template:

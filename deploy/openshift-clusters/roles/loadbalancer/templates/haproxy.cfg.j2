@@ -45,7 +45,7 @@ backend api
     # The bootstrap node serves the API until the permanent control plane takes
     # over. The health check removes it on its own once it is destroyed, so
     # this line does not have to be pulled out by hand.
-    server bootstrap {{ bootstrap_private_ip }}:6443 check check-ssl verify none inter 5s fall 2 rise 3
+    server bootstrap {{ lb_bootstrap_address }}:6443 check check-ssl verify none inter 5s fall 2 rise 3
 {% endif %}
 {% for node in control_plane_nodes %}
     server {{ node.name }} {{ node.private_ip }}:6443 check check-ssl verify none inter 5s fall 2 rise 3
@@ -60,7 +60,7 @@ frontend machine-config
 backend machine-config
     balance source
 {% if include_bootstrap | default(false) %}
-    server bootstrap {{ bootstrap_private_ip }}:22623 check check-ssl verify none inter 5s fall 2 rise 3
+    server bootstrap {{ lb_bootstrap_address }}:22623 check check-ssl verify none inter 5s fall 2 rise 3
 {% endif %}
 {% for node in control_plane_nodes %}
     server {{ node.name }} {{ node.private_ip }}:22623 check check-ssl verify none inter 5s fall 2 rise 3

@@ -9,3 +9,11 @@ haproxy_stats_port: 9000
 # the nodes booted with no ignition to fetch, and bootstrap timed out twenty
 # minutes later with "a problem on the bootstrap host".
 lb_bind_address: "{{ ansible_default_ipv4.address }}"
+
+# The bootstrap machine this site's haproxy should front. It cannot be called
+# bootstrap_private_ip: that name is supplied as an extra var, and extra vars
+# outrank include_role parameters, so a caller passing the ACM site's address
+# under that name is silently ignored and the TNF bootstrap's address is used
+# instead. The ACM haproxy then pointed at 10.0.0.9, in the other VPC, and every
+# health check timed out.
+lb_bootstrap_address: "{{ bootstrap_private_ip | default('') }}"
