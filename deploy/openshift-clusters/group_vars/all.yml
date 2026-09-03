@@ -58,6 +58,10 @@ acm_sno_node_name: sno-0
 # it. Read by sno-cluster (which creates it) and vcp-guest (which targets it).
 acm_infra_namespace: acm-hosted-vms
 
+# The namespace HostedClusters are created in, on whichever cluster is hosting
+# them. Read by vcp-guest, sno-cluster and clean-guests.yml.
+hcp_namespace: clusters
+
 acm_control_plane_nodes:
   - name: "{{ acm_sno_node_name | default('sno-0') }}"
     private_ip: "{{ acm_sno_private_ip | default('10.1.0.10') }}"

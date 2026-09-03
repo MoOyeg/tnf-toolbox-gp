@@ -3,11 +3,18 @@
 #
 # Useful for reclaiming the passthrough GPUs, or for re-creating the guests with
 # a different GPU count without rebuilding two bare metal machines.
+#
+# Both bastions: guests created by 'make guests-from-acm' live on the ACM
+# cluster, guests created by 'make guests' on TNF. Looking at only one of them
+# reports "nothing to do" while the other site's guests keep running, holding
+# the passthrough GPUs this play exists to release.
 - name: Delete the virtualized control-plane guest clusters
-  hosts: bastion
+  hosts: bastion:acm_bastion
   gather_facts: false
   environment:
-    KUBECONFIG: "{{ kubeconfig }}"
+    KUBECONFIG: >-
+      {{ acm_kubeconfig if inventory_hostname in groups['acm_bastion']
+         else kubeconfig }}
     # The fallback must list the system sbin directories. A play's
     # environment: applies to the implicit fact gathering too, so on that first
     # task ansible_env is still undefined and the default is what PATH becomes
@@ -19,7 +26,7 @@
   tasks:
     - name: List the hosted clusters
       ansible.builtin.command: >-
-        oc get hostedcluster -n clusters -o jsonpath={.items[*].metadata.name}
+        oc get hostedcluster -n {{ hcp_namespace }} -o jsonpath={.items[*].metadata.name}
       register: hosted_clusters
       changed_when: false
       failed_when: false
@@ -35,7 +42,7 @@
     - name: Destroy each hosted cluster
       ansible.builtin.command: >-
         {{ bin_dir }}/hcp destroy cluster kubevirt
-        --name {{ item }} --namespace clusters
+        --name {{ item }} --namespace {{ hcp_namespace }}
       loop: "{{ hosted_clusters.stdout.split() }}"
       when: hosted_clusters.stdout | length > 0
       register: guest_destroy

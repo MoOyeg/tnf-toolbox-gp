@@ -19,4 +19,3 @@ acm_install_timeout: 5400
 # peering connection. The namespace it targets on TNF is acm_infra_namespace,
 # in group_vars, because vcp-guest needs it too.
 infra_kubeconfig_secret: tnf-infra-kubeconfig
-hcp_namespace: clusters

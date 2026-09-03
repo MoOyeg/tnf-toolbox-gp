@@ -387,8 +387,8 @@ def test_shell_commands_are_not_split_by_stray_newlines():
           "; ".join(found))
 
 
-def test_roles_do_not_borrow_other_roles_defaults():
-    """A role may not read a variable that only another role's defaults define.
+def test_nothing_reads_role_defaults_from_outside():
+    """Only the role that declares a default may read it.
 
     Ansible scopes defaults/main.yml to the role that owns it, so this fails at
     runtime with "'x' is undefined" -- forty minutes in, on the bastion, after
@@ -397,7 +397,7 @@ def test_roles_do_not_borrow_other_roles_defaults():
     exactly the assumption that does not hold in a real play. Variables two roles
     both need belong in group_vars/all.yml.
     """
-    print("\nvariable scoping across roles")
+    print("\nvariable scoping")
     pb = f"{ROOT}/deploy/openshift-clusters"
     jinja = re.compile(r"\{\{(.*?)\}\}|\{%(.*?)%\}", re.S)
     ident = re.compile(r"(?<![\w.])([a-z_][a-z0-9_]*)")
@@ -433,6 +433,26 @@ def test_roles_do_not_borrow_other_roles_defaults():
                 | keys_of(f"{pb}/roles/{r}/vars/main.yml") for r in roles}
 
     borrowed = []
+
+    # Playbooks are the worse case: they can see no role's defaults at all, so
+    # a variable that lives in one is undefined everywhere in the play -- both
+    # in its own tasks and in its environment: block.
+    for path in sorted(glob.glob(f"{pb}/*.yml")):
+        text = open(path, encoding="utf-8").read()
+        used, local = set(), set()
+        for a, b in jinja.findall(text):
+            expr = a or b
+            guarded = set(re.findall(
+                r"(?<![\w.])([a-z_][a-z0-9_]*)\s*(?:\||\bis\b\s*(?:not\s*)?defined)", expr))
+            used |= {n for n in ident.findall(expr) if n not in guarded}
+        local |= set(re.findall(r"register:\s*([a-z_][a-z0-9_]*)", text))
+        for block in re.finditer(r"(?:set_fact|vars):\s*\n((?:\s{4,}.*\n)+)", text):
+            local |= set(re.findall(r"^\s+([a-z_][a-z0-9_]*):", block.group(1), re.M))
+        for name in sorted(used - (local | globals_)):
+            owners = [o for o in roles if name in owned[o]]
+            if owners:
+                borrowed.append((os.path.basename(path), name, owners))
+
     for role in roles:
         used, local = set(), set()
         for path in role_files(f"{pb}/roles/{role}"):
@@ -452,7 +472,7 @@ def test_roles_do_not_borrow_other_roles_defaults():
             if owners:
                 borrowed.append((role, name, owners))
 
-    check("no role reads another role's defaults", not borrowed,
+    check("nothing reads a role's defaults from outside it", not borrowed,
           "; ".join(f"{r} uses {n}, defined only in {'/'.join(o)}" for r, n, o in borrowed))
 
 
@@ -514,7 +534,7 @@ def main():
     test_cloudformation()
     test_jsonpath_filters_are_shell_quoted()
     test_shell_commands_are_not_split_by_stray_newlines()
-    test_roles_do_not_borrow_other_roles_defaults()
+    test_nothing_reads_role_defaults_from_outside()
     test_play_path_fallbacks_keep_the_system_directories()
     test_fetched_credentials_are_gitignored()
 

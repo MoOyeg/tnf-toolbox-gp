@@ -4,8 +4,12 @@
 # The same two roles as the base cluster, pointed at a different kubeconfig.
 # Sandbox workloads is off here: inside the guest the T4 is already an ordinary
 # PCI device on the VM, and there is no second level of passthrough to arrange.
+#
+# Both bastions, because the guest kubeconfigs live wherever the hub that created
+# them lives: 'make guests-from-acm' writes them on the ACM bastion, 'make
+# guests' on TNF's. A bastion with no guests contributes an empty loop.
 - name: Enable GPUs inside the guest clusters
-  hosts: bastion
+  hosts: bastion:acm_bastion
   gather_facts: false
   environment:
     # The fallback must list the system sbin directories. A play's
@@ -23,10 +27,21 @@
         patterns: "*.kubeconfig"
       register: guest_kubeconfigs
 
-    - name: Fail if no guest clusters exist yet
+    - name: Record how many guest kubeconfigs this bastion holds
+      ansible.builtin.set_fact:
+        guest_kubeconfig_count: "{{ guest_kubeconfigs.files | length }}"
+
+    # Checked across both bastions rather than per host: finding none on TNF is
+    # the normal case when ACM created the guests, and vice versa.
+    - name: Fail if no guest clusters exist at either site
       ansible.builtin.assert:
-        that: guest_kubeconfigs.files | length > 0
-        fail_msg: "No guest kubeconfigs under {{ install_root }}/guests. Run 'make guests' first."
+        that:
+          - ansible_play_hosts | map('extract', hostvars, 'guest_kubeconfig_count') | map('int') | sum > 0
+        fail_msg: >-
+          No guest kubeconfigs under {{ install_root }}/guests on either bastion.
+          Run 'make guests-from-acm' first -- or 'make guests' for guests hosted
+          by TNF's own MultiCluster Engine.
+      run_once: true
 
     - name: Install the GPU stack in each guest cluster
       ansible.builtin.include_tasks: tasks/guest-gpu-stack.yml
