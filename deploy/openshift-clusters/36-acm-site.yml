@@ -38,6 +38,17 @@
       ansible.builtin.include_role:
         name: sno-cluster
 
+    # Before CNV and ACM, both of which want PVCs: the MultiClusterHub's search
+    # component, and every hosted control plane's etcd, which is created on the
+    # hub with --etcd-storage-class. Without a default storage class here the
+    # hub never reaches Running and no guest cluster can be created.
+    - name: Install LVM Storage on the ACM node's data volume
+      ansible.builtin.include_role:
+        name: lvm-storage
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+        control_plane_nodes: "{{ acm_control_plane_nodes }}"
+
     - name: Install OpenShift Virtualization on the ACM cluster
       ansible.builtin.include_role:
         name: cnv

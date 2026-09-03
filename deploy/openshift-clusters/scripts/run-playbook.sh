@@ -66,6 +66,7 @@ jq -n \
   --arg acm_bastion_private_ip   "${ACM_BASTION_PRIVATE_IP}" \
   --arg acm_bastion_public_ip    "$(read_acm_state public_address)" \
   --arg acm_ignition_base_url    "$(read_acm_state ignition_base_url)" \
+  --arg acm_sno_data_volume      "$(read_acm_state sno_data_volume)" \
   --arg guest_cluster_prefix "${GUEST_CLUSTER_PREFIX}" \
   --argjson guest_cluster_count     "${GUEST_CLUSTER_COUNT}" \
   --argjson guest_nodepool_replicas "${GUEST_NODEPOOL_REPLICAS}" \
