@@ -34,6 +34,14 @@ control_plane_nodes:
 # controlPlane.fencing.credentials, or the TNF controller builds a stonith
 # device targeting a node Pacemaker has never heard of. Ignition sets
 # /etc/hostname to these values.
+# The ACM site's node list, in the same shape as control_plane_nodes so the
+# loadbalancer role can front either site without knowing which it is looking at.
+acm_control_plane_nodes:
+  - name: "{{ acm_sno_node_name | default('sno-0') }}"
+    private_ip: "{{ acm_sno_private_ip | default('10.1.0.10') }}"
+    gpu_workload: container
+    data_volume: ""
+
 network_type: OVNKubernetes
 cluster_network_cidr: 10.128.0.0/14
 cluster_network_host_prefix: 23

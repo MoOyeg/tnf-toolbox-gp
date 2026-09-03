@@ -31,6 +31,18 @@ load_config() {
   SERVICES_STACK="${CLUSTER_NAME}-services"
   COMPUTE_STACK="${CLUSTER_NAME}-compute"
   BOOTSTRAP_STACK="${CLUSTER_NAME}-bootstrap"
+
+  # The ACM site. Its own VPC, bastion and single bare-metal node, joined to the
+  # TNF site by peering. The stacks reuse the same templates as TNF with
+  # different parameters -- the two sites differ in addressing and size, not in
+  # shape.
+  ACM_CLUSTER_NAME="${ACM_CLUSTER_NAME:-acm}"
+  ACM_NETWORK_STACK="${ACM_CLUSTER_NAME}-network"
+  ACM_SERVICES_STACK="${ACM_CLUSTER_NAME}-services"
+  ACM_SNO_STACK="${ACM_CLUSTER_NAME}-sno"
+  PEERING_STACK="${ACM_CLUSTER_NAME}-to-${CLUSTER_NAME}-peering"
+  ACM_STATE_DIR="${STATE_DIR}/${ACM_CLUSTER_NAME}"
+  mkdir -p "${ACM_STATE_DIR}"
   mkdir -p "${STATE_DIR}"
 }
 
@@ -219,6 +231,16 @@ save_state() {
 
 read_state() {
   cat "${STATE_DIR}/$1" 2>/dev/null
+}
+
+# The ACM site keeps its own state alongside TNF's rather than mixing the two,
+# so that "which bastion" is never ambiguous.
+save_acm_state() {
+  printf '%s' "$2" > "${ACM_STATE_DIR}/$1"
+}
+
+read_acm_state() {
+  cat "${ACM_STATE_DIR}/$1" 2>/dev/null
 }
 
 # Resolve the public Route53 zone the cluster's DNS records go into.

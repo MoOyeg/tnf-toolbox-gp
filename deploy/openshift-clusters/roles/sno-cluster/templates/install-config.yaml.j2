@@ -1,12 +1,18 @@
-# Single-node OpenShift for the ACM hub. Rendered by the sno-cluster role.
+# The ACM cluster: single-node OpenShift on its own bare-metal EC2 instance, at
+# the ACM site.
 #
-# platform:none with one control-plane replica and no compute is the standard SNO
-# shape. It runs as a VM on the TNF cluster, so machineNetwork is KubeVirt's
-# masquerade subnet, not the TNF machine network.
+# One control-plane replica and no compute is the SNO shape. bootstrapInPlace is
+# deliberately absent: with it, `create single-node-ignition-config` emits only
+# bootstrap-in-place-for-live-iso.ign, which expects to run from the RHCOS live
+# ISO. Without it the normal flow emits bootstrap.ign plus a small master.ign --
+# exactly what the TNF nodes already boot from an AMI with an ignition pointer in
+# user-data, so the ACM cluster reuses that machinery instead of needing an ISO.
+#
+# Bare metal because this cluster runs OpenShift Virtualization, which needs KVM.
 apiVersion: v1
 baseDomain: {{ base_domain }}
 metadata:
-  name: {{ sno_cluster_name }}
+  name: {{ acm_cluster_name }}
 controlPlane:
   name: master
   replicas: 1
@@ -14,17 +20,15 @@ compute:
   - name: worker
     replicas: 0
 networking:
-  networkType: OVNKubernetes
+  networkType: {{ network_type }}
   machineNetwork:
-    - cidr: {{ sno_machine_cidr }}
+    - cidr: {{ acm_subnet_cidr }}
   clusterNetwork:
-    - cidr: 10.128.0.0/14
-      hostPrefix: 23
+    - cidr: {{ cluster_network_cidr }}
+      hostPrefix: {{ cluster_network_host_prefix }}
   serviceNetwork:
-    - 172.30.0.0/16
+    - {{ service_network_cidr }}
 platform:
   none: {}
-bootstrapInPlace:
-  installationDisk: /dev/vda
 pullSecret: '{{ pull_secret }}'
 sshKey: '{{ ssh_public_key }}'

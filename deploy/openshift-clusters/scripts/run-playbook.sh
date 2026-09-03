@@ -58,6 +58,14 @@ jq -n \
   --arg master1_gpu_workload "${MASTER1_GPU_WORKLOAD}" \
   --arg master0_data_volume  "$(read_state master0_data_volume)" \
   --arg master1_data_volume  "$(read_state master1_data_volume)" \
+  --arg acm_cluster_name     "${ACM_CLUSTER_NAME}" \
+  --arg acm_subnet_cidr      "${ACM_SUBNET_CIDR}" \
+  --arg acm_vpc_cidr         "${ACM_VPC_CIDR}" \
+  --arg acm_sno_private_ip   "${ACM_SNO_PRIVATE_IP}" \
+  --arg acm_bootstrap_private_ip "${ACM_BOOTSTRAP_PRIVATE_IP:-10.1.0.9}" \
+  --arg acm_bastion_private_ip   "${ACM_BASTION_PRIVATE_IP}" \
+  --arg acm_bastion_public_ip    "$(read_acm_state public_address)" \
+  --arg acm_ignition_base_url    "$(read_acm_state ignition_base_url)" \
   --arg guest_cluster_prefix "${GUEST_CLUSTER_PREFIX}" \
   --argjson guest_cluster_count     "${GUEST_CLUSTER_COUNT}" \
   --argjson guest_nodepool_replicas "${GUEST_NODEPOOL_REPLICAS}" \

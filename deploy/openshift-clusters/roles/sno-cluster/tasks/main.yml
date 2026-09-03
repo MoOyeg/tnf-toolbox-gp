@@ -1,46 +1,48 @@
 ---
-# Install a single-node OpenShift cluster as a VM on TNF, to run ACM.
+# Install the ACM cluster: single-node OpenShift on bare metal at the ACM site.
 #
-# The point of the refactor: ACM no longer shares a cluster with the thing it
-# manages. TNF keeps MultiCluster Engine and remains the infra cluster where
-# guest VMs and GPUs live; this SNO sits above it as an independent hub.
+# Runs against the ACM site's own bastion, not TNF's. The two sites are joined by
+# VPC peering; this role builds the ACM side, and infra-credentials.yml then
+# teaches it to reach TNF's MultiCluster Engine across that connection.
 
-- name: Check whether the SNO cluster is already installed
+- name: Look for an existing ACM cluster kubeconfig
   ansible.builtin.stat:
-    path: "{{ sno_install_dir }}/auth/kubeconfig"
-  register: sno_kubeconfig_stat
+    path: "{{ acm_kubeconfig }}"
+  register: acm_kubeconfig_stat
 
-- name: Ask the SNO whether it is actually installed
+# Same lesson as the TNF install: auth/kubeconfig exists as soon as ignition is
+# generated, so its presence proves nothing. Ask the cluster.
+- name: Ask the ACM cluster whether it is actually installed
   ansible.builtin.command: >-
     oc --request-timeout=15s get clusterversion version
     -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
   environment:
-    KUBECONFIG: "{{ sno_install_dir }}/auth/kubeconfig"
-  register: sno_clusterversion
+    KUBECONFIG: "{{ acm_kubeconfig }}"
+  register: acm_clusterversion
   changed_when: false
   failed_when: false
-  when: sno_kubeconfig_stat.stat.exists
+  when: acm_kubeconfig_stat.stat.exists
 
-- name: Record whether the SNO is already up
+- name: Record whether the ACM cluster is already up
   ansible.builtin.set_fact:
-    sno_already_installed: >-
-      {{ sno_kubeconfig_stat.stat.exists
-         and sno_clusterversion.rc | default(1) == 0
-         and sno_clusterversion.stdout | default('') == 'True' }}
+    acm_already_installed: >-
+      {{ acm_kubeconfig_stat.stat.exists
+         and acm_clusterversion.rc | default(1) == 0
+         and acm_clusterversion.stdout | default('') == 'True' }}
 
-- name: Build and boot the SNO
-  when: not sno_already_installed
+- name: Install the ACM cluster
+  when: not acm_already_installed
   block:
-    - name: Generate the agent installer image
-      ansible.builtin.include_tasks: image.yml
+    - name: Generate install-config and ignition
+      ansible.builtin.include_tasks: render.yml
 
-    - name: Create the VM on TNF and expose it
-      ansible.builtin.include_tasks: vm.yml
+    - name: Launch the node and its bootstrap
+      ansible.builtin.include_tasks: launch.yml
 
-    - name: Wait for the SNO installation to finish
+    - name: Wait for the installation to finish
       ansible.builtin.include_tasks: wait.yml
 
-- name: Report an existing SNO
-  when: sno_already_installed
+- name: Report an existing ACM cluster
+  when: acm_already_installed
   ansible.builtin.debug:
-    msg: "SNO {{ sno_cluster_name }} is already installed; skipping to ACM."
+    msg: "{{ acm_cluster_name }} is already installed; skipping to ACM itself."

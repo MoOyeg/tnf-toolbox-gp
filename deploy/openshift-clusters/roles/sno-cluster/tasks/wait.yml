@@ -1,68 +1,72 @@
 ---
-# Wait for the agent installer to finish, then collect the SNO's credentials.
+# Wait for the ACM cluster to install, then tidy up its bootstrap machine.
 
-# haproxy has to route api.<sno>.<domain> before the installer can be polled
-# through it, and the record has to exist before that. Both are set up by the
-# playbook before this runs; this only confirms the path works.
-- name: Wait for the SNO API to answer through the bastion
-  ansible.builtin.uri:
-    url: "https://api.{{ sno_cluster_name }}.{{ base_domain }}:{{ sno_api_port }}/version"
-    validate_certs: false
-    status_code: [200, 401, 403]
-  register: sno_api_up
-  retries: "{{ (sno_install_timeout | int / 30) | int }}"
-  delay: 30
-  until: sno_api_up is not failed
-
-- name: Wait for the agent installer to report the cluster installed
+- name: Wait for bootstrap-complete
   ansible.builtin.command: >-
-    {{ bin_dir }}/openshift-install agent wait-for install-complete
-    --dir {{ sno_install_dir }}
-  register: sno_install
-  async: "{{ sno_install_timeout | int }}"
+    {{ bin_dir }}/openshift-install wait-for bootstrap-complete
+    --dir {{ acm_install_dir }} --log-level info
+  register: acm_bootstrap
+  async: "{{ acm_bootstrap_timeout | int }}"
+  poll: 30
+  changed_when: true
+
+- name: Destroy the ACM bootstrap machine
+  ansible.builtin.command:
+    cmd: "{{ repo_root }}/deploy/aws-infra/scripts/destroy-acm-bootstrap.sh"
+  delegate_to: localhost
+  changed_when: true
+
+- name: Drop the bootstrap node from the ACM haproxy
+  ansible.builtin.include_role:
+    name: loadbalancer
+  vars:
+    include_bootstrap: false
+    control_plane_nodes: "{{ acm_control_plane_nodes }}"
+    sno_enabled: false
+
+- name: Remove bootstrap.ign now that it is no longer needed
+  ansible.builtin.file:
+    path: "{{ ignition_root }}/bootstrap.ign"
+    state: absent
+  become: true
+
+- name: Wait for install-complete
+  ansible.builtin.command: >-
+    {{ bin_dir }}/openshift-install wait-for install-complete
+    --dir {{ acm_install_dir }} --log-level info
+  register: acm_install
+  async: "{{ acm_install_timeout | int }}"
   poll: 60
   changed_when: true
 
-- name: Confirm the SNO reports itself Available
-  ansible.builtin.command: >-
-    oc --request-timeout=30s get clusterversion version
-    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+- name: Wait for the single node to be Ready
+  ansible.builtin.command: oc get nodes --no-headers
   environment:
-    KUBECONFIG: "{{ sno_install_dir }}/auth/kubeconfig"
-  register: sno_available
+    KUBECONFIG: "{{ acm_kubeconfig }}"
+  register: acm_nodes
   changed_when: false
-  retries: 30
+  retries: 60
   delay: 20
-  until: sno_available.stdout == "True"
+  until:
+    - acm_nodes.rc == 0
+    - acm_nodes.stdout_lines | select('search', ' Ready') | list | length == 1
 
-- name: Detach the install ISO so the VM boots from disk on any future restart
-  kubernetes.core.k8s:
-    kubeconfig: "{{ op_kubeconfig }}"
-    state: patched
-    api_version: kubevirt.io/v1
-    kind: VirtualMachine
-    name: "{{ sno_vm_name }}"
-    namespace: "{{ sno_namespace }}"
-    definition:
-      spec:
-        template:
-          spec:
-            domain:
-              devices:
-                disks:
-                  - name: rootdisk
-                    disk:
-                      bus: virtio
-                    bootOrder: 1
-            volumes:
-              - name: rootdisk
-                dataVolume:
-                  name: "{{ sno_vm_name }}-root"
+- name: Wait for the cluster operators to settle
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get clusteroperators --no-headers
+    | awk '$3 != "True" || $5 == "True"'
+  environment:
+    KUBECONFIG: "{{ acm_kubeconfig }}"
+  register: acm_co
+  changed_when: false
+  retries: 60
+  delay: 30
+  until: acm_co.stdout == ""
 
-- name: Report the SNO
+- name: Report the ACM cluster
   ansible.builtin.debug:
     msg:
-      - "SNO {{ sno_cluster_name }} is installed."
-      - "API:     https://api.{{ sno_cluster_name }}.{{ base_domain }}:{{ sno_api_port }}"
-      - "Console: https://console-openshift-console.apps.{{ sno_cluster_name }}.{{ base_domain }}"
-      - "kubeconfig on the bastion: {{ sno_install_dir }}/auth/kubeconfig"
+      - "{{ acm_cluster_name }} is installed at the ACM site."
+      - "API:     https://api.{{ acm_cluster_name }}.{{ base_domain }}:6443"
+      - "Console: https://console-openshift-console.apps.{{ acm_cluster_name }}.{{ base_domain }}"

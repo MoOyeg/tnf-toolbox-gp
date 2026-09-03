@@ -1,0 +1,44 @@
+---
+# Stage 3c: the ACM cluster, at its own site.
+#
+# ACM does not run on the cluster it manages. It has its own VPC, its own bastion
+# and its own bare-metal node, joined to the TNF site by VPC peering. TNF keeps
+# MultiCluster Engine and stays the infra cluster where guest VMs and GPUs live;
+# ACM reaches it across the peering connection.
+- name: Install the ACM cluster at the ACM site
+  hosts: acm_bastion
+  gather_facts: true
+  environment:
+    KUBECONFIG: "{{ acm_kubeconfig }}"
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
+
+  tasks:
+    - name: Install the OpenShift clients on the ACM bastion
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: install-clients
+
+    - name: Install the single-node ACM cluster
+      ansible.builtin.include_role:
+        name: sno-cluster
+
+    - name: Install OpenShift Virtualization on the ACM cluster
+      ansible.builtin.include_role:
+        name: cnv
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+        # No GPUs at this site; the permitted host device would match nothing.
+        cnv_permit_gpu: false
+
+    - name: Install ACM
+      ansible.builtin.include_role:
+        name: acm
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+
+    - name: Give ACM a credential for the TNF infra cluster across the peering
+      ansible.builtin.include_role:
+        name: sno-cluster
+        tasks_from: infra-credentials
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"

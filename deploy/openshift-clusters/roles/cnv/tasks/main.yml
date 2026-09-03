@@ -29,17 +29,23 @@
       metadata:
         name: "{{ hco_name }}"
         namespace: "{{ cnv_namespace }}"
-      spec:
-        # Without this a VM may not request the GPU at all: KubeVirt refuses to
-        # attach any host device that is not on the permitted list.
-        permittedHostDevices:
-          pciHostDevices:
-            - pciDeviceSelector: "{{ gpu_pci_vendor_device }}"
-              resourceName: "{{ gpu_resource_name }}"
-              # The GPU Operator's sandbox device plugin already advertises this
-              # resource and owns the vfio-pci binding. Telling KubeVirt the
-              # provider is external stops the two from fighting over it.
-              externalResourceProvider: true
+      # permittedHostDevices only where there are GPUs. The ACM site has none, and
+      # naming a device nothing advertises would leave HyperConverged permitting
+      # a resource that can never be satisfied.
+      spec: >-
+        {{
+          {
+            "permittedHostDevices": {
+              "pciHostDevices": [
+                {
+                  "pciDeviceSelector": gpu_pci_vendor_device,
+                  "resourceName": gpu_resource_name,
+                  "externalResourceProvider": true
+                }
+              ]
+            }
+          } if (cnv_permit_gpu | default(true)) else {}
+        }}
 
 - name: Wait for HyperConverged to report Available
   ansible.builtin.command: >-
@@ -57,6 +63,7 @@
 # not bound the GPUs, this stays absent and every guest cluster NodePool would
 # sit Pending with no obvious reason.
 - name: Confirm the GPU resource is allocatable on the passthrough node
+  when: cnv_permit_gpu | default(true)
   # Every line is indented identically on purpose. In a folded (>-) scalar a
   # more-indented line keeps its newline, and a newline between shell arguments
   # splits the command in two: jq would run with no filter and the filter would
@@ -76,6 +83,7 @@
   until: passthrough_capacity.rc == 0 and passthrough_capacity.stdout != ""
 
 - name: Report the passthrough capacity
+  when: cnv_permit_gpu | default(true)
   ansible.builtin.debug:
     msg:
       - "OpenShift Virtualization is ready."

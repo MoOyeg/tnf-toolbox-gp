@@ -1,13 +1,15 @@
 ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 
-.PHONY: all infra tnf kubeconfig iommu gpu virt-acm sno guests guests-from-acm \
-        guest-gpu doctor ssh status inventory clean clean-guests destroy help
+.PHONY: all infra acm-infra peering tnf kubeconfig iommu gpu virt sno acm-site \
+        guests guests-from-acm guest-gpu doctor ssh acm-ssh status inventory \
+        clean clean-guests destroy destroy-acm help
 
 # ---------------------------------------------------------------- end to end
 # Ordering is deliberate. The cluster must be fully up and healthy *as TNF*
 # before anything reboots it, and its credentials must be on your workstation
 # before the one stage that can break it.
-all: infra tnf kubeconfig iommu gpu virt-acm sno guests-from-acm guest-gpu
+all: infra acm-infra peering tnf kubeconfig iommu gpu virt-acm acm-site \
+     guests-from-acm guest-gpu
 	@echo ""
 	@echo "Everything is up. 'make status' for a summary."
 
@@ -29,8 +31,17 @@ gpu:
 virt-acm:
 	@$(ANSIBLE) 30-virt-acm.yml $(EXTRA_ARGS)
 
-sno:
-	@$(ANSIBLE) 35-sno-acm.yml $(EXTRA_ARGS)
+# The ACM site: its own VPC and bastion, peered to TNF.
+acm-infra:
+	@./aws-infra/scripts/create-acm-infra.sh
+	@./aws-infra/scripts/inventory.sh
+
+peering:
+	@./aws-infra/scripts/create-peering.sh
+
+# The ACM cluster itself: single-node OpenShift on bare metal at the ACM site.
+acm-site:
+	@$(ANSIBLE) 36-acm-site.yml $(EXTRA_ARGS)
 
 # Guests hosted by TNF's own MultiCluster Engine.
 guests:
@@ -50,6 +61,9 @@ doctor:
 ssh:
 	@./aws-infra/scripts/ssh.sh
 
+acm-ssh:
+	@./aws-infra/scripts/ssh.sh --acm
+
 status:
 	@./aws-infra/scripts/status.sh
 
@@ -65,6 +79,9 @@ clean-guests:
 
 clean:
 	@./aws-infra/scripts/destroy-cluster.sh
+
+destroy-acm:
+	@./aws-infra/scripts/destroy-acm.sh
 
 destroy:
 	@./aws-infra/scripts/destroy.sh
@@ -83,8 +100,12 @@ help:
 	@echo "                       gated on TNF health before and after"
 	@echo "  make gpu           - NFD + NVIDIA GPU Operator (no reboots)"
 	@echo "  make virt-acm      - LVM Storage, OpenShift Virtualization, MCE/ACM on TNF"
-	@echo "  make sno           - a single-node OpenShift VM on TNF running ACM, and"
-	@echo "                       the credential that lets it use TNF as infra"
+	@echo "  make acm-infra     - the ACM site: its own VPC, subnet, DNS and bastion"
+	@echo "  make peering       - VPC peering between the two sites, plus routes and"
+	@echo "                       cross-VPC DNS so each resolves the other privately"
+	@echo "  make acm-site      - the ACM cluster: single-node OpenShift on bare metal"
+	@echo "                       at the ACM site, plus OCP-V, ACM, and the credential"
+	@echo "                       that lets it drive TNF as its infra cluster"
 	@echo "  make guests          - guests hosted by TNF's own MultiCluster Engine"
 	@echo "  make guests-from-acm - guests created by ACM on the SNO, VMs and GPUs on TNF"
 	@echo "  make guest-gpu     - NFD + GPU Operator inside each guest cluster"

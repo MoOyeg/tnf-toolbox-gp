@@ -97,10 +97,36 @@ def role_defaults():
     return merged
 
 
+def extra_vars_from_wrapper():
+    """Placeholder values for every extra var run-playbook.sh supplies.
+
+    Parsed from the script rather than restated, for the same reason role
+    defaults are: a variable added to the wrapper should not also have to be
+    added here. Explicit CONTEXT entries still win, so anything whose exact value
+    the assertions depend on is set there.
+    """
+    wrapper = f"{ROOT}/deploy/openshift-clusters/scripts/run-playbook.sh"
+    names = re.findall(r"--arg(?:json)?\s+(\w+)", open(wrapper, encoding="utf-8").read())
+    placeholders = {}
+    for name in names:
+        if name.endswith("_cidr"):
+            placeholders[name] = "10.9.0.0/24"
+        elif name.endswith("_url"):
+            placeholders[name] = "http://10.9.0.9:8080"
+        elif name.endswith("_ip"):
+            placeholders[name] = "10.9.0.9"
+        elif name.endswith("_count") or name.endswith("_replicas"):
+            placeholders[name] = 1
+        else:
+            placeholders[name] = name
+    return placeholders
+
+
 def render(template_path, **overrides):
     directory, name = os.path.split(template_path)
     env = Environment(loader=FileSystemLoader(directory), undefined=StrictUndefined)
-    return env.get_template(name).render(**{**role_defaults(), **CONTEXT, **overrides})
+    return env.get_template(name).render(
+        **{**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT, **overrides})
 
 
 def test_every_template_renders():

@@ -1,0 +1,74 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  VPC peering between the ACM site and the TNF site, with the routes that make it
+  usable.
+
+  A peering connection on its own moves no traffic: each VPC also needs a route
+  pointing the other's CIDR at the connection. Both halves are here so that
+  neither can be forgotten -- a peering connection that exists but does not route
+  looks identical to a firewall problem.
+
+  Within one account the connection auto-accepts. Across accounts the accepter
+  must accept it explicitly, which is the main difference when this moves to two
+  profiles; PeerOwnerId is already wired for that.
+
+Parameters:
+  AcmVpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: Requester. The ACM site initiates, since it is the side that reaches out.
+  AcmVpcCidr:
+    Type: String
+  AcmRouteTableId:
+    Type: String
+  TnfVpcId:
+    Type: AWS::EC2::VPC::Id
+  TnfVpcCidr:
+    Type: String
+  TnfRouteTableId:
+    Type: String
+  PeerOwnerId:
+    Type: String
+    Default: ''
+    Description: >-
+      Account id owning the TNF VPC. Empty means same-account, which auto-accepts.
+      Set it when the two sites move to separate profiles.
+
+Conditions:
+  CrossAccount: !Not [!Equals [!Ref PeerOwnerId, '']]
+
+Resources:
+  Peering:
+    Type: AWS::EC2::VPCPeeringConnection
+    Properties:
+      VpcId: !Ref AcmVpcId
+      PeerVpcId: !Ref TnfVpcId
+      PeerOwnerId: !If [CrossAccount, !Ref PeerOwnerId, !Ref 'AWS::NoValue']
+      Tags:
+        - Key: Name
+          Value: acm-to-tnf
+
+  # ACM -> TNF: lets the ACM cluster reach TNF's API and its KubeVirt VMs.
+  AcmToTnfRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref AcmRouteTableId
+      DestinationCidrBlock: !Ref TnfVpcCidr
+      VpcPeeringConnectionId: !Ref Peering
+
+  # TNF -> ACM: the return path. Without it requests arrive and replies do not,
+  # which presents as a timeout rather than a refusal.
+  TnfToAcmRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref TnfRouteTableId
+      DestinationCidrBlock: !Ref AcmVpcCidr
+      VpcPeeringConnectionId: !Ref Peering
+
+Outputs:
+  PeeringConnectionId:
+    Value: !Ref Peering
+  AcmVpcCidr:
+    Value: !Ref AcmVpcCidr
+  TnfVpcCidr:
+    Value: !Ref TnfVpcCidr

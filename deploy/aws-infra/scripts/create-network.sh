@@ -20,9 +20,11 @@ create_or_update_stack "${NETWORK_STACK}" "${TEMPLATE_DIR}/network-stack.yaml" \
   "SubnetCidr=${SUBNET_CIDR}" \
   "AvailabilityZone=${AVAILABILITY_ZONE}" \
   "AllowedSshCidr=${ALLOWED_SSH_CIDR}" \
-  "AllowedApiCidr=${ALLOWED_API_CIDR:-0.0.0.0/0}"
+  "AllowedApiCidr=${ALLOWED_API_CIDR:-0.0.0.0/0}" \
+  "PeerVpcCidr=${ACM_VPC_CIDR:-}"
 
 save_state vpc_id           "$(stack_output "${NETWORK_STACK}" VpcId)"
+save_state route_table_id   "$(stack_output "${NETWORK_STACK}" RouteTableId)"
 save_state subnet_id        "$(stack_output "${NETWORK_STACK}" SubnetId)"
 save_state cluster_sg_id    "$(stack_output "${NETWORK_STACK}" ClusterSecurityGroupId)"
 save_state bastion_sg_id    "$(stack_output "${NETWORK_STACK}" BastionSecurityGroupId)"

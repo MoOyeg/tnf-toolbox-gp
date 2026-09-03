@@ -33,6 +33,15 @@ Parameters:
     Type: String
     Description: CIDR permitted to SSH to the bastion. Keep this narrow.
     Default: 0.0.0.0/0
+  PeerVpcCidr:
+    Type: String
+    Default: ''
+    Description: >-
+      CIDR of the VPC this one is peered with. Traffic arriving over a peering
+      connection carries the peer's addresses, which are outside this VPC's own
+      CIDR and therefore not covered by the in-VPC rules below -- without this the
+      connection routes correctly and every packet is still dropped by the
+      security group. Static config, so it can be set before the peer exists.
   AllowedApiCidr:
     Type: String
     Description: >-
@@ -41,6 +50,9 @@ Parameters:
       if that is not wanted. Separate from AllowedSshCidr so exposing the API
       does not also expose SSH.
     Default: 0.0.0.0/0
+
+Conditions:
+  HasPeer: !Not [!Equals [!Ref PeerVpcCidr, '']]
 
 Resources:
   Vpc:
@@ -165,6 +177,24 @@ Resources:
       IpProtocol: -1
       SourceSecurityGroupId: !Ref BastionSecurityGroup
 
+  BastionPeerIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasPeer
+    Properties:
+      Description: Everything arriving over the VPC peering connection
+      GroupId: !Ref BastionSecurityGroup
+      IpProtocol: -1
+      CidrIp: !Ref PeerVpcCidr
+
+  ClusterPeerIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: HasPeer
+    Properties:
+      Description: Everything arriving over the VPC peering connection
+      GroupId: !Ref ClusterSecurityGroup
+      IpProtocol: -1
+      CidrIp: !Ref PeerVpcCidr
+
   HostedZone:
     Type: AWS::Route53::HostedZone
     Properties:
@@ -178,6 +208,9 @@ Resources:
 Outputs:
   VpcId:
     Value: !Ref Vpc
+  RouteTableId:
+    Description: Needed by the peering stack to add a route to the peer VPC.
+    Value: !Ref RouteTable
   VpcCidr:
     Value: !Ref VpcCidr
   SubnetId:

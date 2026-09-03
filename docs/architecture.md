@@ -206,3 +206,66 @@ into every kubeconfig and DNS record.
 The SNO gets its own private hosted zone rather than records in TNF's. TNF's
 private zone is `<cluster>.<base-domain>`, and `api.sno.<base-domain>` is not
 inside it; Route53 rejects a record that does not belong to its zone.
+
+## Two sites
+
+ACM does not run on the cluster it manages, and does not run *on* that cluster's
+hardware either. It has its own site: a separate VPC, its own bastion, and its
+own bare-metal node. The two are joined by VPC peering.
+
+```
+ACM site                                TNF site
+VPC 10.1.0.0/16                         VPC 10.0.0.0/16
+├── bastion  10.1.0.5                   ├── bastion  10.0.0.5
+└── sno-0    10.1.0.10  m5zn.metal      ├── master-0 10.0.0.10  g4dn.metal
+      ACM + MCE + HyperShift            └── master-1 10.0.0.11  g4dn.metal
+      OpenShift Virtualization                MCE, OCP-V, 16x Tesla T4
+                    │                                    ▲
+                    └────── VPC peering ─────────────────┘
+                            ACM drives TNF as its KubeVirt infra cluster
+```
+
+**Why a separate site rather than a VM on TNF.** A hub that lives on the cluster
+it manages shares that cluster's failure domain: losing TNF also loses the thing
+that would tell you TNF was gone. A VM on TNF is better than a namespace on TNF
+but has the same property. Its own VPC and its own hardware does not.
+
+**Why bare metal for a single-node cluster.** The ACM cluster runs OpenShift
+Virtualization, which needs KVM, and KVM is not available on a virtualised EC2
+instance. `m5zn.metal` is the cheapest x86 metal that fits. It needs no GPU --
+the GPUs belong to the TNF site, and ACM reaches them by creating VMs there.
+
+**The CIDRs must not overlap.** Peering will not route between VPCs whose ranges
+collide, and AWS rejects the connection outright. `create-acm-infra.sh` refuses
+to proceed if they match, rather than letting it fail later as silent packet
+loss.
+
+**A peering connection on its own moves nothing.** Each VPC also needs a route
+pointing the other's CIDR at the connection, *and* a security group rule
+admitting it -- traffic arriving over peering carries the peer's addresses, which
+are outside the local VPC CIDR that the in-VPC rules cover. Both halves of both
+are in the templates, because a connection that exists but does not route looks
+exactly like a firewall problem. `create-peering.sh` finishes by opening a TCP
+connection from one bastion to the other, since "active" is not proof.
+
+**DNS is associated in both directions.** Without that, the ACM cluster resolves
+`api.<tnf>.<domain>` through public DNS to TNF's elastic IP and the traffic
+leaves the VPC and comes back over the internet -- working, but not using the
+peering. Associating each site's private zone with the other's VPC keeps it on
+the connection.
+
+**Two HyperShift operators exist**, one on TNF's MCE and one on the ACM cluster.
+They are separated by namespace: TNF hosts its own guests in `clusters`, while
+VMs ACM creates land in `acm-hosted-vms`. Otherwise both would reconcile the same
+objects, each believing it owned them.
+
+### The single-node install
+
+Not the bootstrap-in-place SNO flow. With `bootstrapInPlace` set,
+`create single-node-ignition-config` emits only
+`bootstrap-in-place-for-live-iso.ign`, which expects to run from the RHCOS live
+ISO. Without it, the ordinary flow emits `bootstrap.ign` and a 1.7 KiB
+`master.ign` -- exactly the shape the TNF nodes already boot from an AMI with an
+ignition pointer in user-data. Both variants were checked against the 4.22.10
+installer before choosing; reusing the existing launch path was worth more than
+matching the canonical SNO recipe.

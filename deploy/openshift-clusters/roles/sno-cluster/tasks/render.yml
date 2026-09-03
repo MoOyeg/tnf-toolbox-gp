@@ -1,0 +1,60 @@
+---
+# Render the ACM cluster's install-config and turn it into ignition.
+
+- name: Discard artifacts from an attempt that never launched
+  ansible.builtin.file:
+    path: "{{ acm_install_dir }}"
+    state: absent
+  when: not (acm_node_launched | default(false))
+
+- name: Create the ACM install directory
+  ansible.builtin.file:
+    path: "{{ acm_install_dir }}"
+    state: directory
+    mode: '0700'
+
+- name: Render the ACM install-config
+  ansible.builtin.template:
+    src: install-config.yaml.j2
+    dest: "{{ acm_install_dir }}/install-config.yaml"
+    mode: '0600'
+
+- name: Archive a copy of the install-config
+  ansible.builtin.copy:
+    src: "{{ acm_install_dir }}/install-config.yaml"
+    dest: "{{ acm_install_dir }}/install-config.yaml.bak"
+    remote_src: true
+    mode: '0600'
+
+- name: Create manifests
+  ansible.builtin.command: "{{ bin_dir }}/openshift-install create manifests --dir {{ acm_install_dir }}"
+  args:
+    creates: "{{ acm_install_dir }}/manifests"
+
+# With one control-plane node and no compute there is nowhere else for the router
+# and the operators to run.
+- name: Make the control plane schedulable
+  ansible.builtin.lineinfile:
+    path: "{{ acm_install_dir }}/manifests/cluster-scheduler-02-config.yml"
+    regexp: '^(\s*)mastersSchedulable:'
+    line: '  mastersSchedulable: true'
+
+# Not `create single-node-ignition-config`: that emits only
+# bootstrap-in-place-for-live-iso.ign, which expects the RHCOS live ISO. The
+# normal flow gives a bootstrap.ign and a small master.ign, which boot from an
+# AMI with a pointer in user-data exactly as the TNF nodes do.
+- name: Create ignition configs
+  ansible.builtin.command: "{{ bin_dir }}/openshift-install create ignition-configs --dir {{ acm_install_dir }}"
+  args:
+    creates: "{{ acm_install_dir }}/bootstrap.ign"
+
+- name: Publish the ignition configs on the ACM bastion
+  ansible.builtin.copy:
+    src: "{{ acm_install_dir }}/{{ item }}"
+    dest: "{{ ignition_root }}/{{ item }}"
+    remote_src: true
+    mode: '0644'
+  become: true
+  loop:
+    - bootstrap.ign
+    - master.ign

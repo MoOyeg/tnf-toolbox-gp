@@ -15,31 +15,23 @@ devices on the OpenShift nodes.
 ## What it builds
 
 ```
-AWS VPC, one AZ                    api.<cluster>.<your-public-route53-zone>
-│                                  *.apps.<cluster>.<your-public-route53-zone>
-├── bastion (m5.large)  ── the only host reachable from outside, and where
-│                          those public DNS records point
-│     ├── haproxy          api / api-int / *.apps      (platform:none has no VIP)
-│     ├── redfish-ec2      Redfish → EC2 Stop/StartInstances   (Pacemaker fences here)
-│     └── ignition server  bootstrap.ign  (300 KiB vs a 16 KiB user-data limit)
-│
-└── TNF 4.22, platform:none  ── the infra cluster: VMs and GPUs live here
-      ├── master-0   g4dn.metal   8× Tesla T4 → NVIDIA driver, container workloads
-      └── master-1   g4dn.metal   8× Tesla T4 → vfio-pci, VM passthrough
-            │
-            ├── NFD + NVIDIA GPU Operator      (sandboxWorkloads enabled)
-            ├── LVM Storage on EBS gp3
-            ├── OpenShift Virtualization       permittedHostDevices: 10DE:1EB8
-            ├── MultiCluster Engine            (can still host guests itself)
-            │
-            ├── VM: sno ── the ACM hub, deliberately not on the cluster it manages
-            │        └── ACM + MCE + HyperShift operator
-            │              │   --infra-kubeconfig-file points back at TNF
-            │              ▼
-            └── VMs: vcp-1, vcp-2 worker nodes, created by the SNO, running here
-                  control planes are pods on the SNO, not on TNF
-                  each worker holds N× T4  (NodePool hostDevices)
-                  + NFD + GPU Operator inside each guest
+ACM site  VPC 10.1.0.0/16              TNF site  VPC 10.0.0.0/16
+├── bastion 10.1.0.5                   ├── bastion 10.0.0.5
+│                                      │     ├── haproxy      api / api-int / *.apps
+│                                      │     ├── redfish-ec2  Redfish → EC2 Stop/Start
+│                                      │     └── ignition server
+└── sno-0  m5zn.metal  10.1.0.10       ├── master-0  g4dn.metal  8× T4 → container mode
+      single-node OpenShift            └── master-1  g4dn.metal  8× T4 → vfio-pci
+      ├── ACM + MCE + HyperShift             TNF 4.22, platform:none
+      └── OpenShift Virtualization           ├── NFD + NVIDIA GPU Operator
+                  │                          ├── LVM Storage on EBS gp3
+                  │                          ├── OpenShift Virtualization
+                  │                          └── MultiCluster Engine
+                  │                                    ▲
+                  └────────── VPC peering ─────────────┘
+                    ACM drives TNF as its KubeVirt infra cluster:
+                    HostedCluster + control-plane pods on the ACM cluster,
+                    worker VMs and their GPUs on TNF.
 ```
 
 No nested virtualization anywhere. OpenShift Virtualization runs on the metal,

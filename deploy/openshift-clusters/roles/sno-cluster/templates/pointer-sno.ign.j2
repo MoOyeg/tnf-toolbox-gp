@@ -1,0 +1,1 @@
+{"ignition":{"version":"3.4.0","config":{"merge":[{"source":"{{ acm_ignition_base_url }}/master.ign"}]}},"storage":{"files":[{"path":"/etc/hostname","mode":420,"overwrite":true,"contents":{"source":"data:,{{ acm_sno_node_name }}%0A"}}]}}

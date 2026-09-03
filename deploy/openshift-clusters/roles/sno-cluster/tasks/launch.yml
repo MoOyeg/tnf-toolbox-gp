@@ -1,0 +1,61 @@
+---
+# Launch the ACM cluster's single node and its temporary bootstrap machine.
+
+- name: Configure haproxy and the ignition server on the ACM bastion
+  ansible.builtin.include_role:
+    name: loadbalancer
+  vars:
+    include_bootstrap: true
+    # The ACM site's haproxy fronts one node, not a pair, and has no SNO of its
+    # own to route around.
+    control_plane_nodes: "{{ acm_control_plane_nodes }}"
+    bootstrap_private_ip: "{{ acm_bootstrap_private_ip }}"
+    sno_enabled: false
+
+- name: Render the ignition pointers
+  ansible.builtin.template:
+    src: "pointer-{{ item }}.ign.j2"
+    dest: "{{ acm_install_dir }}/pointer-{{ item }}.ign"
+    mode: '0600'
+  loop:
+    - sno
+    - bootstrap
+
+- name: Fetch the pointers to the control host
+  ansible.builtin.fetch:
+    src: "{{ acm_install_dir }}/pointer-{{ item }}.ign"
+    dest: "{{ repo_root }}/deploy/aws-infra/instance-data/{{ acm_cluster_name }}/pointer-{{ item }}.ign"
+    flat: true
+  loop:
+    - sno
+    - bootstrap
+
+- name: Resolve the RHCOS AMI for this release
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    {{ bin_dir }}/openshift-install coreos print-stream-json
+    | jq -r '.architectures.x86_64.images.aws.regions["{{ region }}"].image'
+  register: acm_rhcos_ami
+  changed_when: false
+
+- name: Fail if no AMI is published for this region
+  ansible.builtin.assert:
+    that:
+      - acm_rhcos_ami.stdout | length > 0
+      - acm_rhcos_ami.stdout != "null"
+    fail_msg: "No RHCOS AMI published for {{ region }} in the {{ ocp_version }} stream."
+
+- name: Launch the ACM node and bootstrap
+  ansible.builtin.command:
+    cmd: >-
+      {{ repo_root }}/deploy/aws-infra/scripts/create-acm-sno.sh
+      {{ acm_rhcos_ami.stdout }}
+      {{ repo_root }}/deploy/aws-infra/instance-data/{{ acm_cluster_name }}/pointer-sno.ign
+      {{ repo_root }}/deploy/aws-infra/instance-data/{{ acm_cluster_name }}/pointer-bootstrap.ign
+  delegate_to: localhost
+  register: acm_launch
+  changed_when: "'CREATE_COMPLETE' in acm_launch.stdout or 'UPDATE_COMPLETE' in acm_launch.stdout"
+
+- name: Report the launch
+  ansible.builtin.debug:
+    msg: "ACM node launched from {{ acm_rhcos_ami.stdout }}"
