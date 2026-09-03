@@ -35,5 +35,16 @@ to containers and which node's go to VM passthrough. See
 [docs/gpu-allocation.md](../docs/gpu-allocation.md) for why this is per node
 rather than per GPU.
 
-**`ALLOWED_SSH_CIDR`** — defaults to `0.0.0.0/0` so a first run works. It
-governs SSH plus the exposed API and ingress ports. Narrow it.
+**`BASE_DOMAIN`** — leave empty. The toolbox discovers the account's public
+Route53 zone and places the cluster at `<CLUSTER_NAME>.<that zone>`, so `api`
+and `*.apps` resolve from the internet and the installer's certificates match.
+The zone name is issued per account, so hard-coding it means editing config on
+every new one. Set it explicitly only when an account has more than one public
+zone — `make doctor` lists them if it cannot choose.
+
+**`ALLOWED_SSH_CIDR`** — SSH to the bastion only. Defaults to `0.0.0.0/0` so a
+first run works. Narrow it.
+
+**`ALLOWED_API_CIDR`** — the cluster API and ingress. Separate from the SSH rule
+so that exposing the API never widens SSH access. Defaults to open, since a
+publicly resolvable cluster nothing can reach is not much use.

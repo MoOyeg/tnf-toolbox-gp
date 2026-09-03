@@ -11,6 +11,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/../../common.sh"
 
 load_config
 
+# BASE_DOMAIN is normally blank in instance.env and discovered from the account's
+# public Route53 zone. The install-config needs the resolved value, so resolve it
+# here rather than letting an empty string reach the template.
+resolve_public_hosted_zone
+
 [ $# -ge 1 ] || die "usage: $0 <playbook.yml> [ansible args...]"
 PLAYBOOK="$1"
 shift

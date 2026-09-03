@@ -43,6 +43,18 @@ else
   bad "aws sts get-caller-identity failed (check AWS_PROFILE=${AWS_PROFILE:-unset})"
 fi
 
+# The cluster domain, its DNS records and its certificates all derive from this.
+if ZONE_OUT="$(resolve_public_hosted_zone 2>&1)"; then
+  ok "public Route53 zone ${BASE_DOMAIN} (${PUBLIC_ZONE_ID})"
+  ok "cluster will be at api.${CLUSTER_NAME}.${BASE_DOMAIN}, publicly resolvable"
+else
+  bad "no usable public Route53 zone: ${ZONE_OUT}"
+fi
+
+[ "${ALLOWED_API_CIDR:-0.0.0.0/0}" = "0.0.0.0/0" ] \
+  && warn "ALLOWED_API_CIDR is 0.0.0.0/0 (API and ingress open to the internet)" \
+  || ok "ALLOWED_API_CIDR is ${ALLOWED_API_CIDR}"
+
 if aws ec2 describe-key-pairs --key-names "${SSH_KEY_NAME}" >/dev/null 2>&1; then
   ok "EC2 key pair ${SSH_KEY_NAME} exists"
 else

@@ -27,8 +27,25 @@ It carries three services that a `platform: none` cluster on EC2 has nowhere
 else to put:
 
 **haproxy** fronts `api`, `api-int`, `*.apps` on 6443 / 22623 / 80 / 443.
-A Route53 private hosted zone for `<cluster>.<base-domain>` points all three
-names at the bastion's fixed private address.
+
+DNS is split-horizon, and both halves point at this host:
+
+  * A **private** Route53 zone for `<cluster>.<base-domain>`, associated with the
+    VPC, resolves all three names to the bastion's fixed *private* address.
+    Cluster nodes use this; their traffic never leaves the VPC.
+  * The account's **public** zone gets `api` and `*.apps` pointing at the
+    bastion's *elastic* IP. Everyone else uses these.
+
+The private zone is more specific and VPC-attached, so it wins inside the VPC.
+`api-int` exists only there -- it is an internal name and nothing outside the
+cluster has any business resolving it.
+
+The base domain is a real, publicly delegated zone rather than something like
+`.local`, and that is what makes the cluster usable without ceremony: the
+installer issues the API certificate for `api.<cluster>.<base-domain>`, so a
+fetched kubeconfig works from anywhere with no `/etc/hosts` entries and no
+`--insecure-skip-tls-verify`. The zone name is discovered from the account
+rather than configured, because it differs per account.
 
 **redfish-ec2** is the Redfish endpoint Pacemaker fences through. See
 [fencing-on-aws.md](fencing-on-aws.md).

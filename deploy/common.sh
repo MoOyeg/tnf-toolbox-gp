@@ -221,6 +221,41 @@ read_state() {
   cat "${STATE_DIR}/$1" 2>/dev/null
 }
 
+# Resolve the public Route53 zone the cluster's DNS records go into.
+#
+# Deliberately discovered rather than configured. The zone name is issued per
+# account -- sandbox807.opentlc.com in one, something else in the next -- so
+# hard-coding it means editing config on every new account, which is exactly the
+# kind of per-environment constant that has bitten this toolbox before.
+#
+# BASE_DOMAIN in instance.env still wins when set; discovery only fills a blank.
+resolve_public_hosted_zone() {
+  local zones count
+  zones="$(aws route53 list-hosted-zones \
+    --query 'HostedZones[?Config.PrivateZone==`false`].[Name,Id]' --output text)"
+
+  if [ -z "${zones}" ]; then
+    die "no public Route53 hosted zone in this account; set BASE_DOMAIN and create one"
+  fi
+
+  if [ -n "${BASE_DOMAIN:-}" ]; then
+    # Trailing dots are how Route53 returns names; strip for comparison.
+    PUBLIC_ZONE_ID="$(awk -v d="${BASE_DOMAIN}." '$1 == d {print $2}' <<< "${zones}" | head -1)"
+    [ -n "${PUBLIC_ZONE_ID}" ] || die "no public hosted zone matches BASE_DOMAIN=${BASE_DOMAIN}
+available: $(awk '{printf "%s ", $1}' <<< "${zones}")"
+  else
+    count="$(wc -l <<< "${zones}")"
+    [ "${count}" -eq 1 ] || die "found ${count} public hosted zones; set BASE_DOMAIN to pick one:
+$(awk '{printf "  %s\n", $1}' <<< "${zones}")"
+    BASE_DOMAIN="$(awk '{print $1}' <<< "${zones}" | sed 's/\.$//')"
+    PUBLIC_ZONE_ID="$(awk '{print $2}' <<< "${zones}")"
+  fi
+
+  # Route53 returns /hostedzone/ZXXXX; the API wants the bare id.
+  PUBLIC_ZONE_ID="${PUBLIC_ZONE_ID##*/}"
+  export BASE_DOMAIN PUBLIC_ZONE_ID
+}
+
 # The AMI is resolved from the installer's own CoreOS stream metadata rather
 # than an SSM alias, so the boot image always matches the release being
 # installed.

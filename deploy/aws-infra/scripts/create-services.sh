@@ -10,6 +10,8 @@ require_tools aws jq
 
 stack_exists "${NETWORK_STACK}" || die "run create-network.sh first"
 
+resolve_public_hosted_zone
+
 create_or_update_stack "${SERVICES_STACK}" "${TEMPLATE_DIR}/services-stack.yaml" \
   "ClusterName=${CLUSTER_NAME}" \
   "VpcId=$(read_state vpc_id)" \
@@ -17,6 +19,7 @@ create_or_update_stack "${SERVICES_STACK}" "${TEMPLATE_DIR}/services-stack.yaml"
   "BastionSecurityGroupId=$(read_state bastion_sg_id)" \
   "HostedZoneId=$(read_state hosted_zone_id)" \
   "ClusterDomain=$(read_state cluster_domain)" \
+  "PublicHostedZoneId=${PUBLIC_ZONE_ID}" \
   "BastionPrivateIp=${BASTION_PRIVATE_IP}" \
   "BastionInstanceType=${BASTION_INSTANCE_TYPE}" \
   "SshKeyName=${SSH_KEY_NAME}"
@@ -28,5 +31,9 @@ save_state fencing_base_url    "$(stack_output "${SERVICES_STACK}" FencingBaseUr
 save_state ignition_base_url   "$(stack_output "${SERVICES_STACK}" IgnitionBaseUrl)"
 save_state ssh_user            "ec2-user"
 
+save_state api_url      "$(stack_output "${SERVICES_STACK}" ApiUrl)"
+save_state console_url  "$(stack_output "${SERVICES_STACK}" ConsoleUrl)"
+
 green "bastion ready at $(read_state public_address)"
+info  "cluster API will be reachable at $(read_state api_url)"
 info  "fencing base URL: $(read_state fencing_base_url)"

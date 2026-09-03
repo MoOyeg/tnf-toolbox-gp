@@ -23,9 +23,16 @@ Parameters:
     Type: AWS::EC2::SecurityGroup::Id
   HostedZoneId:
     Type: String
+    Description: The private zone created by the network stack, resolvable only inside the VPC.
+  PublicHostedZoneId:
+    Type: String
+    Description: >-
+      A pre-existing public zone in this account. The cluster's records are added
+      to it so api and *.apps resolve from the internet with names the installer's
+      certificates actually match -- no /etc/hosts, no -k.
   ClusterDomain:
     Type: String
-    Description: e.g. tnf-gp.tnf.local
+    Description: e.g. tnf-gp.sandbox807.opentlc.com
   BastionPrivateIp:
     Type: String
     Default: 10.0.0.5
@@ -173,6 +180,33 @@ Resources:
       ResourceRecords:
         - !Ref BastionPrivateIp
 
+  # The same three names again, in the public zone, pointing at the elastic IP.
+  #
+  # This is split-horizon DNS on purpose. The private zone is more specific and
+  # attached to the VPC, so cluster nodes keep resolving these names to the
+  # bastion's private address and never leave the VPC. Everyone else gets the
+  # public address. api-int is deliberately absent here: it is an internal name
+  # and nothing outside the cluster should resolve it.
+  PublicApiRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref PublicHostedZoneId
+      Name: !Sub 'api.${ClusterDomain}'
+      Type: A
+      TTL: 60
+      ResourceRecords:
+        - !Ref BastionEip
+
+  PublicAppsRecord:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      HostedZoneId: !Ref PublicHostedZoneId
+      Name: !Sub '*.apps.${ClusterDomain}'
+      Type: A
+      TTL: 60
+      ResourceRecords:
+        - !Ref BastionEip
+
 Outputs:
   BastionInstanceId:
     Value: !Ref Bastion
@@ -185,3 +219,8 @@ Outputs:
     Value: !Sub 'https://${BastionPrivateIp}:8000/redfish/v1/Systems'
   IgnitionBaseUrl:
     Value: !Sub 'http://${BastionPrivateIp}:8080'
+  ApiUrl:
+    Description: Publicly resolvable, and matching the installer's certificate.
+    Value: !Sub 'https://api.${ClusterDomain}:6443'
+  ConsoleUrl:
+    Value: !Sub 'https://console-openshift-console.apps.${ClusterDomain}'

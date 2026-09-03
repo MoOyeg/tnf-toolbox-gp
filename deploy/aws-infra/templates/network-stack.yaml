@@ -31,7 +31,15 @@ Parameters:
       pin this to one you have confirmed with describe-instance-type-offerings.
   AllowedSshCidr:
     Type: String
-    Description: CIDR permitted to reach the bastion on 22/6443/443.
+    Description: CIDR permitted to SSH to the bastion. Keep this narrow.
+    Default: 0.0.0.0/0
+  AllowedApiCidr:
+    Type: String
+    Description: >-
+      CIDR permitted to reach the cluster API and ingress. Defaults to the whole
+      internet because the cluster is meant to be publicly reachable; narrow it
+      if that is not wanted. Separate from AllowedSshCidr so exposing the API
+      does not also expose SSH.
     Default: 0.0.0.0/0
 
 Resources:
@@ -108,17 +116,17 @@ Resources:
           IpProtocol: tcp
           FromPort: 6443
           ToPort: 6443
-          CidrIp: !Ref AllowedSshCidr
+          CidrIp: !Ref AllowedApiCidr
         - Description: Ingress via haproxy
           IpProtocol: tcp
           FromPort: 443
           ToPort: 443
-          CidrIp: !Ref AllowedSshCidr
+          CidrIp: !Ref AllowedApiCidr
         - Description: Ingress via haproxy (plain HTTP)
           IpProtocol: tcp
           FromPort: 80
           ToPort: 80
-          CidrIp: !Ref AllowedSshCidr
+          CidrIp: !Ref AllowedApiCidr
         - Description: Everything inside the VPC (MCS, ignition, Redfish shim)
           IpProtocol: -1
           CidrIp: !Ref VpcCidr

@@ -15,9 +15,10 @@ devices on the OpenShift nodes.
 ## What it builds
 
 ```
-AWS VPC, one AZ
-│
-├── bastion (m5.large)  ── the only host reachable from outside
+AWS VPC, one AZ                    api.<cluster>.<your-public-route53-zone>
+│                                  *.apps.<cluster>.<your-public-route53-zone>
+├── bastion (m5.large)  ── the only host reachable from outside, and where
+│                          those public DNS records point
 │     ├── haproxy          api / api-int / *.apps      (platform:none has no VIP)
 │     ├── redfish-ec2      Redfish → EC2 Stop/StartInstances   (Pacemaker fences here)
 │     └── ignition server  bootstrap.ign  (300 KiB vs a 16 KiB user-data limit)
@@ -80,6 +81,15 @@ learned.
 
 `make status` summarises stacks, instance power state, bastion services and
 cluster health at any point. `make destroy` removes everything.
+
+The cluster is **publicly resolvable**. `BASE_DOMAIN` is left empty and the
+toolbox discovers the account's public Route53 zone, putting the cluster at
+`<cluster>.<that zone>` — so the fetched kubeconfig works from anywhere with no
+`/etc/hosts` entries and no `--insecure-skip-tls-verify`, because the installer
+issues the API certificate for exactly that name. Cluster nodes still resolve
+the same names privately inside the VPC. `ALLOWED_API_CIDR` governs who can
+reach the API and ingress and defaults to open; `ALLOWED_SSH_CIDR` is separate
+and should stay narrow.
 
 ## The three decisions that shape this repo
 
