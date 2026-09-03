@@ -75,38 +75,55 @@
       - -c
       - |
         import sys, yaml
-        path = sys.argv[1]
+        path, hostname = sys.argv[1], sys.argv[2]
         docs = [d for d in yaml.safe_load_all(open(path)) if d]
         changed = False
         for doc in docs:
             if doc.get("kind") != "HostedCluster":
                 continue
             for svc in doc.get("spec", {}).get("services", []):
-                if svc.get("service") == "APIServer":
-                    strategy = svc.setdefault("servicePublishingStrategy", {})
-                    if strategy.get("type") != "Route":
-                        strategy["type"] = "Route"
-                        strategy.pop("loadBalancer", None)
-                        changed = True
+                if svc.get("service") != "APIServer":
+                    continue
+                strategy = svc.setdefault("servicePublishingStrategy", {})
+                route = strategy.get("route") or {}
+                if strategy.get("type") != "Route" or route.get("hostname") != hostname:
+                    strategy["type"] = "Route"
+                    strategy.pop("loadBalancer", None)
+                    # Type alone is rejected: "route hostname is required for
+                    # service APIServer". The name has to be one the hub's
+                    # wildcard already answers for.
+                    route["hostname"] = hostname
+                    strategy["route"] = route
+                    changed = True
         if changed:
             with open(path, "w") as fh:
                 yaml.safe_dump_all(docs, fh, default_flow_style=False)
         print("rewritten" if changed else "already Route")
       - "{{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
+      - "api-{{ guest_name }}.apps.{{ cluster_domain }}"
   register: apiserver_strategy
   changed_when: apiserver_strategy.stdout == "rewritten"
 
-- name: "{{ guest_name }}: confirm the API is not published via LoadBalancer"
-  ansible.builtin.shell: >-
-    set -o pipefail;
-    python3 -c "import sys,yaml;
-    print(next(s['servicePublishingStrategy']['type']
-    for d in yaml.safe_load_all(open(sys.argv[1])) if d and d.get('kind')=='HostedCluster'
-    for s in d['spec']['services'] if s['service']=='APIServer'))"
-    {{ install_dir }}/guest-manifests/{{ guest_name }}.yaml
+- name: "{{ guest_name }}: confirm the API is a Route with a hostname"
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - |
+        import sys, yaml
+        for d in yaml.safe_load_all(open(sys.argv[1])):
+            if not d or d.get("kind") != "HostedCluster":
+                continue
+            for s in d["spec"]["services"]:
+                if s["service"] == "APIServer":
+                    st = s["servicePublishingStrategy"]
+                    print(f'{st["type"]} {st.get("route", {}).get("hostname", "NO-HOSTNAME")}')
+      - "{{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
   register: apiserver_publishing
   changed_when: false
-  failed_when: apiserver_publishing.stdout | trim != "Route"
+  failed_when: >-
+    apiserver_publishing.stdout | trim
+    != "Route api-" ~ guest_name ~ ".apps." ~ cluster_domain
 
 - name: "{{ guest_name }}: confirm the rendered manifests carry their secrets"
   ansible.builtin.assert:
