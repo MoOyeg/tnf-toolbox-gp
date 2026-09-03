@@ -11,6 +11,14 @@ install_dir: "{{ install_root }}/{{ cluster_name }}"
 kubeconfig: "{{ install_dir }}/auth/kubeconfig"
 bin_dir: "/usr/local/bin"
 
+# Where each bastion serves ignition from. The masters keep pointing here after
+# install, so rebuilding a node does not need the config regenerated. Global
+# rather than a role default because three roles reach for it -- tnf-install and
+# sno-cluster write the configs, loadbalancer serves them -- and a role's
+# defaults are invisible to every other role.
+ignition_root: /srv/ignition
+ignition_port: 8080
+
 # ------------------------------------------------------------------ release
 ocp_version: "4.22.0"
 ocp_mirror: "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp"
@@ -43,6 +51,12 @@ acm_install_root: "/home/{{ ansible_user }}/clusters"
 acm_install_dir: "{{ acm_install_root }}/{{ acm_cluster_name | default('acm') }}"
 acm_kubeconfig: "{{ acm_install_dir }}/auth/kubeconfig"
 acm_sno_node_name: sno-0
+
+# The namespace on TNF that VMs created by the ACM hub land in. Deliberately not
+# 'clusters', which TNF's own MCE uses for guests it hosts itself -- two
+# HyperShift operators reconciling one namespace would each believe they owned
+# it. Read by sno-cluster (which creates it) and vcp-guest (which targets it).
+acm_infra_namespace: acm-hosted-vms
 
 acm_control_plane_nodes:
   - name: "{{ acm_sno_node_name | default('sno-0') }}"

@@ -23,8 +23,7 @@
 - name: Confirm the node names match the fencing credentials
   ansible.builtin.assert:
     that:
-      - node_status.stdout_lines | map('split') | map('first') | list | sort
-        == control_plane_nodes | map(attribute='name') | list | sort
+      - node_status.stdout_lines | map('split') | map('first') | list | sort == control_plane_nodes | map(attribute='name') | list | sort
     fail_msg: >-
       Nodes registered as
       {{ node_status.stdout_lines | map('split') | map('first') | list }}

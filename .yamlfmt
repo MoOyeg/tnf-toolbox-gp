@@ -1,3 +1,10 @@
+# Vendored by 'ansible-galaxy collection install' at deploy time. Gitignored,
+# but yamlfmt walks the tree itself, so without this exclusion every deploy
+# leaves 'make yamlfmt' reporting hundreds of differences in other people's
+# files and drowning the handful in ours.
+gitignore_excludes: true
+exclude:
+  - deploy/openshift-clusters/collections/ansible_collections
 formatter:
   type: basic
   include_document_start: true

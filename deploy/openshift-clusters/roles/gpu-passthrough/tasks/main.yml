@@ -29,8 +29,7 @@
   until:
     - node_readiness.rc == 0
     - node_readiness.stdout_lines | length == control_plane_nodes | length
-    - node_readiness.stdout_lines | select('search', ' True false$')
-      | list | length == control_plane_nodes | length
+    - node_readiness.stdout_lines | select('search', ' True false$') | list | length == control_plane_nodes | length
 
 - name: Confirm the GPUs are visible to the nodes
   ansible.builtin.command: >-

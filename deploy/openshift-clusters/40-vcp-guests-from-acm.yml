@@ -1,39 +1,56 @@
 ---
-# Stage 4b: virtualized clusters created by the ACM hub on the SNO, with their
-# VMs and GPUs on TNF.
+# Stage 4b: virtualized clusters created by the ACM hub, with their VMs and GPUs
+# on TNF.
 #
-# The same vcp-guest role as 40-vcp-guests.yml, with two differences that make
-# the separation real: the HostedCluster is created against the SNO, and hcp is
-# given a kubeconfig for TNF so the VMs land there instead of on the hub.
+# The same vcp-guest role as 40-vcp-guests.yml, with the separation made real:
+# this runs on the ACM bastion, the HostedCluster is created against the ACM
+# cluster, and hcp is handed a kubeconfig for TNF so the VMs land over there
+# instead of on the hub. The hub has no GPUs and no room for them.
 - name: Create guest clusters from the ACM hub
-  hosts: bastion
-  gather_facts: false
+  hosts: acm_bastion
+  gather_facts: true
   environment:
+    KUBECONFIG: "{{ acm_kubeconfig }}"
     PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
 
   tasks:
-    - name: Confirm the SNO hub exists
+    - name: Confirm the ACM hub exists
       ansible.builtin.stat:
-        path: "{{ sno_install_dir }}/auth/kubeconfig"
-      register: sno_hub
+        path: "{{ acm_kubeconfig }}"
+      register: acm_hub
 
     - name: Fail if the ACM hub has not been built
       ansible.builtin.assert:
-        that: sno_hub.stat.exists
-        fail_msg: "No SNO kubeconfig. Run 'make sno' first -- it builds the ACM hub."
+        that: acm_hub.stat.exists
+        fail_msg: "No ACM kubeconfig. Run 'make acm-site' first -- it builds the hub."
 
-    # Read from TNF, where the GPUs physically are, not from the SNO. The SNO has
-    # no GPUs and would report none.
+    # Written by 'make acm-site'. Without it hcp would create the VMs on the hub,
+    # which is the whole thing this layout exists to avoid.
+    - name: Confirm the TNF infra credential is in place
+      ansible.builtin.stat:
+        path: "{{ acm_install_dir }}/infra-kubeconfig"
+      register: infra_cred
+
+    - name: Fail if the infra credential is missing
+      ansible.builtin.assert:
+        that: infra_cred.stat.exists
+        fail_msg: >-
+          {{ acm_install_dir }}/infra-kubeconfig is missing. Re-run 'make acm-site';
+          its last stage writes the credential ACM uses to reach TNF.
+
+    # Read from TNF, where the GPUs physically are, not from the hub. The hub has
+    # none and would report none.
     - name: Discover the passthrough GPU resource name on the infra cluster
       ansible.builtin.include_role:
         name: common
         tasks_from: discover-gpu-resource
       vars:
-        op_kubeconfig: "{{ kubeconfig }}"
+        op_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
 
     - name: Create the guest clusters
       ansible.builtin.include_role:
         name: vcp-guest
       vars:
-        op_kubeconfig: "{{ sno_install_dir }}/auth/kubeconfig"
-        guest_infra_kubeconfig: "{{ sno_install_dir }}/infra-kubeconfig"
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+        guest_infra_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
+        guest_workdir: "{{ acm_install_dir }}"

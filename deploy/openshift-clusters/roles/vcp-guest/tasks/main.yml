@@ -25,12 +25,12 @@
     mode: '0700'
   loop:
     - "{{ guest_kubeconfig_dir }}"
-    - "{{ install_dir }}/guest-manifests"
+    - "{{ guest_workdir }}/guest-manifests"
 
 - name: Write the pull secret for the guest clusters
   ansible.builtin.copy:
     content: "{{ pull_secret }}"
-    dest: "{{ install_dir }}/pull-secret.json"
+    dest: "{{ guest_workdir }}/pull-secret.json"
     mode: '0600'
 
 - name: Create each guest cluster

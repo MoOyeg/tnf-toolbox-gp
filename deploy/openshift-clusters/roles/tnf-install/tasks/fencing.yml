@@ -17,9 +17,7 @@
   delay: 30
   until:
     - stonith_config.rc == 0
-    - control_plane_nodes | map(attribute='name')
-      | map('regex_replace', '$', '_redfish')
-      | select('in', stonith_config.stdout) | list | length == control_plane_nodes | length
+    - control_plane_nodes | map(attribute='name') | map('regex_replace', '$', '_redfish') | select('in', stonith_config.stdout) | list | length == control_plane_nodes | length
 
 - name: Raise the cluster-wide stonith timeout
   ansible.builtin.command: >-

@@ -49,7 +49,7 @@
       --name {{ guest_name }}
       --namespace {{ hcp_namespace }}
       --release-image {{ guest_release_image }}
-      --pull-secret {{ install_dir }}/pull-secret.json
+      --pull-secret {{ guest_workdir }}/pull-secret.json
       --node-pool-replicas {{ guest_nodepool_replicas }}
       --cores {{ guest_vm_cores }}
       --memory {{ guest_vm_memory }}
@@ -57,7 +57,7 @@
       --root-volume-storage-class {{ storage_class }}
       --etcd-storage-class {{ storage_class }}
       --host-device-name "{{ gpu_resource_name }},count:{{ guest_gpus_per_node }}"
-      {% if guest_infra_kubeconfig | default('') %}--infra-kubeconfig-file {{ guest_infra_kubeconfig }} --infra-namespace {{ sno_infra_namespace }}{% endif %}
+      {% if guest_infra_kubeconfig | default('') %}--infra-kubeconfig-file {{ guest_infra_kubeconfig }} --infra-namespace {{ acm_infra_namespace }}{% endif %}
       --render
       --render-sensitive
   environment:
@@ -66,14 +66,12 @@
   changed_when: false
   when: guest_exists.rc != 0
 
-
 - name: "{{ guest_name }}: save the manifests"
   ansible.builtin.copy:
     content: "{{ hcp_render.stdout }}"
-    dest: "{{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
+    dest: "{{ guest_workdir }}/guest-manifests/{{ guest_name }}.yaml"
     mode: '0600'
   when: guest_exists.rc != 0
-
 
 - name: "{{ guest_name }}: confirm the GPU request survived rendering"
   ansible.builtin.assert:
@@ -83,7 +81,6 @@
       {{ gpu_resource_name }}. The cluster would come up without GPUs.
     success_msg: "{{ guest_name }} requests {{ guest_gpus_per_node }}x {{ gpu_resource_name }} per worker"
   when: guest_exists.rc != 0
-
 
 # hcp names the NodePool itself. It happens to match the cluster name today,
 # but the waits below should not depend on that -- reading it back from the
@@ -134,12 +131,11 @@
             with open(path, "w") as fh:
                 yaml.safe_dump_all(docs, fh, default_flow_style=False)
         print("rewritten" if changed else "already Route")
-      - "{{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
+      - "{{ guest_workdir }}/guest-manifests/{{ guest_name }}.yaml"
       - "api-{{ guest_name }}.apps.{{ cluster_domain }}"
   register: apiserver_strategy
   changed_when: apiserver_strategy.stdout == "rewritten"
   when: guest_exists.rc != 0
-
 
 - name: "{{ guest_name }}: confirm the API is a Route with a hostname"
   ansible.builtin.command:
@@ -155,14 +151,13 @@
                 if s["service"] == "APIServer":
                     st = s["servicePublishingStrategy"]
                     print(f'{st["type"]} {st.get("route", {}).get("hostname", "NO-HOSTNAME")}')
-      - "{{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
+      - "{{ guest_workdir }}/guest-manifests/{{ guest_name }}.yaml"
   register: apiserver_publishing
   changed_when: false
   failed_when: >-
     apiserver_publishing.stdout | trim
     != "Route api-" ~ guest_name ~ ".apps." ~ cluster_domain
   when: guest_exists.rc != 0
-
 
 - name: "{{ guest_name }}: confirm the rendered manifests carry their secrets"
   ansible.builtin.assert:
@@ -174,16 +169,14 @@
     success_msg: "{{ guest_name }} manifests include the referenced secrets"
   when: guest_exists.rc != 0
 
-
 - name: "{{ guest_name }}: read the NodePool name out of the rendered manifest"
   ansible.builtin.shell: >-
     set -o pipefail;
     awk '/^kind: NodePool$/{f=1} f&&/^  name: /{print $2; exit}'
-    {{ install_dir }}/guest-manifests/{{ guest_name }}.yaml
+    {{ guest_workdir }}/guest-manifests/{{ guest_name }}.yaml
   register: rendered_nodepool
   changed_when: false
   when: guest_exists.rc != 0
-
 
 # On a resumed run the render was skipped, so rendered_nodepool does not exist.
 # hcp names the NodePool after the cluster, which is the right fallback.
@@ -193,13 +186,12 @@
       {{ (rendered_nodepool.stdout | default('') | trim) or guest_name }}
 
 - name: "{{ guest_name }}: apply the manifests"
-  ansible.builtin.command: "oc apply -f {{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
+  ansible.builtin.command: "oc apply -f {{ guest_workdir }}/guest-manifests/{{ guest_name }}.yaml"
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
   register: guest_applied
   changed_when: "'created' in guest_applied.stdout or 'configured' in guest_applied.stdout"
   when: guest_exists.rc != 0
-
 
 - name: "{{ guest_name }}: wait for the hosted control plane to become available"
   ansible.builtin.command: >-

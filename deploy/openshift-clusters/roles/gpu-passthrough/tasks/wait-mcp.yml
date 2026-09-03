@@ -70,8 +70,7 @@
       until:
         - node_configs.rc == 0
         - node_configs.stdout_lines | length > 0
-        - node_configs.stdout_lines | select('search', mcp_target.stdout ~ ' Done')
-          | list | length == node_configs.stdout_lines | length
+        - node_configs.stdout_lines | select('search', mcp_target.stdout ~ ' Done') | list | length == node_configs.stdout_lines | length
 
     - name: Confirm the pool is not degraded
       ansible.builtin.command: >-

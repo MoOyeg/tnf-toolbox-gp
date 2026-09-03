@@ -7,5 +7,5 @@ op_package: ""
 op_channel: auto
 op_source: redhat-operators
 op_source_namespace: openshift-marketplace
-op_operator_group_scope: own      # 'own' = targetNamespaces: [ns]; 'all' = cluster-wide
+op_operator_group_scope: own # 'own' = targetNamespaces: [ns]; 'all' = cluster-wide
 op_csv_timeout: 900

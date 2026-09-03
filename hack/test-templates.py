@@ -63,11 +63,6 @@ CONTEXT = dict(
     haproxy_stats_port=9000,
     ansible_user="ec2-user",
     include_bootstrap=True,
-    sno_enabled=True,
-    sno_cluster_name="sno",
-    sno_api_nodeport=30643,
-    sno_https_nodeport=30443,
-    sno_http_nodeport=30080,
     control_plane_nodes=[
         {"name": "master-0", "private_ip": "10.0.0.10",
          "gpu_workload": "container", "data_volume": "vol-0aaa"},
@@ -232,16 +227,16 @@ def test_haproxy_config():
     check("bootstrap is a backend during install",
           with_bootstrap.count("server bootstrap") == 2)
 
-    # Both clusters' APIs share port 6443 and are separated by SNI. If the
-    # routing rule were dropped, every request would silently reach the TNF
-    # cluster instead -- which looks like a certificate error, not a routing bug.
-    sni = render(path, include_bootstrap=False, sno_enabled=True)
-    check("the SNO API is routed by SNI on the shared 6443",
-          "use_backend sno-api if { req_ssl_sni" in sni)
-    check("the SNO ingress is routed by SNI on the shared 443",
-          "use_backend sno-ingress-https if { req_ssl_sni" in sni)
-    no_sno = render(path, include_bootstrap=False, sno_enabled=False)
-    check("no SNO routing before the SNO exists", "sno-api" not in no_sno)
+    # Each site has its own bastion fronting exactly one cluster, so the same
+    # template serves TNF's pair and the ACM cluster's single node purely from
+    # the control_plane_nodes it is handed.
+    one_node = render(path, include_bootstrap=False, control_plane_nodes=[
+        {"name": "sno-0", "private_ip": "10.1.0.10",
+         "gpu_workload": "container", "data_volume": ""}])
+    check("a single-node site gets one API backend",
+          one_node.count("server sno-0") >= 1)
+    check("no cluster is reachable through another's backend",
+          "master-0" not in one_node)
     check("bootstrap is dropped afterwards",
           "server bootstrap" not in without)
     # No router runs on the bootstrap node, so putting it behind the ingress
@@ -392,6 +387,75 @@ def test_shell_commands_are_not_split_by_stray_newlines():
           "; ".join(found))
 
 
+def test_roles_do_not_borrow_other_roles_defaults():
+    """A role may not read a variable that only another role's defaults define.
+
+    Ansible scopes defaults/main.yml to the role that owns it, so this fails at
+    runtime with "'x' is undefined" -- forty minutes in, on the bastion, after
+    the cluster has already been half built. render() above cannot catch it
+    because role_defaults() deliberately merges every role together, which is
+    exactly the assumption that does not hold in a real play. Variables two roles
+    both need belong in group_vars/all.yml.
+    """
+    print("\nvariable scoping across roles")
+    pb = f"{ROOT}/deploy/openshift-clusters"
+    jinja = re.compile(r"\{\{(.*?)\}\}|\{%(.*?)%\}", re.S)
+    ident = re.compile(r"(?<![\w.])([a-z_][a-z0-9_]*)")
+
+    def keys_of(path):
+        try:
+            loaded = yaml.safe_load(open(path, encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            return set()
+        return set(loaded) if isinstance(loaded, dict) else set()
+
+    def role_files(root):
+        for dirpath, _, names in os.walk(root):
+            for name in names:
+                if name.endswith((".yml", ".yaml", ".j2")):
+                    yield os.path.join(dirpath, name)
+
+    # Variables a caller hands a role through `include_role: ... vars:` are in
+    # scope even though the role never declares them.
+    passed = {}
+    for path in role_files(pb):
+        text = open(path, encoding="utf-8").read()
+        for match in re.finditer(r"name:\s*([a-z0-9-]+)\s*\n(.*?)(?=\n\s*-\s|\Z)", text, re.S):
+            role, body = match.group(1), match.group(2)
+            if "vars:" in body:
+                block = body.split("vars:", 1)[1]
+                passed.setdefault(role, set()).update(
+                    re.findall(r"^\s{4,}([a-z_][a-z0-9_]*):", block, re.M))
+
+    globals_ = keys_of(f"{pb}/group_vars/all.yml") | set(extra_vars_from_wrapper())
+    roles = sorted({os.path.basename(p.rstrip("/")) for p in glob.glob(f"{pb}/roles/*/")})
+    owned = {r: keys_of(f"{pb}/roles/{r}/defaults/main.yml")
+                | keys_of(f"{pb}/roles/{r}/vars/main.yml") for r in roles}
+
+    borrowed = []
+    for role in roles:
+        used, local = set(), set()
+        for path in role_files(f"{pb}/roles/{role}"):
+            text = open(path, encoding="utf-8").read()
+            for a, b in jinja.findall(text):
+                expr = a or b
+                # `x | default(...)` and `x is defined` supply their own value.
+                guarded = set(re.findall(
+                    r"(?<![\w.])([a-z_][a-z0-9_]*)\s*(?:\||\bis\b\s*(?:not\s*)?defined)", expr))
+                used |= {n for n in ident.findall(expr) if n not in guarded}
+            local |= set(re.findall(r"register:\s*([a-z_][a-z0-9_]*)", text))
+            for block in re.finditer(r"(?:set_fact|vars):\s*\n((?:\s{4,}.*\n)+)", text):
+                local |= set(re.findall(r"^\s+([a-z_][a-z0-9_]*):", block.group(1), re.M))
+        known = owned[role] | local | globals_ | passed.get(role, set())
+        for name in sorted(used - known):
+            owners = [o for o in roles if o != role and name in owned[o]]
+            if owners:
+                borrowed.append((role, name, owners))
+
+    check("no role reads another role's defaults", not borrowed,
+          "; ".join(f"{r} uses {n}, defined only in {'/'.join(o)}" for r, n, o in borrowed))
+
+
 def test_fetched_credentials_are_gitignored():
     """Whatever path fetch-kubeconfig writes to must be gitignored.
 
@@ -430,6 +494,7 @@ def main():
     test_cloudformation()
     test_jsonpath_filters_are_shell_quoted()
     test_shell_commands_are_not_split_by_stray_newlines()
+    test_roles_do_not_borrow_other_roles_defaults()
     test_fetched_credentials_are_gitignored()
 
     print()

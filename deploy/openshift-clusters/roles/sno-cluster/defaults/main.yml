@@ -13,10 +13,7 @@ acm_bootstrap_timeout: 3600
 acm_install_timeout: 5400
 
 # Credential the ACM cluster uses to reach TNF's MultiCluster Engine across the
-# peering connection, and the namespace on TNF that VMs it creates land in.
-# Deliberately not 'clusters', which TNF's own MCE uses for guests it hosts
-# itself -- two HyperShift operators reconciling one namespace would each believe
-# they owned it.
+# peering connection. The namespace it targets on TNF is acm_infra_namespace,
+# in group_vars, because vcp-guest needs it too.
 infra_kubeconfig_secret: tnf-infra-kubeconfig
-acm_infra_namespace: acm-hosted-vms
 hcp_namespace: clusters

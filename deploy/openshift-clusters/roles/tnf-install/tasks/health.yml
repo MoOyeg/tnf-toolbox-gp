@@ -30,8 +30,7 @@
   delay: 20
   until:
     - health_nodes.rc == 0
-    - health_nodes.stdout_lines | select('search', ' Ready') | list | length
-      == control_plane_nodes | length
+    - health_nodes.stdout_lines | select('search', ' Ready') | list | length == control_plane_nodes | length
 
 - name: Wait for every cluster operator to be Available and not Degraded
   ansible.builtin.shell: >-
@@ -101,8 +100,7 @@
 - name: Report the TNF health verdict
   ansible.builtin.assert:
     that:
-      - health_nodes.stdout_lines | select('search', ' Ready') | list | length
-        == control_plane_nodes | length
+      - health_nodes.stdout_lines | select('search', ' Ready') | list | length == control_plane_nodes | length
       - health_operators.stdout == ""
       - health_etcd.stdout == "Available=True Degraded=False"
       - health_pcs.stdout == "quorum=yes online=" ~ (control_plane_nodes | length)

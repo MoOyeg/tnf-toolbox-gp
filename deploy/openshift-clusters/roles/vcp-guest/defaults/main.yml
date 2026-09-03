@@ -1,6 +1,10 @@
 ---
 op_kubeconfig: ""
 hcp_namespace: clusters
+# Where the pull secret and the rendered guest manifests are staged. Defaults to
+# the TNF install dir, because that is the bastion this normally runs from; the
+# ACM site overrides it, since TNF's install dir does not exist over there.
+guest_workdir: "{{ install_dir }}"
 guest_kubeconfig_dir: "{{ install_root }}/guests"
 guest_release_image: "quay.io/openshift-release-dev/ocp-release:{{ ocp_version }}-x86_64"
 nodepool_timeout: 3600

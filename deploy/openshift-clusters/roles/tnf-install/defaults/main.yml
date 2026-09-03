@@ -1,5 +1,0 @@
----
-# Where the shim serves ignition from. The masters keep pointing here after
-# install so that rebuilding a node does not need the config regenerated.
-ignition_port: 8080
-ignition_root: /srv/ignition

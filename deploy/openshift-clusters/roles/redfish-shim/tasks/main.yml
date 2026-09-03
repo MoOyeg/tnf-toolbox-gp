@@ -91,7 +91,7 @@
     mode: "{{ item.mode }}"
   loop:
     - {name: cert.pem, mode: '0644'}
-    - {name: key.pem, mode: '0600'}
+    - {name: key.pem, mode: '0600',}
 
 - name: Install the systemd unit
   become: true

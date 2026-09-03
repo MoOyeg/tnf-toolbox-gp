@@ -22,7 +22,6 @@
   vars:
     include_bootstrap: false
     control_plane_nodes: "{{ acm_control_plane_nodes }}"
-    sno_enabled: false
 
 - name: Remove bootstrap.ign now that it is no longer needed
   ansible.builtin.file:
