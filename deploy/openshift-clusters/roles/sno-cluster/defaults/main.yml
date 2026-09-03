@@ -10,6 +10,9 @@
 # references them before role defaults are in scope.
 
 acm_bootstrap_timeout: 3600
+# How long to wait for TNF's kubeconfig to appear, when this stage is running
+# alongside 'make tnf' rather than after it.
+tnf_kubeconfig_wait: 5400
 acm_install_timeout: 5400
 
 # Credential the ACM cluster uses to reach TNF's MultiCluster Engine across the

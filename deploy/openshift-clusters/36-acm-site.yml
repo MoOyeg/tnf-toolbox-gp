@@ -18,6 +18,16 @@
         name: common
         tasks_from: install-clients
 
+    # Creates /srv/ignition and the base haproxy, exactly as 10-tnf-install.yml
+    # does before tnf-install. sno-cluster's render step publishes ignition into
+    # that directory, so it has to exist first; the role is re-included later
+    # with include_bootstrap set, to add and then drop the bootstrap backend.
+    - name: Configure haproxy and the ignition server on the ACM bastion
+      ansible.builtin.include_role:
+        name: loadbalancer
+      vars:
+        control_plane_nodes: "{{ acm_control_plane_nodes }}"
+
     - name: Install the single-node ACM cluster
       ansible.builtin.include_role:
         name: sno-cluster
