@@ -44,11 +44,18 @@ else
 fi
 
 # The cluster domain, its DNS records and its certificates all derive from this.
-if ZONE_OUT="$(resolve_public_hosted_zone 2>&1)"; then
+#
+# Probed in a subshell first because resolve_public_hosted_zone calls die() on
+# failure, which would take doctor down with it -- and doctor's whole job is to
+# report every problem, not stop at the first. On success it is called again in
+# this shell, where its exports actually survive.
+if ZONE_OUT="$( resolve_public_hosted_zone >/dev/null 2>&1 && echo ok )" \
+   && [ "${ZONE_OUT}" = "ok" ]; then
+  resolve_public_hosted_zone >/dev/null 2>&1
   ok "public Route53 zone ${BASE_DOMAIN} (${PUBLIC_ZONE_ID})"
   ok "cluster will be at api.${CLUSTER_NAME}.${BASE_DOMAIN}, publicly resolvable"
 else
-  bad "no usable public Route53 zone: ${ZONE_OUT}"
+  bad "no usable public Route53 zone: $( resolve_public_hosted_zone 2>&1 | tail -3 )"
 fi
 
 [ "${ALLOWED_API_CIDR:-0.0.0.0/0}" = "0.0.0.0/0" ] \
