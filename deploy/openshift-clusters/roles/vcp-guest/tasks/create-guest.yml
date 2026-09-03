@@ -3,6 +3,34 @@
   ansible.builtin.set_fact:
     guest_name: "{{ guest_cluster_prefix }}-{{ guest_index }}"
 
+# Rendering is not repeatable: hcp mints a fresh random infraID on every
+# invocation, and both infraID and dns.baseDomain are immutable once the
+# HostedCluster exists. Applying a re-render therefore fails --
+#
+#   The HostedCluster "vcp-1" is invalid:
+#     spec.dns.baseDomain: Invalid value: "": baseDomain is immutable
+#     spec.infraID: Invalid value: "vcp-1-2brzc": infraID is immutable
+#
+# -- which would make this stage unresumable after any interruption. So an
+# existing guest cluster is left exactly as it is and the play falls through to
+# the waits below, which are what a resumed run actually needs.
+- name: "{{ guest_name }}: check whether it already exists"
+  ansible.builtin.command: >-
+    oc get hostedcluster {{ guest_name }} -n {{ hcp_namespace }} -o name
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: guest_exists
+  changed_when: false
+  failed_when: false
+
+- name: "{{ guest_name }}: report that it is being left alone"
+  ansible.builtin.debug:
+    msg: >-
+      {{ guest_name }} already exists; skipping render and apply, and waiting for
+      it to finish coming up. Delete it with 'hcp destroy cluster kubevirt' to
+      rebuild from scratch.
+  when: guest_exists.rc == 0
+
 # Rendering to a file first, rather than letting hcp create directly, keeps the
 # exact manifests that produced a cluster on disk. When a NodePool sits Pending
 # a week later, that file is the difference between reading what was asked for
@@ -35,12 +63,16 @@
     KUBECONFIG: "{{ op_kubeconfig }}"
   register: hcp_render
   changed_when: false
+  when: guest_exists.rc != 0
+
 
 - name: "{{ guest_name }}: save the manifests"
   ansible.builtin.copy:
     content: "{{ hcp_render.stdout }}"
     dest: "{{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
     mode: '0600'
+  when: guest_exists.rc != 0
+
 
 - name: "{{ guest_name }}: confirm the GPU request survived rendering"
   ansible.builtin.assert:
@@ -49,6 +81,8 @@
       The rendered manifests for {{ guest_name }} do not mention
       {{ gpu_resource_name }}. The cluster would come up without GPUs.
     success_msg: "{{ guest_name }} requests {{ guest_gpus_per_node }}x {{ gpu_resource_name }} per worker"
+  when: guest_exists.rc != 0
+
 
 # hcp names the NodePool itself. It happens to match the cluster name today,
 # but the waits below should not depend on that -- reading it back from the
@@ -103,6 +137,8 @@
       - "api-{{ guest_name }}.apps.{{ cluster_domain }}"
   register: apiserver_strategy
   changed_when: apiserver_strategy.stdout == "rewritten"
+  when: guest_exists.rc != 0
+
 
 - name: "{{ guest_name }}: confirm the API is a Route with a hostname"
   ansible.builtin.command:
@@ -124,6 +160,8 @@
   failed_when: >-
     apiserver_publishing.stdout | trim
     != "Route api-" ~ guest_name ~ ".apps." ~ cluster_domain
+  when: guest_exists.rc != 0
+
 
 - name: "{{ guest_name }}: confirm the rendered manifests carry their secrets"
   ansible.builtin.assert:
@@ -133,6 +171,8 @@
       them unless --render-sensitive is passed, and the HostedCluster will sit
       on "failed to get pull secret" forever with no control-plane pods.
     success_msg: "{{ guest_name }} manifests include the referenced secrets"
+  when: guest_exists.rc != 0
+
 
 - name: "{{ guest_name }}: read the NodePool name out of the rendered manifest"
   ansible.builtin.shell: >-
@@ -141,10 +181,15 @@
     {{ install_dir }}/guest-manifests/{{ guest_name }}.yaml
   register: rendered_nodepool
   changed_when: false
+  when: guest_exists.rc != 0
 
+
+# On a resumed run the render was skipped, so rendered_nodepool does not exist.
+# hcp names the NodePool after the cluster, which is the right fallback.
 - name: "{{ guest_name }}: use the rendered NodePool name"
   ansible.builtin.set_fact:
-    guest_nodepool_name: "{{ rendered_nodepool.stdout | trim | default(guest_name, true) }}"
+    guest_nodepool_name: >-
+      {{ (rendered_nodepool.stdout | default('') | trim) or guest_name }}
 
 - name: "{{ guest_name }}: apply the manifests"
   ansible.builtin.command: "oc apply -f {{ install_dir }}/guest-manifests/{{ guest_name }}.yaml"
@@ -152,6 +197,8 @@
     KUBECONFIG: "{{ op_kubeconfig }}"
   register: guest_applied
   changed_when: "'created' in guest_applied.stdout or 'configured' in guest_applied.stdout"
+  when: guest_exists.rc != 0
+
 
 - name: "{{ guest_name }}: wait for the hosted control plane to become available"
   ansible.builtin.command: >-
