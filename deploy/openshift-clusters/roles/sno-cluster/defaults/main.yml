@@ -5,13 +5,9 @@
 # It is a separate site rather than a VM on TNF so that the management plane does
 # not share a failure domain with the cluster it manages -- losing TNF should not
 # also lose the hub that would tell you TNF is gone.
-acm_cluster_name: acm
-acm_sno_node_name: sno-0
 
-# Where the ACM cluster's own install artifacts live on the ACM bastion.
-acm_install_root: "/home/{{ ansible_user }}/clusters"
-acm_install_dir: "{{ acm_install_root }}/{{ acm_cluster_name }}"
-acm_kubeconfig: "{{ acm_install_dir }}/auth/kubeconfig"
+# Paths and names live in group_vars, because the play's environment: block
+# references them before role defaults are in scope.
 
 acm_bootstrap_timeout: 3600
 acm_install_timeout: 5400

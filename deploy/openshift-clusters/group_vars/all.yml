@@ -36,6 +36,14 @@ control_plane_nodes:
 # /etc/hostname to these values.
 # The ACM site's node list, in the same shape as control_plane_nodes so the
 # loadbalancer role can front either site without knowing which it is looking at.
+# The ACM cluster's artifacts on the ACM bastion. These are referenced by the
+# play's environment: block, which is evaluated before any role's defaults are
+# loaded -- so they cannot live in the sno-cluster role.
+acm_install_root: "/home/{{ ansible_user }}/clusters"
+acm_install_dir: "{{ acm_install_root }}/{{ acm_cluster_name | default('acm') }}"
+acm_kubeconfig: "{{ acm_install_dir }}/auth/kubeconfig"
+acm_sno_node_name: sno-0
+
 acm_control_plane_nodes:
   - name: "{{ acm_sno_node_name | default('sno-0') }}"
     private_ip: "{{ acm_sno_private_ip | default('10.1.0.10') }}"
