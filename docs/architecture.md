@@ -165,3 +165,44 @@ guest cluster's workers with it.
 **The bastion is a single point of failure for fencing.** If it is down,
 neither node can fence the other. Acceptable for a test rig, and worth
 remembering when interpreting a split-brain that looks like a TNF bug.
+
+## Where ACM runs, and why it moved
+
+ACM originally ran on the TNF cluster, which was also the cluster hosting the
+guest clusters. That co-location is the problem: the management plane shared a
+fate with the thing it was managing. Losing TNF lost the hub that was supposed to
+tell you TNF was gone.
+
+ACM now runs on its own single-node OpenShift cluster, which is itself a KubeVirt
+VM on TNF. That sounds circular and is not, because the two planes fail
+differently: the SNO is a workload, so it reschedules; and nothing about TNF's
+own operation depends on the SNO being up.
+
+```
+TNF (bare metal)  ── infra cluster: OpenShift Virtualization, GPUs, storage
+  ├── MultiCluster Engine        can still host guest clusters directly
+  ├── VM: SNO                    ACM + MCE + HyperShift operator
+  │     └── HostedCluster ──┐
+  └── VMs: guest workers ←──┘    created on TNF via --infra-kubeconfig-file
+```
+
+**The join between them is one secret.** `hcp create cluster kubevirt` takes
+`--infra-kubeconfig-file` and `--infra-namespace`: the HostedCluster object and
+its control-plane pods live on the SNO, while the worker VMs are created on TNF.
+`--host-device-name` is documented as exposing a PCI device *from the infra
+cluster*, so GPU passthrough works across the split unchanged — the T4s are still
+TNF's, bound to vfio-pci on `master-1`.
+
+**Two HyperShift operators now exist**, one on TNF's MCE and one on the SNO. They
+are kept apart by namespace: TNF hosts its own guests in `clusters`, while VMs
+created by the SNO land in `sno-hosted-vms`. Without that separation both
+operators would reconcile the same objects, each believing it owned them.
+
+**Both clusters' APIs share the bastion's port 6443**, separated by TLS SNI in
+haproxy without terminating the connection, so each still presents its own
+certificate. The alternative — a second port — would have put a non-standard port
+into every kubeconfig and DNS record.
+
+The SNO gets its own private hosted zone rather than records in TNF's. TNF's
+private zone is `<cluster>.<base-domain>`, and `api.sno.<base-domain>` is not
+inside it; Route53 rejects a record that does not belong to its zone.

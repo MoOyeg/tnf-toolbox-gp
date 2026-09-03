@@ -1,0 +1,9 @@
+# Agent installer configuration. rendezvousIP is the address the single node
+# assigns itself under KubeVirt masquerade -- the VM always sees 10.0.2.2
+# regardless of the pod IP it is NAT'd behind, which is what makes this
+# predictable enough to write down in advance.
+apiVersion: v1beta1
+kind: AgentConfig
+metadata:
+  name: {{ sno_cluster_name }}
+rendezvousIP: {{ sno_node_ip }}

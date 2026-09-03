@@ -1,0 +1,68 @@
+---
+# Wait for the agent installer to finish, then collect the SNO's credentials.
+
+# haproxy has to route api.<sno>.<domain> before the installer can be polled
+# through it, and the record has to exist before that. Both are set up by the
+# playbook before this runs; this only confirms the path works.
+- name: Wait for the SNO API to answer through the bastion
+  ansible.builtin.uri:
+    url: "https://api.{{ sno_cluster_name }}.{{ base_domain }}:{{ sno_api_port }}/version"
+    validate_certs: false
+    status_code: [200, 401, 403]
+  register: sno_api_up
+  retries: "{{ (sno_install_timeout | int / 30) | int }}"
+  delay: 30
+  until: sno_api_up is not failed
+
+- name: Wait for the agent installer to report the cluster installed
+  ansible.builtin.command: >-
+    {{ bin_dir }}/openshift-install agent wait-for install-complete
+    --dir {{ sno_install_dir }}
+  register: sno_install
+  async: "{{ sno_install_timeout | int }}"
+  poll: 60
+  changed_when: true
+
+- name: Confirm the SNO reports itself Available
+  ansible.builtin.command: >-
+    oc --request-timeout=30s get clusterversion version
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+  environment:
+    KUBECONFIG: "{{ sno_install_dir }}/auth/kubeconfig"
+  register: sno_available
+  changed_when: false
+  retries: 30
+  delay: 20
+  until: sno_available.stdout == "True"
+
+- name: Detach the install ISO so the VM boots from disk on any future restart
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: patched
+    api_version: kubevirt.io/v1
+    kind: VirtualMachine
+    name: "{{ sno_vm_name }}"
+    namespace: "{{ sno_namespace }}"
+    definition:
+      spec:
+        template:
+          spec:
+            domain:
+              devices:
+                disks:
+                  - name: rootdisk
+                    disk:
+                      bus: virtio
+                    bootOrder: 1
+            volumes:
+              - name: rootdisk
+                dataVolume:
+                  name: "{{ sno_vm_name }}-root"
+
+- name: Report the SNO
+  ansible.builtin.debug:
+    msg:
+      - "SNO {{ sno_cluster_name }} is installed."
+      - "API:     https://api.{{ sno_cluster_name }}.{{ base_domain }}:{{ sno_api_port }}"
+      - "Console: https://console-openshift-console.apps.{{ sno_cluster_name }}.{{ base_domain }}"
+      - "kubeconfig on the bastion: {{ sno_install_dir }}/auth/kubeconfig"

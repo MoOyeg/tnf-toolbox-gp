@@ -1,0 +1,46 @@
+---
+# Install a single-node OpenShift cluster as a VM on TNF, to run ACM.
+#
+# The point of the refactor: ACM no longer shares a cluster with the thing it
+# manages. TNF keeps MultiCluster Engine and remains the infra cluster where
+# guest VMs and GPUs live; this SNO sits above it as an independent hub.
+
+- name: Check whether the SNO cluster is already installed
+  ansible.builtin.stat:
+    path: "{{ sno_install_dir }}/auth/kubeconfig"
+  register: sno_kubeconfig_stat
+
+- name: Ask the SNO whether it is actually installed
+  ansible.builtin.command: >-
+    oc --request-timeout=15s get clusterversion version
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+  environment:
+    KUBECONFIG: "{{ sno_install_dir }}/auth/kubeconfig"
+  register: sno_clusterversion
+  changed_when: false
+  failed_when: false
+  when: sno_kubeconfig_stat.stat.exists
+
+- name: Record whether the SNO is already up
+  ansible.builtin.set_fact:
+    sno_already_installed: >-
+      {{ sno_kubeconfig_stat.stat.exists
+         and sno_clusterversion.rc | default(1) == 0
+         and sno_clusterversion.stdout | default('') == 'True' }}
+
+- name: Build and boot the SNO
+  when: not sno_already_installed
+  block:
+    - name: Generate the agent installer image
+      ansible.builtin.include_tasks: image.yml
+
+    - name: Create the VM on TNF and expose it
+      ansible.builtin.include_tasks: vm.yml
+
+    - name: Wait for the SNO installation to finish
+      ansible.builtin.include_tasks: wait.yml
+
+- name: Report an existing SNO
+  when: sno_already_installed
+  ansible.builtin.debug:
+    msg: "SNO {{ sno_cluster_name }} is already installed; skipping to ACM."

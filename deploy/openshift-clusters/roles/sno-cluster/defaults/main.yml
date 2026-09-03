@@ -1,0 +1,43 @@
+---
+# The SNO cluster that runs ACM, installed as a KubeVirt VM on the TNF cluster.
+#
+# It is deliberately a guest of TNF rather than more bare metal: the point of the
+# refactor is that ACM is not co-located with the cluster it manages, not that it
+# needs its own hardware.
+sno_cluster_name: sno
+sno_namespace: sno-cluster          # namespace on TNF holding the VM
+sno_vm_name: sno
+
+# SNO's own floor is 8 vCPU / 16 GiB; ACM on top of that is the reason for the
+# headroom. Each g4dn.metal has 95 vCPU and 394 GiB, so this is not tight.
+sno_vcpus: 16
+sno_memory: 32Gi
+sno_disk: 120Gi
+
+# KubeVirt masquerade puts the VM behind NAT on a fixed link-local subnet. This
+# is the same networking HyperShift uses for its own worker VMs, so machineNetwork
+# has to match it rather than the TNF machine network.
+sno_machine_cidr: 10.0.2.0/24
+# The address the VM always assigns itself behind masquerade NAT, whatever pod IP
+# it sits behind. Fixed by KubeVirt, which is what makes it safe to write into
+# the agent config before the VM exists.
+sno_node_ip: 10.0.2.2
+
+sno_iso_name: sno-agent.iso
+sno_install_timeout: 4800
+sno_api_port: 6443
+
+# Fixed NodePorts so the bastion's haproxy backends can be written before the
+# Services exist. Inside the default 30000-32767 range.
+sno_api_nodeport: 30643
+sno_https_nodeport: 30443
+sno_http_nodeport: 30080
+
+# Kept beside the TNF cluster's own artifacts on the bastion.
+sno_install_dir: "{{ install_root }}/{{ sno_cluster_name }}"
+
+# Where the SNO stores its credential for the TNF infra cluster, and the
+# namespace on TNF that VMs it creates land in. Deliberately not 'clusters',
+# which TNF's own MultiCluster Engine uses for the guests it hosts itself.
+infra_kubeconfig_secret: tnf-infra-kubeconfig
+sno_infra_namespace: sno-hosted-vms

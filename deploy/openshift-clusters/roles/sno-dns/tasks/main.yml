@@ -1,0 +1,30 @@
+---
+# DNS for the SNO, in both halves of the split-horizon setup.
+#
+# Written with the AWS CLI rather than CloudFormation because the SNO is created
+# by a playbook, well after the services stack exists. Folding it into that stack
+# would mean a stack update in the middle of a cluster install.
+
+- name: Publish the SNO's public and private DNS records
+  ansible.builtin.command:
+    argv:
+      - "{{ repo_root }}/deploy/aws-infra/scripts/sno-dns.sh"
+      - "{{ sno_cluster_name }}"
+  delegate_to: localhost
+  register: sno_dns
+  changed_when: "'UPSERT' in sno_dns.stdout"
+
+- name: Report the records
+  ansible.builtin.debug:
+    msg: "{{ sno_dns.stdout_lines }}"
+
+# A record that has not propagated yet turns into a confusing install failure
+# forty minutes later, so it is checked here instead.
+- name: Confirm the SNO's API name resolves to the bastion
+  ansible.builtin.command: "getent hosts api.{{ sno_cluster_name }}.{{ base_domain }}"
+  delegate_to: localhost
+  register: sno_dns_resolves
+  changed_when: false
+  retries: 20
+  delay: 15
+  until: sno_dns_resolves.rc == 0 and bastion_public_ip in sno_dns_resolves.stdout

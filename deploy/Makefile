@@ -1,13 +1,13 @@
 ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 
-.PHONY: all infra tnf kubeconfig iommu gpu virt-acm guests guest-gpu \
-        doctor ssh status inventory clean clean-guests destroy help
+.PHONY: all infra tnf kubeconfig iommu gpu virt-acm sno guests guests-from-acm \
+        guest-gpu doctor ssh status inventory clean clean-guests destroy help
 
 # ---------------------------------------------------------------- end to end
 # Ordering is deliberate. The cluster must be fully up and healthy *as TNF*
 # before anything reboots it, and its credentials must be on your workstation
 # before the one stage that can break it.
-all: infra tnf kubeconfig iommu gpu virt-acm guests guest-gpu
+all: infra tnf kubeconfig iommu gpu virt-acm sno guests-from-acm guest-gpu
 	@echo ""
 	@echo "Everything is up. 'make status' for a summary."
 
@@ -29,8 +29,16 @@ gpu:
 virt-acm:
 	@$(ANSIBLE) 30-virt-acm.yml $(EXTRA_ARGS)
 
+sno:
+	@$(ANSIBLE) 35-sno-acm.yml $(EXTRA_ARGS)
+
+# Guests hosted by TNF's own MultiCluster Engine.
 guests:
 	@$(ANSIBLE) 40-vcp-guests.yml $(EXTRA_ARGS)
+
+# Guests created by ACM on the SNO, with their VMs and GPUs on TNF.
+guests-from-acm:
+	@$(ANSIBLE) 40-vcp-guests-from-acm.yml $(EXTRA_ARGS)
 
 guest-gpu:
 	@$(ANSIBLE) 50-guest-gpu.yml $(EXTRA_ARGS)
@@ -74,8 +82,11 @@ help:
 	@echo "  make iommu         - the IOMMU MachineConfig. Reboots BOTH nodes serially;"
 	@echo "                       gated on TNF health before and after"
 	@echo "  make gpu           - NFD + NVIDIA GPU Operator (no reboots)"
-	@echo "  make virt-acm      - LVM Storage, OpenShift Virtualization, ACM"
-	@echo "  make guests        - virtualized control-plane guest clusters with GPUs"
+	@echo "  make virt-acm      - LVM Storage, OpenShift Virtualization, MCE/ACM on TNF"
+	@echo "  make sno           - a single-node OpenShift VM on TNF running ACM, and"
+	@echo "                       the credential that lets it use TNF as infra"
+	@echo "  make guests          - guests hosted by TNF's own MultiCluster Engine"
+	@echo "  make guests-from-acm - guests created by ACM on the SNO, VMs and GPUs on TNF"
 	@echo "  make guest-gpu     - NFD + GPU Operator inside each guest cluster"
 	@echo ""
 	@echo "Utilities:"

@@ -63,6 +63,11 @@ CONTEXT = dict(
     haproxy_stats_port=9000,
     ansible_user="ec2-user",
     include_bootstrap=True,
+    sno_enabled=True,
+    sno_cluster_name="sno",
+    sno_api_nodeport=30643,
+    sno_https_nodeport=30443,
+    sno_http_nodeport=30080,
     control_plane_nodes=[
         {"name": "master-0", "private_ip": "10.0.0.10",
          "gpu_workload": "container", "data_volume": "vol-0aaa"},
@@ -72,10 +77,30 @@ CONTEXT = dict(
 )
 
 
+def role_defaults():
+    """Every role's defaults/main.yml plus group_vars/all.yml, merged.
+
+    Loaded rather than restated here so that adding a variable to a role does not
+    also require adding it to this file -- the failure mode being a template that
+    renders fine in Ansible and fails only in the test, which teaches people to
+    distrust the test.
+    """
+    merged = {}
+    sources = sorted(glob.glob(f"{ROOT}/deploy/openshift-clusters/roles/*/defaults/main.yml"))
+    sources.append(f"{ROOT}/deploy/openshift-clusters/group_vars/all.yml")
+    for path in sources:
+        values = yaml.safe_load(open(path, encoding="utf-8")) or {}
+        # Role defaults are frequently Jinja referring to other variables; those
+        # resolve at render time, so only literals are useful as context.
+        merged.update({k: v for k, v in values.items()
+                       if not (isinstance(v, str) and "{{" in v)})
+    return merged
+
+
 def render(template_path, **overrides):
     directory, name = os.path.split(template_path)
     env = Environment(loader=FileSystemLoader(directory), undefined=StrictUndefined)
-    return env.get_template(name).render(**{**CONTEXT, **overrides})
+    return env.get_template(name).render(**{**role_defaults(), **CONTEXT, **overrides})
 
 
 def test_every_template_renders():
@@ -180,6 +205,17 @@ def test_haproxy_config():
 
     check("bootstrap is a backend during install",
           with_bootstrap.count("server bootstrap") == 2)
+
+    # Both clusters' APIs share port 6443 and are separated by SNI. If the
+    # routing rule were dropped, every request would silently reach the TNF
+    # cluster instead -- which looks like a certificate error, not a routing bug.
+    sni = render(path, include_bootstrap=False, sno_enabled=True)
+    check("the SNO API is routed by SNI on the shared 6443",
+          "use_backend sno-api if { req_ssl_sni" in sni)
+    check("the SNO ingress is routed by SNI on the shared 443",
+          "use_backend sno-ingress-https if { req_ssl_sni" in sni)
+    no_sno = render(path, include_bootstrap=False, sno_enabled=False)
+    check("no SNO routing before the SNO exists", "sno-api" not in no_sno)
     check("bootstrap is dropped afterwards",
           "server bootstrap" not in without)
     # No router runs on the bootstrap node, so putting it behind the ingress

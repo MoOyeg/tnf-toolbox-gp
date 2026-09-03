@@ -1,0 +1,30 @@
+# Single-node OpenShift for the ACM hub. Rendered by the sno-cluster role.
+#
+# platform:none with one control-plane replica and no compute is the standard SNO
+# shape. It runs as a VM on the TNF cluster, so machineNetwork is KubeVirt's
+# masquerade subnet, not the TNF machine network.
+apiVersion: v1
+baseDomain: {{ base_domain }}
+metadata:
+  name: {{ sno_cluster_name }}
+controlPlane:
+  name: master
+  replicas: 1
+compute:
+  - name: worker
+    replicas: 0
+networking:
+  networkType: OVNKubernetes
+  machineNetwork:
+    - cidr: {{ sno_machine_cidr }}
+  clusterNetwork:
+    - cidr: 10.128.0.0/14
+      hostPrefix: 23
+  serviceNetwork:
+    - 172.30.0.0/16
+platform:
+  none: {}
+bootstrapInPlace:
+  installationDisk: /dev/vda
+pullSecret: '{{ pull_secret }}'
+sshKey: '{{ ssh_public_key }}'

@@ -57,6 +57,7 @@
       --root-volume-storage-class {{ storage_class }}
       --etcd-storage-class {{ storage_class }}
       --host-device-name "{{ gpu_resource_name }},count:{{ guest_gpus_per_node }}"
+      {% if guest_infra_kubeconfig | default('') %}--infra-kubeconfig-file {{ guest_infra_kubeconfig }} --infra-namespace {{ sno_infra_namespace }}{% endif %}
       --render
       --render-sensitive
   environment:

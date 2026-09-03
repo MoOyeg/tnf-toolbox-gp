@@ -29,9 +29,29 @@ listen stats
     stats refresh 10s
 
 # ---------------------------------------------------------------- kube API
+#
+# Two clusters share this port: the TNF cluster and, once it exists, the SNO
+# that runs ACM. They are told apart by TLS SNI without terminating the
+# connection, so each cluster still presents its own certificate. Giving the SNO
+# a second port would have worked but would have put a non-standard port in every
+# kubeconfig and DNS record.
 frontend api
     bind *:6443
+{% if sno_enabled | default(false) %}
+    tcp-request inspect-delay 5s
+    tcp-request content accept if { req_ssl_hello_type 1 }
+    use_backend sno-api if { req_ssl_sni -i api.{{ sno_cluster_name }}.{{ base_domain }} }
+{% endif %}
     default_backend api
+
+{% if sno_enabled | default(false) %}
+backend sno-api
+    balance source
+    option tcp-check
+{% for node in control_plane_nodes %}
+    server {{ node.name }} {{ node.private_ip }}:{{ sno_api_nodeport }} check inter 5s fall 2 rise 3
+{% endfor %}
+{% endif %}
 
 backend api
     balance source
@@ -76,7 +96,20 @@ backend ingress-http
 
 frontend ingress-https
     bind *:443
+{% if sno_enabled | default(false) %}
+    tcp-request inspect-delay 5s
+    tcp-request content accept if { req_ssl_hello_type 1 }
+    use_backend sno-ingress-https if { req_ssl_sni -m end -i .apps.{{ sno_cluster_name }}.{{ base_domain }} }
+{% endif %}
     default_backend ingress-https
+
+{% if sno_enabled | default(false) %}
+backend sno-ingress-https
+    balance source
+{% for node in control_plane_nodes %}
+    server {{ node.name }} {{ node.private_ip }}:{{ sno_https_nodeport }} check inter 5s fall 2 rise 3
+{% endfor %}
+{% endif %}
 
 backend ingress-https
     balance source

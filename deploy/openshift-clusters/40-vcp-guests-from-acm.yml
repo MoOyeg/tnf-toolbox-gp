@@ -1,0 +1,39 @@
+---
+# Stage 4b: virtualized clusters created by the ACM hub on the SNO, with their
+# VMs and GPUs on TNF.
+#
+# The same vcp-guest role as 40-vcp-guests.yml, with two differences that make
+# the separation real: the HostedCluster is created against the SNO, and hcp is
+# given a kubeconfig for TNF so the VMs land there instead of on the hub.
+- name: Create guest clusters from the ACM hub
+  hosts: bastion
+  gather_facts: false
+  environment:
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
+
+  tasks:
+    - name: Confirm the SNO hub exists
+      ansible.builtin.stat:
+        path: "{{ sno_install_dir }}/auth/kubeconfig"
+      register: sno_hub
+
+    - name: Fail if the ACM hub has not been built
+      ansible.builtin.assert:
+        that: sno_hub.stat.exists
+        fail_msg: "No SNO kubeconfig. Run 'make sno' first -- it builds the ACM hub."
+
+    # Read from TNF, where the GPUs physically are, not from the SNO. The SNO has
+    # no GPUs and would report none.
+    - name: Discover the passthrough GPU resource name on the infra cluster
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: discover-gpu-resource
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+
+    - name: Create the guest clusters
+      ansible.builtin.include_role:
+        name: vcp-guest
+      vars:
+        op_kubeconfig: "{{ sno_install_dir }}/auth/kubeconfig"
+        guest_infra_kubeconfig: "{{ sno_install_dir }}/infra-kubeconfig"
