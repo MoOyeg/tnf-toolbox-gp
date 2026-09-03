@@ -229,8 +229,12 @@ save_state() {
   printf '%s' "$2" > "${STATE_DIR}/$1"
 }
 
+# Both readers succeed on a missing file. Callers use them in assignments, and
+# under `set -e` a failing command substitution in an assignment kills the
+# script -- which is how a not-yet-created ACM site took down inventory.sh.
+# "no value recorded" is a normal state here, not an error.
 read_state() {
-  cat "${STATE_DIR}/$1" 2>/dev/null
+  cat "${STATE_DIR}/$1" 2>/dev/null || true
 }
 
 # The ACM site keeps its own state alongside TNF's rather than mixing the two,
@@ -240,7 +244,7 @@ save_acm_state() {
 }
 
 read_acm_state() {
-  cat "${ACM_STATE_DIR}/$1" 2>/dev/null
+  cat "${ACM_STATE_DIR}/$1" 2>/dev/null || true
 }
 
 # Resolve the public Route53 zone the cluster's DNS records go into.
