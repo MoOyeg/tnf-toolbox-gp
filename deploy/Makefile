@@ -1,6 +1,6 @@
 ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 
-.PHONY: all infra acm-infra peering tnf kubeconfig iommu gpu virt sno acm-site \
+.PHONY: all infra acm-infra peering tnf kubeconfig iommu gpu virt-mce acm-site \
         guests guests-from-acm guest-gpu doctor ssh acm-ssh status inventory \
         clean clean-guests destroy destroy-acm help
 
@@ -8,7 +8,7 @@ ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 # Ordering is deliberate. The cluster must be fully up and healthy *as TNF*
 # before anything reboots it, and its credentials must be on your workstation
 # before the one stage that can break it.
-all: infra acm-infra peering tnf kubeconfig iommu gpu virt-acm acm-site \
+all: infra acm-infra peering tnf kubeconfig iommu gpu virt-mce acm-site \
      guests-from-acm guest-gpu
 	@echo ""
 	@echo "Everything is up. 'make status' for a summary."
@@ -28,8 +28,8 @@ iommu:
 gpu:
 	@$(ANSIBLE) 20-base-gpu.yml $(EXTRA_ARGS)
 
-virt-acm:
-	@$(ANSIBLE) 30-virt-acm.yml $(EXTRA_ARGS)
+virt-mce:
+	@$(ANSIBLE) 30-virt-mce.yml $(EXTRA_ARGS)
 
 # The ACM site: its own VPC and bastion, peered to TNF.
 acm-infra:
@@ -88,7 +88,7 @@ destroy:
 
 help:
 	@echo "End to end:"
-	@echo "  make all           - infra -> tnf -> gpu -> virt-acm -> guests -> guest-gpu"
+	@echo "  make all           - infra -> tnf -> gpu -> virt-mce -> acm-site -> guests -> guest-gpu"
 	@echo ""
 	@echo "Stages (each is resumable and safe to re-run):"
 	@echo "  make infra         - VPC, subnet, DNS, bastion (haproxy + Redfish shim)"
@@ -99,7 +99,7 @@ help:
 	@echo "  make iommu         - the IOMMU MachineConfig. Reboots BOTH nodes serially;"
 	@echo "                       gated on TNF health before and after"
 	@echo "  make gpu           - NFD + NVIDIA GPU Operator (no reboots)"
-	@echo "  make virt-acm      - LVM Storage, OpenShift Virtualization, MCE/ACM on TNF"
+	@echo "  make virt-mce      - LVM Storage, OpenShift Virtualization, MultiCluster Engine on TNF"
 	@echo "  make acm-infra     - the ACM site: its own VPC, subnet, DNS and bastion"
 	@echo "  make peering       - VPC peering between the two sites, plus routes and"
 	@echo "                       cross-VPC DNS so each resolves the other privately"

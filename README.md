@@ -46,7 +46,7 @@ cp ~/Downloads/pull-secret.json config/
 
 cd deploy/
 make doctor        # read-only preflight -- run this first, it is cheap
-make all           # infra -> tnf -> gpu -> virt-acm -> guests -> guest-gpu
+make all           # infra -> tnf -> gpu -> virt-mce -> acm-site -> guests -> guest-gpu
 ```
 
 Each stage is independently re-runnable:
@@ -58,7 +58,7 @@ Each stage is independently re-runnable:
 | `make kubeconfig` | save the cluster credentials locally | seconds |
 | `make iommu` | the IOMMU MachineConfig — **reboots both nodes** | 40 min |
 | `make gpu` | NFD + NVIDIA GPU Operator (no reboots) | 10 min |
-| `make virt-acm` | LVM Storage, OpenShift Virtualization, ACM | 15 min |
+| `make virt-mce` | LVM Storage, OpenShift Virtualization, MultiCluster Engine | 15 min |
 | `make guests` | the virtualized control-plane guest clusters | 30–45 min* |
 | `make guest-gpu` | NFD + GPU Operator inside each guest | 30 min* |
 

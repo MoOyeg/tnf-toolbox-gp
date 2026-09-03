@@ -1,0 +1,147 @@
+---
+# Turn on hosted control planes and wait until they are actually usable.
+#
+# Shared by both sites. MultiCluster Engine is what carries the HyperShift
+# operator, and MCE is present either way -- on its own on TNF, or pulled in as
+# a dependency by Advanced Cluster Management at the ACM site.
+
+# MCE ships the HyperShift operator but leaves it switched off. Both components
+# are needed: 'hypershift' installs the operator, and 'hypershift-local-hosting'
+# is what makes this hub itself a valid hosting cluster.
+- name: Enable the hosted control-plane components in MultiCluster Engine
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: patched
+    api_version: multicluster.openshift.io/v1
+    kind: MultiClusterEngine
+    name: multiclusterengine
+    definition:
+      spec:
+        overrides:
+          components:
+            - name: hypershift
+              enabled: true
+            - name: hypershift-local-hosting
+              enabled: true
+  register: mce_patch
+  retries: 20
+  delay: 15
+  until: mce_patch is not failed
+
+- name: Wait for the local-cluster managed cluster to be available
+  ansible.builtin.command: >-
+    oc get managedcluster local-cluster
+    -o jsonpath='{.status.conditions[?(@.type=="ManagedClusterConditionAvailable")].status}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: local_cluster
+  changed_when: false
+  retries: 60
+  delay: 20
+  until: local_cluster.stdout == "True"
+
+# OCP 4.22 ships the Cluster CAPI Operator, which owns
+# clusterapis.operator.openshift.io. The HyperShift installer detects that API
+# and tries to patch the "cluster" instance, but ACM 2.17's addon service
+# account has no RBAC for it, so the install job fails:
+#
+#   failed to apply ClusterAPI config: clusterapis.operator.openshift.io
+#   "cluster" is forbidden: User "system:serviceaccount:
+#   open-cluster-management-agent-addon:hypershift-addon-agent-sa"
+#   cannot patch resource "clusterapis"
+#
+# The job retries forever, the addon reports Available while Degraded, and no
+# HyperShift CRDs are ever installed -- so every HostedCluster apply fails with
+# "no matches for kind HostedCluster". Granting the missing permission is a
+# workaround for that version pairing; it can be removed once ACM ships the rule.
+- name: Grant the hypershift addon permission on the Cluster CAPI resource
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      - apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRole
+        metadata:
+          name: hypershift-addon-agent-clusterapis
+        rules:
+          - apiGroups: ["operator.openshift.io"]
+            resources: ["clusterapis", "clusterapis/status"]
+            verbs: ["get", "list", "watch", "patch", "update"]
+      - apiVersion: rbac.authorization.k8s.io/v1
+        kind: ClusterRoleBinding
+        metadata:
+          name: hypershift-addon-agent-clusterapis
+        roleRef:
+          apiGroup: rbac.authorization.k8s.io
+          kind: ClusterRole
+          name: hypershift-addon-agent-clusterapis
+        subjects:
+          - kind: ServiceAccount
+            name: hypershift-addon-agent-sa
+            namespace: open-cluster-management-agent-addon
+
+# Available alone is not enough. The addon reports Available as soon as its
+# agent is running, which it does happily while the HyperShift operator install
+# is failing -- the state this cluster was actually in. Degraded is the
+# condition that reflects whether the operator got deployed.
+- name: Wait for the hypershift addon to be available and not degraded
+  block:
+    - name: Poll the hypershift addon conditions
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        oc get managedclusteraddon hypershift-addon -n local-cluster -o json
+        | jq -r '[.status.conditions[]
+        | select(.type=="Available" or .type=="Degraded")
+        | "\(.type)=\(.status)"] | sort | join(" ")'
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: hypershift_addon
+      changed_when: false
+      retries: 60
+      delay: 20
+      until: hypershift_addon.stdout == "Available=True Degraded=False"
+  rescue:
+    - name: Collect hypershift addon diagnostics
+      ansible.builtin.shell: |
+        echo "--- addon conditions ---"
+        oc get managedclusteraddon hypershift-addon -n local-cluster \
+          -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}' 2>&1
+        echo "--- install job pods ---"
+        oc get pods -n open-cluster-management-agent-addon 2>&1 | grep -i install || true
+        echo "--- install job log ---"
+        pod=$(oc get pods -n open-cluster-management-agent-addon --no-headers 2>/dev/null \
+              | grep hypershift-install-job | tail -1 | awk '{print $1}')
+        [ -n "$pod" ] && oc logs -n open-cluster-management-agent-addon "$pod" --tail=30 2>&1 | tail -20
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: addon_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: Report and fail
+      ansible.builtin.fail:
+        msg: |
+          The hypershift addon did not become healthy.
+          Without it there are no HyperShift CRDs, so no guest cluster can be
+          created. The install job log below usually names the missing
+          permission or image.
+          {{ addon_diagnostics.stdout }}
+
+# The CRDs are what a HostedCluster actually needs. The addon reporting healthy
+# is a proxy; this is the thing itself.
+- name: Wait for the HostedCluster CRD to be established
+  ansible.builtin.command: oc get crd hostedclusters.hypershift.openshift.io
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: hostedcluster_crd
+  changed_when: false
+  retries: 40
+  delay: 15
+  until: hostedcluster_crd.rc == 0
+
+- name: Report the hosting state
+  ansible.builtin.debug:
+    msg:
+      - "{{ hosting_component | default('MultiCluster Engine') }} is running and local-cluster is available."
+      - "The HyperShift addon is ready, so this cluster can host virtualized control planes."
+      - "Console: https://console-openshift-console.apps.{{ cluster_domain }}"

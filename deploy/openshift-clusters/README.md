@@ -16,7 +16,7 @@ every command runs there.
 |---|---|
 | `10-tnf-install.yml` | `common`, `redfish-shim`, `loadbalancer`, `tnf-install` |
 | `20-base-gpu.yml` | `gpu-passthrough`, `nfd`, `gpu-operator` |
-| `30-virt-acm.yml` | `lvm-storage`, `cnv`, `acm` |
+| `30-virt-mce.yml` | `lvm-storage`, `cnv`, `acm` (MCE only) |
 | `40-vcp-guests.yml` | `vcp-guest` |
 | `50-guest-gpu.yml` | `nfd`, `gpu-operator` — against each guest kubeconfig |
 | `clean-guests.yml` | — |

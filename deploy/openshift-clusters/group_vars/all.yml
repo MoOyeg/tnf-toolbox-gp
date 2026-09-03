@@ -85,6 +85,7 @@ gpu_operator_channel: auto
 lvms_channel: auto
 cnv_channel: auto
 acm_channel: auto
+mce_channel: auto
 
 nfd_namespace: openshift-nfd
 gpu_operator_namespace: nvidia-gpu-operator

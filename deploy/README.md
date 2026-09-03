@@ -29,7 +29,7 @@ already decided.
 | `make infra` | *(CloudFormation, no playbook)* | 5 min |
 | `make tnf` | `10-tnf-install.yml` | 60–90 min |
 | `make gpu` | `20-base-gpu.yml` | 30–45 min |
-| `make virt-acm` | `30-virt-acm.yml` | 45–60 min |
+| `make virt-mce` | `30-virt-mce.yml` | 45–60 min |
 | `make guests` | `40-vcp-guests.yml` | 30–45 min |
 | `make guest-gpu` | `50-guest-gpu.yml` | 30 min |
 

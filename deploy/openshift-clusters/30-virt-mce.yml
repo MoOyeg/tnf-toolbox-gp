@@ -1,7 +1,11 @@
 ---
-# Stage 3: storage, OpenShift Virtualization and ACM -- everything the guest
-# clusters need to exist before they can be created.
-- name: Prepare the hub for virtualized control planes
+# Stage 3: storage, OpenShift Virtualization and MultiCluster Engine -- what TNF
+# needs in place before any guest cluster can be created on it.
+#
+# MCE, not ACM. TNF is the site that hosts the control planes and owns the GPUs;
+# the management hub lives at the ACM site, outside TNF's failure domain. MCE is
+# the half that carries the HyperShift operator, which is the half TNF needs.
+- name: Prepare TNF to host virtualized control planes
   hosts: bastion
   gather_facts: false
   environment:
@@ -39,8 +43,9 @@
       vars:
         op_kubeconfig: "{{ kubeconfig }}"
 
-    - name: Install Advanced Cluster Management
+    - name: Install MultiCluster Engine
       ansible.builtin.include_role:
         name: acm
+        tasks_from: mce-only
       vars:
         op_kubeconfig: "{{ kubeconfig }}"

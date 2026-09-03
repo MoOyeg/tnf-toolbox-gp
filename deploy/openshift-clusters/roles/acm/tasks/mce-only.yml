@@ -1,0 +1,78 @@
+---
+# MultiCluster Engine on its own, without the Advanced Cluster Management hub.
+#
+# This is what TNF gets. MCE is the half that carries the HyperShift operator
+# and so makes a cluster able to host virtualized control planes; ACM adds the
+# multicluster hub -- the console, policy and observability -- on top of it.
+#
+# TNF hosts the control planes and the GPUs. The hub that manages it lives at
+# the ACM site, deliberately outside TNF's failure domain, so installing the
+# full hub here as well would put back exactly what the two-site split removes,
+# on the two nodes least able to spare the capacity.
+
+- name: Install the MultiCluster Engine operator
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: install-operator
+  vars:
+    op_package: multicluster-engine
+    op_namespace: "{{ mce_namespace }}"
+    op_channel: "{{ mce_channel }}"
+    op_source: redhat-operators
+    op_operator_group_scope: own
+    op_csv_timeout: "{{ operator_csv_timeout }}"
+
+# ACM would create this itself, as part of the MultiClusterHub. Without ACM it
+# has to be created directly.
+- name: Create the MultiClusterEngine
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: multicluster.openshift.io/v1
+      kind: MultiClusterEngine
+      metadata:
+        name: multiclusterengine
+      spec:
+        # Basic, not High: two nodes, already carrying OpenShift Virtualization
+        # and every guest cluster's control plane.
+        availabilityConfig: Basic
+
+- name: Wait for the MultiClusterEngine to reach Available
+  block:
+    - name: Poll the MultiClusterEngine phase
+      ansible.builtin.command: >-
+        oc get multiclusterengine multiclusterengine
+        -o jsonpath={.status.phase}
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: mce_phase
+      changed_when: false
+      retries: "{{ (mch_timeout | int / 30) | int }}"
+      delay: 30
+      until: mce_phase.stdout == "Available"
+  rescue:
+    - name: Collect MultiClusterEngine diagnostics
+      ansible.builtin.shell: |
+        echo "--- multiclusterengine ---"
+        oc get multiclusterengine multiclusterengine -o yaml 2>&1 | tail -40
+        echo "--- pods not running ---"
+        oc get pods -n {{ mce_namespace }} --no-headers 2>&1 | grep -v 'Running\|Completed' || true
+        echo "--- events ---"
+        oc get events -n {{ mce_namespace }} --sort-by=.lastTimestamp 2>&1 | tail -20
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: mce_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: Report and fail
+      ansible.builtin.fail:
+        msg: |
+          MultiClusterEngine did not reach Available within {{ mch_timeout }}s.
+          On a two-node cluster the usual cause is insufficient capacity or a
+          pod with no schedulable node.
+          {{ mce_diagnostics.stdout }}
+
+- name: Turn on hosted control planes
+  ansible.builtin.include_tasks: hypershift.yml
