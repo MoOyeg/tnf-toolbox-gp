@@ -66,7 +66,11 @@ acm_control_plane_nodes:
   - name: "{{ acm_sno_node_name | default('sno-0') }}"
     private_ip: "{{ acm_sno_private_ip | default('10.1.0.10') }}"
     gpu_workload: container
-    data_volume: "{{ acm_sno_data_volume | default('') }}"
+    # The fact wins when this run relaunched the node, because the extra var
+    # was read from state before the stack was replaced. Falling back to the
+    # extra var covers the already-installed case, where launch.yml is skipped.
+    data_volume: >-
+      {{ acm_sno_data_volume_actual | default(acm_sno_data_volume | default('')) }}
 
 network_type: OVNKubernetes
 cluster_network_cidr: 10.128.0.0/14

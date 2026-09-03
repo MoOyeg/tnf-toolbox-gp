@@ -53,6 +53,22 @@
   register: acm_launch
   changed_when: "'CREATE_COMPLETE' in acm_launch.stdout or 'UPDATE_COMPLETE' in acm_launch.stdout"
 
+# create-acm-sno.sh has just written the new stack outputs. The volume id in
+# the extra vars was read from state before this play started, so after a
+# relaunch it names the volume the old stack had -- and LVM Storage would look
+# for a device that is not there. Re-read it from what the stack actually made.
+- name: Read the data volume the stack just created
+  ansible.builtin.slurp:
+    src: "{{ repo_root }}/deploy/aws-infra/instance-data/{{ acm_cluster_name }}/sno_data_volume"
+  delegate_to: localhost
+  register: acm_sno_data_volume_file
+
+- name: Use the volume the stack actually created
+  ansible.builtin.set_fact:
+    acm_sno_data_volume_actual: "{{ acm_sno_data_volume_file.content | b64decode | trim }}"
+
 - name: Report the launch
   ansible.builtin.debug:
-    msg: "ACM node launched from {{ acm_rhcos_ami.stdout }}"
+    msg:
+      - "ACM node launched from {{ acm_rhcos_ami.stdout }}"
+      - "Data volume: {{ acm_sno_data_volume_actual }}"
