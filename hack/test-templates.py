@@ -456,6 +456,26 @@ def test_roles_do_not_borrow_other_roles_defaults():
           "; ".join(f"{r} uses {n}, defined only in {'/'.join(o)}" for r, n, o in borrowed))
 
 
+def test_play_path_fallbacks_keep_the_system_directories():
+    """A play's PATH fallback must still contain the system sbin directories.
+
+    environment: applies to the implicit gather_facts task as well, where
+    ansible_env is not yet defined -- so the fallback becomes the PATH the setup
+    module runs under, and setup then reports that back as ansible_env.PATH for
+    every task in the play. A fallback of '/usr/bin:/bin' therefore does not
+    degrade gracefully: it removes /usr/sbin for the whole run, and anything
+    living there stops being found. haproxy is the one that bit.
+    """
+    print("\nplay PATH fallbacks")
+    required = ("/usr/sbin", "/sbin")
+    for path in sorted(glob.glob(f"{ROOT}/deploy/openshift-clusters/*.yml")):
+        text = open(path, encoding="utf-8").read()
+        for fallback in re.findall(r"ansible_env\.PATH\s*\|\s*default\('([^']*)'\)", text):
+            missing = [d for d in required if d not in fallback.split(":")]
+            check(f"{os.path.basename(path)} keeps the system directories",
+                  not missing, f"fallback '{fallback}' is missing {missing}")
+
+
 def test_fetched_credentials_are_gitignored():
     """Whatever path fetch-kubeconfig writes to must be gitignored.
 
@@ -495,6 +515,7 @@ def main():
     test_jsonpath_filters_are_shell_quoted()
     test_shell_commands_are_not_split_by_stray_newlines()
     test_roles_do_not_borrow_other_roles_defaults()
+    test_play_path_fallbacks_keep_the_system_directories()
     test_fetched_credentials_are_gitignored()
 
     print()

@@ -628,3 +628,88 @@ The `tnf-install/health.yml` gate detects this state -- etcd degraded, and the
 verdict names it -- but the toolbox does not attempt the repair, because
 choosing an etcd seed is a decision with data-loss consequences when the
 revisions differ.
+
+## Run 5 — 2026-09-03, eu-west-1, account 521937384928
+
+The first run of the two-site layout: TNF in `10.0.0.0/16`, the ACM cluster in
+its own VPC at `10.1.0.0/16`, joined by VPC peering. `make infra`, `make
+acm-infra` and `make peering` all came up first time, including the
+cross-associated private zones and a verified path from the ACM side to
+`10.0.0.5`. `make tnf` and `make acm-site` were then run at the same time, which
+is what the two-site split is supposed to allow -- and `make acm-site` failed
+four times in a row, each on a different consequence of the same refactor.
+
+### 25. Role defaults are invisible to other roles
+
+`make acm-site` died on `'ignition_root' is undefined`. `ignition_root` was a
+default of the `loadbalancer` role, and `sno-cluster` read it. Role defaults are
+scoped to the role that declares them, so this can never work -- but it looked
+fine in review, and the template tests passed, because
+`hack/test-templates.py` merges *every* role's defaults into one namespace
+before rendering. The test harness encoded exactly the assumption that does not
+hold at runtime.
+
+The same audit turned up `acm_infra_namespace` (needed by `vcp-guest` as well as
+`sno-cluster`) and three names -- `sno_install_dir`, `sno_cluster_name`,
+`sno_infra_namespace` -- that were left behind when ACM moved off TNF and were
+by then defined nowhere at all.
+
+Variables two roles both need belong in `group_vars/all.yml`.
+`test_roles_do_not_borrow_other_roles_defaults` now checks the real scoping
+rule; reintroducing the bug fails it.
+
+### 26. The ACM play read a file that only exists on the other bastion
+
+`infra-credentials.yml` runs on the ACM bastion and slurped `{{ kubeconfig }}`
+-- TNF's, which is produced by and stays on the *TNF* bastion. It also used the
+credential one task before writing it. It now slurps from the TNF bastion with
+`delegate_to`, writes the copy, and only then makes the TNF-side calls. Because
+the two stages are meant to run concurrently, it also waits for that kubeconfig
+to appear rather than assuming the other site has finished.
+
+### 27. `/srv/ignition` did not exist yet
+
+`Destination directory /srv/ignition does not exist`. The `loadbalancer` role
+creates it, and `10-tnf-install.yml` includes that role at play level *before*
+`tnf-install` for precisely this reason. `36-acm-site.yml` went straight to
+`sno-cluster`, whose render step publishes ignition two tasks before its launch
+step includes `loadbalancer`. Fixed by mirroring the TNF play.
+
+### 28. A short PATH fallback silently removes /usr/sbin for a whole play
+
+`haproxy -c -f ...` failed with `[Errno 2] No such file or directory:
+b'haproxy'` -- with haproxy installed, four seconds earlier, in the same play,
+and `/usr/sbin` present in the login PATH.
+
+A play's `environment:` applies to the implicit `gather_facts` task too. On that
+first task `ansible_env` is not yet defined, so
+
+```yaml
+PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
+```
+
+resolves to the fallback -- and the setup module, running under it, then reports
+*that* truncated value back as `ansible_env.PATH` for every task in the play.
+The fallback is not a safety net; it is the value. `/usr/sbin` was gone for the
+whole run.
+
+`10-tnf-install.yml` had no `| default(...)`, which is why the TNF side never
+showed this. The fallbacks now list the system directories, the haproxy
+validation uses an absolute path, and
+`test_play_path_fallbacks_keep_the_system_directories` fails any play whose
+fallback drops `/usr/sbin` or `/sbin`.
+
+### 29. `make verify` could not pass on any machine that had run a deploy
+
+Unrelated to the ACM work, found while checking the fixes. `shellcheck` and
+`yamlfmt` both walk the tree themselves, and neither reads `.gitignore`, so both
+were linting the Ansible collections vendored into
+`deploy/openshift-clusters/collections/ansible_collections/` at deploy time --
+hundreds of findings in other people's files. `hack/yamlfmt.sh` was worse: its
+in-container branch used a bash array, and the yamlfmt image runs `sh`, so it
+exited on a syntax error before formatting anything. It had therefore never run.
+
+Both now skip the vendored tree, and the yamlfmt branch is POSIX. yamlfmt
+reports a repo-wide formatting backlog, to be applied when no deploy is in
+flight -- Ansible reads its task files lazily, so reformatting them mid-run
+changes what a running playbook is about to execute.

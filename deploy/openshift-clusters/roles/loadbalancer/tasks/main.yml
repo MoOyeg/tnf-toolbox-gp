@@ -27,7 +27,7 @@
     src: haproxy.cfg.j2
     dest: /etc/haproxy/haproxy.cfg
     mode: '0644'
-    validate: 'haproxy -c -f %s'
+    validate: '/usr/sbin/haproxy -c -f %s'
   notify: restart haproxy
 
 - name: Enable and start haproxy

@@ -8,7 +8,13 @@
   gather_facts: false
   environment:
     KUBECONFIG: "{{ kubeconfig }}"
-    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/bin:/bin') }}"
+    # The fallback must list the system sbin directories. A play's
+    # environment: applies to the implicit fact gathering too, so on that first
+    # task ansible_env is still undefined and the default is what PATH becomes
+    # -- and the setup module then reports *that* as ansible_env.PATH for every
+    # task after it. A short fallback silently loses /usr/sbin for the whole
+    # play, and tools like haproxy stop being found.
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
 
   tasks:
     - name: List the hosted clusters
