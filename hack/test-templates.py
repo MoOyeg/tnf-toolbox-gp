@@ -500,8 +500,8 @@ def test_play_path_fallbacks_keep_the_system_directories():
                   not missing, f"fallback '{fallback}' is missing {missing}")
 
 
-def test_loadbalancer_role_names_no_single_site():
-    """The loadbalancer role fronts either site, so it must not name one.
+def test_site_agnostic_roles_name_no_single_site():
+    """Roles that run at either site must not name one site's variables.
 
     Its templates are rendered on TNF's bastion and on the ACM site's. A
     variable like bastion_private_ip always holds TNF's address, so on the ACM
@@ -511,7 +511,7 @@ def test_loadbalancer_role_names_no_single_site():
     bootstrap host. Site-specific values must arrive as role variables the
     caller sets, or be derived from the host being configured.
     """
-    print("\nloadbalancer is site-agnostic")
+    print("\nsite-agnostic roles")
     # Extra vars outrank include_role parameters, so a template that names one
     # can never be pointed at the other site: the caller's override is accepted
     # silently and then ignored. That is how the ACM haproxy came to health-check
@@ -519,7 +519,20 @@ def test_loadbalancer_role_names_no_single_site():
     # probe. Any name run-playbook.sh supplies is therefore unusable here.
     banned = tuple(extra_vars_from_wrapper()) + (
         "cluster_domain", "cluster_name", "install_dir", "acm_install_dir")
-    role = f"{ROOT}/deploy/openshift-clusters/roles/loadbalancer"
+    # vcp-guest runs against whichever hub hosts the control planes, so the
+    # names that differ between sites are off limits there too -- publishing the
+    # guest API on TNF's wildcard while the control plane runs on the ACM hub
+    # yields a route ACM's router never answers for.
+    site_specific = ("cluster_domain", "cluster_name", "bastion_private_ip",
+                     "bootstrap_private_ip", "install_dir", "kubeconfig",
+                     "ignition_base_url", "fencing_base_url")
+    roles = {"loadbalancer": banned, "vcp-guest": site_specific}
+    for role_name, forbidden in roles.items():
+        _check_role_names(role_name, forbidden)
+
+
+def _check_role_names(role_name, banned):
+    role = f"{ROOT}/deploy/openshift-clusters/roles/{role_name}"
     for sub in ("templates", "tasks"):
         for path in sorted(glob.glob(f"{role}/{sub}/*")):
             text = open(path, encoding="utf-8").read()
@@ -528,7 +541,7 @@ def test_loadbalancer_role_names_no_single_site():
             for a, b in re.findall(r"\{\{(.*?)\}\}|\{%(.*?)%\}", text, re.S):
                 used |= set(re.findall(r"(?<![\w.])([a-z_][a-z0-9_]*)", a or b))
             named = sorted(used & set(banned))
-            check(f"{os.path.basename(path)} names no single site",
+            check(f"{role_name}/{os.path.basename(path)} names no single site",
                   not named, f"references {named}")
 
 
@@ -572,7 +585,7 @@ def main():
     test_shell_commands_are_not_split_by_stray_newlines()
     test_nothing_reads_role_defaults_from_outside()
     test_play_path_fallbacks_keep_the_system_directories()
-    test_loadbalancer_role_names_no_single_site()
+    test_site_agnostic_roles_name_no_single_site()
     test_fetched_credentials_are_gitignored()
 
     print()

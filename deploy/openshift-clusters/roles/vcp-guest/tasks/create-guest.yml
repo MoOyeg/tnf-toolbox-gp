@@ -132,7 +132,7 @@
                 yaml.safe_dump_all(docs, fh, default_flow_style=False)
         print("rewritten" if changed else "already Route")
       - "{{ guest_workdir }}/guest-manifests/{{ guest_name }}.yaml"
-      - "api-{{ guest_name }}.apps.{{ cluster_domain }}"
+      - "api-{{ guest_name }}.apps.{{ guest_api_domain }}"
   register: apiserver_strategy
   changed_when: apiserver_strategy.stdout == "rewritten"
   when: guest_exists.rc != 0
@@ -156,7 +156,7 @@
   changed_when: false
   failed_when: >-
     apiserver_publishing.stdout | trim
-    != "Route api-" ~ guest_name ~ ".apps." ~ cluster_domain
+    != "Route api-" ~ guest_name ~ ".apps." ~ guest_api_domain
   when: guest_exists.rc != 0
 
 - name: "{{ guest_name }}: confirm the rendered manifests carry their secrets"

@@ -810,3 +810,36 @@ The general rule: a role parameter meant to be overridden must not share a name
 with an extra var. This is the same precedence trap as defect 28's PATH and the
 ACM data volume -- extra vars win over both set_fact and role params, and in
 every case the symptom appeared far from the cause.
+
+### 32. The guest API was published on TNF's wildcard from the ACM hub
+
+`make guests-from-acm` created the HostedCluster and then sat at
+`InfrastructureReady=False` until it timed out, with only three pods in the
+hosted control-plane namespace and `capi-provider` stuck in `Init:0/1` probing a
+`kube-apiserver` that was never created.
+
+The routes said why:
+
+```
+konnectivity-server  konnectivity-server-clusters-vcp-1.apps.acm.sandbox807...
+oauth                oauth-clusters-vcp-1.apps.acm.sandbox807...
+kube-apiserver       api-vcp-1.apps.tnf-gp.sandbox807...
+```
+
+The two the operator created itself are on the ACM wildcard, because that is
+where the control plane runs. The third is ours, and it is on TNF's. The ACM
+hub's router does not answer for `*.apps.tnf-gp...`, so the API was never
+reachable and infrastructure never became ready.
+
+`vcp-guest` built the hostname from `cluster_domain`, which was right while TNF
+was the only hub. With ACM hosting the control planes and TNF providing only the
+VMs, the API route belongs to whichever cluster's router serves it -- the hub --
+and the VMs' location is irrelevant to it.
+
+The role now takes `guest_api_domain`, defaulting to `cluster_domain` so the
+TNF-hosted path is unchanged, and `40-vcp-guests-from-acm.yml` sets it to the
+ACM cluster's domain. As with defect 31, the parameter deliberately does not
+reuse the extra var's name, or the override would be discarded in silence.
+
+The site-agnostic check now covers `vcp-guest` as well as `loadbalancer`: both
+run against whichever site is hosting, so neither may name TNF's variables.
