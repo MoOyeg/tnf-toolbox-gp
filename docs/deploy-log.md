@@ -958,3 +958,37 @@ them.
 And the reordering held again. `make iommu` rebooted both nodes serially with
 the pair re-forming each time, and the post-rollout health gate proved it --
 the failure from run 3 has not recurred in two runs.
+
+### 36. The MachineConfig rollout wait passed before the rollout began
+
+The per-node GPU split failed its own verification the first time it ran:
+
+```
+master-1 has 0 GPUs on vfio-pci and 8 left for the NVIDIA driver
+```
+
+The check was right and the split had not happened -- but neither had the
+reboot. `make iommu` returned at 11:26:0x and the pool only began updating at
+11:26:21, a few seconds *after* the play had already declared the rollout
+complete and gone on to inspect the nodes.
+
+`wait-mcp.yml` deliberately does not watch the Updating condition, for good
+reasons written up in its own header, and instead waits for the named
+MachineConfig to appear in the pool's source list before reading
+`.spec.configuration.name`. That defends against a MachineConfig being *added*.
+It does nothing for one being *edited*: `100-master-gpu-passthrough` was already
+in the source list, so the guard was trivially true, while the rendered config
+was still the previous one -- which every node already matched. The wait passed
+instantly, for a change that had not started.
+
+Every previous run added that MachineConfig rather than editing it, so the gap
+had never been reachable.
+
+*Fix:* the caller reads the pool's rendered config before applying and passes it
+in, and the wait first requires the target to move off that value. It is passed
+only when the apply reported changed, so an unchanged re-run does not sit
+waiting for a re-render that is never coming.
+
+The verification is what caught this. Without it the stage would have reported
+success, and the failure would have surfaced two stages later as guest VMs that
+could not schedule.

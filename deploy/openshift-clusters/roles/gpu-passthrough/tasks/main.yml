@@ -68,6 +68,17 @@
   loop_control:
     label: "{{ item.item.name }}"
 
+# Read before the apply, so the wait can tell a real re-render from the old
+# target still being reported.
+- name: Read the pool's rendered config before changing anything
+  ansible.builtin.command: >-
+    oc get mcp {{ target_mcp }} -o jsonpath={.spec.configuration.name}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: mcp_before
+  changed_when: false
+  failed_when: false
+
 - name: Enable the IOMMU on the control-plane nodes
   kubernetes.core.k8s:
     kubeconfig: "{{ op_kubeconfig | default(kubeconfig) }}"
@@ -120,6 +131,9 @@
   ansible.builtin.include_tasks: wait-mcp.yml
   vars:
     required_machine_config: "{{ machine_config_name }}"
+    # Only when this run actually changed the MachineConfig. Passing it on an
+    # unchanged re-run would wait for a re-render that will never happen.
+    previous_rendered_config: "{{ mcp_before.stdout | default('') if iommu_mc.changed else '' }}"
 
 # Every node is a container node as far as the operator is concerned. The
 # passthrough half is already bound to vfio-pci by the time its driver starts,

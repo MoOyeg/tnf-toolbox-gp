@@ -20,6 +20,27 @@
 # which every node already matches -- so the wait below would pass instantly
 # for a change that has not begun. Wait for the new MachineConfig to appear in
 # the pool's source list first; only then is the target the one we want.
+#
+# That covers a MachineConfig being *added*. It does nothing for one being
+# *edited*, which is the more common case on a re-run: the name is already in
+# the source list, so the check below is trivially true while the rendered
+# config is still the old one. previous_rendered_config closes that -- the
+# caller reads the pool's target before applying, and passes it here only when
+# the apply actually changed something, so an unchanged re-run does not wait
+# for a new config that is never going to appear.
+- name: Wait for the {{ target_mcp }} pool to render a new config
+  ansible.builtin.command: >-
+    oc get mcp {{ target_mcp }} -o jsonpath={.spec.configuration.name}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: mcp_rerender
+  changed_when: false
+  retries: 40
+  delay: 15
+  until: mcp_rerender.rc == 0 and mcp_rerender.stdout != previous_rendered_config
+  when:
+    - previous_rendered_config is defined
+    - previous_rendered_config | length > 0
 - name: Wait for {{ required_machine_config }} to enter the {{ target_mcp }} pool's target
   ansible.builtin.shell: >-
     set -o pipefail;
