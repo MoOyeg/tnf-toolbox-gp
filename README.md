@@ -55,7 +55,7 @@ Each stage is independently re-runnable:
 |---|---|---|
 | `make infra` | VPC, subnet, private DNS, bastion, fencing endpoint | 2 min |
 | `make tnf` | install TNF 4.22 on two `g4dn.metal`, then verify it is healthy *as TNF* | 52 min |
-| `make kubeconfig` | save the cluster credentials locally | seconds |
+| `make kubeconfig` | save every cluster's credentials locally and write `deploy/clusters/access.md` | seconds |
 | `make iommu` | the IOMMU MachineConfig — **reboots both nodes** | 40 min |
 | `make gpu` | NFD + NVIDIA GPU Operator (no reboots) | 10 min |
 | `make virt-mce` | LVM Storage, OpenShift Virtualization, MultiCluster Engine | 15 min |
@@ -74,6 +74,34 @@ a rollout that leaves the pair unable to re-form is a failure of *that* stage,
 not a mysterious GPU problem two stages later. See
 [docs/deploy-log.md](docs/deploy-log.md) for the run where that distinction was
 learned.
+
+## Credentials
+
+`make kubeconfig` collects every cluster's credentials onto your workstation and
+writes **`deploy/clusters/access.md`** -- one page listing, for each cluster, the
+console URL, the API URL, the login, and the absolute path to its kubeconfig:
+
+```
+deploy/clusters/
+├── access.md                     <- start here
+├── tnf-gp/{kubeconfig,kubeadmin-password}
+└── acm/{kubeconfig,kubeadmin-password}
+    ├── vcp-1.kubeconfig, vcp-1-kubeadmin-password
+    └── vcp-2.kubeconfig, vcp-2-kubeadmin-password
+```
+
+Guest credentials live under the hub that created them, because that is where
+they come from: a guest cluster has no `auth/` directory, and HyperShift keeps
+its kubeadmin password in a secret on the hub.
+
+It is safe to re-run at any point, and skips any site whose cluster does not
+answer -- so running it early, before the ACM site exists, collects TNF alone and
+says so. The whole directory is gitignored; the page holds kubeadmin passwords in
+plain text and is written `0600`.
+
+Guest cluster consoles resolve publicly, on the infra cluster's apps wildcard one
+level down (`...apps.<guest>.apps.<base cluster domain>`). Their APIs do not: they
+are NodePorts on the hub's private address, reachable from the bastions.
 
 `make status` summarises stacks, instance power state, bastion services and
 cluster health at any point. `make destroy` removes everything.
