@@ -19,3 +19,7 @@ acm_install_timeout: 5400
 # peering connection. The namespace it targets on TNF is acm_infra_namespace,
 # in group_vars, because vcp-guest needs it too.
 infra_kubeconfig_secret: tnf-infra-kubeconfig
+
+# Pods per node on the hub. The default 250 is not enough for ACM plus MCE plus
+# OpenShift Virtualization plus a hosted control plane for every guest cluster.
+acm_max_pods: 500

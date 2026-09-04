@@ -874,3 +874,34 @@ is smaller than three nodes.
 This one was only reachable after defect 32: while the private router blocked
 InfrastructureReady, etcd was never created at all, so the topology mismatch had
 nothing to surface through.
+
+### 34. The single-node hub ran out of pods, not capacity
+
+`vcp-1` came up -- control plane available on the ACM hub, worker VM running on
+TNF with two T4s attached. `vcp-2`'s control plane never scheduled:
+
+```
+0/1 nodes are available: 1 Too many pods.
+```
+
+Not CPU, not memory. The node wanted 279 pods against the kubelet's default
+ceiling of 250, with 47 of 48 cores and 187 GiB of memory idle:
+
+```
+pods on sno-0: 279
+capacity=250 allocatable=250
+cpu=47500m mem=196529124Ki
+```
+
+A single-node hub carrying ACM, MultiCluster Engine, OpenShift Virtualization
+and one hosted control plane per guest is simply a lot of pods. The first guest
+fits; the second does not.
+
+*Fix:* a KubeletConfig raising maxPods to 500, applied whether or not the run
+installed the cluster, since a hub built before the change needs it too. The MCO
+reboots the node to apply it and on a single-node cluster that takes the API
+with it, so the task waits for the pool to settle rather than letting the next
+stage fail against an API on its way down.
+
+Worth noting the message names the symptom and not the cause: "Too many pods"
+reads like a capacity problem on a machine with 47 idle cores.

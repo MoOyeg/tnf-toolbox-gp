@@ -1,0 +1,64 @@
+---
+# Raise the ACM hub's pod ceiling.
+#
+# The kubelet's default is 250 pods per node. A single-node hub carrying ACM,
+# MultiCluster Engine, OpenShift Virtualization and one hosted control plane per
+# guest cluster goes past that with room to spare on every other axis -- the
+# node was at 279 pods wanted against 250 allowed, with 47 of 48 cores and 187
+# GiB of memory free. The second guest cluster's control plane simply never
+# scheduled:
+#
+#   0/1 nodes are available: 1 Too many pods.
+#
+# Nothing about that message points at a per-node cap rather than at capacity,
+# which is why it is worth setting deliberately rather than discovering twice.
+
+- name: Raise the maximum pods per node on the ACM hub
+  kubernetes.core.k8s:
+    kubeconfig: "{{ acm_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: machineconfiguration.openshift.io/v1
+      kind: KubeletConfig
+      metadata:
+        name: acm-hub-max-pods
+      spec:
+        machineConfigPoolSelector:
+          matchLabels:
+            pools.operator.machineconfiguration.openshift.io/master: ""
+        kubeletConfig:
+          maxPods: "{{ acm_max_pods }}"
+  register: max_pods
+
+# The MCO reboots the node to apply it, and on a single-node cluster that takes
+# the API with it. Wait for the pool to settle rather than letting the next
+# stage fail against an API that is on its way down.
+- name: Wait for the kubelet configuration to roll out
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get mcp master --no-headers
+    | awk '{print $3, $4, $5}'
+  environment:
+    KUBECONFIG: "{{ acm_kubeconfig }}"
+  register: acm_mcp
+  changed_when: false
+  failed_when: false
+  retries: "{{ (mcp_rollout_timeout | int / 30) | int }}"
+  delay: 30
+  until: acm_mcp.stdout == "True False False"
+
+- name: Confirm the node now allows the raised pod count
+  ansible.builtin.command: >-
+    oc get node {{ acm_sno_node_name }}
+    -o jsonpath='{.status.allocatable.pods}'
+  environment:
+    KUBECONFIG: "{{ acm_kubeconfig }}"
+  register: acm_allocatable_pods
+  changed_when: false
+  retries: 30
+  delay: 20
+  until: acm_allocatable_pods.stdout | int >= (acm_max_pods | int)
+
+- name: Report the pod ceiling
+  ansible.builtin.debug:
+    msg: "ACM hub allows {{ acm_allocatable_pods.stdout }} pods per node."

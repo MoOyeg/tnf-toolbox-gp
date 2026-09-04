@@ -42,6 +42,11 @@
     - name: Wait for the installation to finish
       ansible.builtin.include_tasks: wait.yml
 
+# Applies whether or not this run installed the cluster: a hub built before the
+# ceiling was raised needs it just as much as a fresh one.
+- name: Raise the hub's pod ceiling
+  ansible.builtin.include_tasks: pod-capacity.yml
+
 - name: Report an existing ACM cluster
   when: acm_already_installed
   ansible.builtin.debug:
