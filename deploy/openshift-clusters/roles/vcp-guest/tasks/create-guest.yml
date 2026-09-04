@@ -96,48 +96,65 @@
 #     kube-apiserver load balancer is not provisioned
 #   kube-apiserver  LoadBalancer  172.30.42.105  <pending>  6443:31923/TCP
 #
-# Route is what the other three services already use, and the hub has working
-# ingress, so the API is published the same way. spec.services cannot be
-# changed after the HostedCluster exists, which is why this rewrites the
-# manifest rather than patching the object.
-- name: "{{ guest_name }}: publish the guest API through a Route, not a LoadBalancer"
+# Route removes that one LoadBalancer but replaces it with another: HyperShift
+# deploys a private router to serve Route-strategy services and exposes *it*
+# with a LoadBalancer, which on platform:none stays <pending> just the same:
+#
+#   router  LoadBalancer  172.30.80.97  <pending>  443:32544/TCP
+#   InfrastructureReady=False: router load balancer is not provisioned
+#
+# and the control-plane-operator reconciles that Service back to LoadBalancer
+# if it is patched, so it cannot be worked around after the fact. Red Hat's
+# guidance for hosted control planes on OpenShift Virtualization is to run
+# MetalLB on the hosting cluster, which does not fit here: MetalLB's L2 mode
+# announces by ARP, and AWS only delivers to addresses actually assigned to an
+# ENI.
+#
+# NodePort needs no load balancer at all, and with no Route-strategy service
+# left HyperShift never creates the private router. The address has to be a node
+# of the *hosting* cluster that the guest's worker VMs can reach: they run on
+# TNF and the control plane is on the ACM hub, so it is the hub's node address,
+# across the VPC peering.
+#
+# spec.services cannot be changed after the HostedCluster exists, which is why
+# this rewrites the manifest rather than patching the object.
+- name: "{{ guest_name }}: publish the guest services on NodePorts, not LoadBalancers"
   ansible.builtin.command:
     argv:
       - python3
       - -c
       - |
         import sys, yaml
-        path, hostname = sys.argv[1], sys.argv[2]
+        path, address = sys.argv[1], sys.argv[2]
         docs = [d for d in yaml.safe_load_all(open(path)) if d]
         changed = False
         for doc in docs:
             if doc.get("kind") != "HostedCluster":
                 continue
             for svc in doc.get("spec", {}).get("services", []):
-                if svc.get("service") != "APIServer":
-                    continue
                 strategy = svc.setdefault("servicePublishingStrategy", {})
-                route = strategy.get("route") or {}
-                if strategy.get("type") != "Route" or route.get("hostname") != hostname:
-                    strategy["type"] = "Route"
+                node_port = strategy.get("nodePort") or {}
+                if (strategy.get("type") != "NodePort"
+                        or node_port.get("address") != address):
+                    strategy["type"] = "NodePort"
                     strategy.pop("loadBalancer", None)
-                    # Type alone is rejected: "route hostname is required for
-                    # service APIServer". The name has to be one the hub's
-                    # wildcard already answers for.
-                    route["hostname"] = hostname
-                    strategy["route"] = route
+                    strategy.pop("route", None)
+                    node_port["address"] = address
+                    strategy["nodePort"] = node_port
                     changed = True
         if changed:
             with open(path, "w") as fh:
                 yaml.safe_dump_all(docs, fh, default_flow_style=False)
-        print("rewritten" if changed else "already Route")
+        print("rewritten" if changed else "already NodePort")
       - "{{ guest_workdir }}/guest-manifests/{{ guest_name }}.yaml"
-      - "api-{{ guest_name }}.apps.{{ guest_api_domain }}"
+      - "{{ guest_api_address }}"
   register: apiserver_strategy
   changed_when: apiserver_strategy.stdout == "rewritten"
   when: guest_exists.rc != 0
 
-- name: "{{ guest_name }}: confirm the API is a Route with a hostname"
+# Every service, not just the API: one Route-strategy service left behind is
+# enough to bring the private router and its LoadBalancer back.
+- name: "{{ guest_name }}: confirm no service still wants a load balancer"
   ansible.builtin.command:
     argv:
       - python3
@@ -148,15 +165,15 @@
             if not d or d.get("kind") != "HostedCluster":
                 continue
             for s in d["spec"]["services"]:
-                if s["service"] == "APIServer":
-                    st = s["servicePublishingStrategy"]
-                    print(f'{st["type"]} {st.get("route", {}).get("hostname", "NO-HOSTNAME")}')
+                st = s["servicePublishingStrategy"]
+                print(f'{s["service"]}={st["type"]}:'
+                      f'{st.get("nodePort", {}).get("address", "NO-ADDRESS")}')
       - "{{ guest_workdir }}/guest-manifests/{{ guest_name }}.yaml"
   register: apiserver_publishing
   changed_when: false
   failed_when: >-
-    apiserver_publishing.stdout | trim
-    != "Route api-" ~ guest_name ~ ".apps." ~ guest_api_domain
+    apiserver_publishing.stdout_lines | reject('search', '=NodePort:' ~ guest_api_address)
+    | list | length > 0
   when: guest_exists.rc != 0
 
 - name: "{{ guest_name }}: confirm the rendered manifests carry their secrets"

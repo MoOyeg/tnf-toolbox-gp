@@ -60,6 +60,7 @@
         op_kubeconfig: "{{ acm_kubeconfig }}"
         guest_infra_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
         guest_workdir: "{{ acm_install_dir }}"
-        # The control plane runs here, on the ACM hub, so its API route has to
-        # be on the ACM wildcard. TNF's router never sees it.
-        guest_api_domain: "{{ acm_cluster_name }}.{{ base_domain }}"
+        # The control plane runs here, on the ACM hub, so its services are
+        # published on the hub's own node. The worker VMs are over on TNF and
+        # reach this address across the peering connection.
+        guest_api_address: "{{ acm_sno_private_ip }}"

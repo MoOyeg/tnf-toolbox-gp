@@ -8,13 +8,11 @@ guest_kubeconfig_dir: "{{ install_root }}/guests"
 guest_release_image: "quay.io/openshift-release-dev/ocp-release:{{ ocp_version }}-x86_64"
 nodepool_timeout: 3600
 
-# The wildcard the guest's API route is published on. It must belong to the
-# cluster whose router actually serves that route -- the hub the hosted control
-# plane runs on -- which is the ACM cluster, not TNF, when ACM is the hub.
-# Publishing api-<guest>.apps.<TNF domain> on the ACM hub creates a route its
-# router never answers for, and the control plane sits at
-# InfrastructureReady=False forever with no kube-apiserver.
+# The node address the guest's control-plane services are published on. It must
+# be a node of the cluster hosting the control plane, reachable from the guest's
+# worker VMs -- which run on TNF while the control plane runs on the ACM hub, so
+# they reach it across the VPC peering.
 #
-# Not named cluster_domain: that is an extra var, and extra vars outrank
-# include_role parameters, so a caller's override would be silently discarded.
-guest_api_domain: "{{ cluster_domain }}"
+# Deliberately not named after an extra var: extra vars outrank include_role
+# parameters, so a caller's override would be silently discarded.
+guest_api_address: "{{ master0_private_ip }}"
