@@ -905,3 +905,56 @@ stage fail against an API on its way down.
 
 Worth noting the message names the symptom and not the cause: "Too many pods"
 reads like a capacity problem on a machine with 47 idle cores.
+
+### 35. Run 5 completed
+
+```
+make infra        passed   TNF network + services, public zone
+make acm-infra    passed   ACM VPC 10.1.0.0/16, its own bastion
+make peering      passed   pcx-0beb09ea6c5a64e66, both private zones cross-associated
+make tnf          passed   97 tasks. "2 nodes Ready, all operators Available,
+                           etcd not degraded, Pacemaker and corosync quorate
+                           with both members online"
+make kubeconfig   passed   credentials fetched, verified from the workstation
+                           over the public name with no TLS flags
+make iommu        passed   intel_iommu=on iommu=pt on both nodes, health gate
+                           green after the reboots
+make gpu          passed   master-0 nvidia.com/gpu=8 (container)
+                           master-1 nvidia.com/TU104GL_TESLA_T4=8 (vfio-pci)
+make virt-mce     passed   LVM lvms-vg1 default, OpenShift Virtualization with
+                           GPU host devices, MultiCluster Engine 2.17.2.
+                           No MultiClusterHub on TNF -- verified absent
+make acm-site     passed   111 tasks. SNO 4.22.10 on m5zn.metal at its own site,
+                           MultiClusterHub 2.17.1 Running, LVM, and a credential
+                           that reaches TNF's API across the peering
+make guests-from-acm passed  vcp-1 and vcp-2, control planes on the ACM hub,
+                           worker VMs on TNF, NodePools 1/1
+make guest-gpu    passed   nvidia.com/gpu=2 in each guest, ClusterPolicy ready
+```
+
+The shape the whole thing was built for, confirmed on the infra cluster:
+
+```
+acm-hosted-vms/vcp-1-c4rvb-xqtlk  node=master-1
+  hostDevices=[nvidia.com/TU104GL_TESLA_T4, nvidia.com/TU104GL_TESLA_T4]
+acm-hosted-vms/vcp-2-5s5xz-dqdqs  node=master-1
+  hostDevices=[nvidia.com/TU104GL_TESLA_T4, nvidia.com/TU104GL_TESLA_T4]
+```
+
+ACM never runs on the cluster it manages. The hub is a separate site in a
+separate VPC; TNF keeps MultiCluster Engine and provides the VMs and the GPUs;
+the two are joined only by the peering connection and one kubeconfig.
+
+Two things this run proved about the topology, neither of them planned:
+
+The sandbox stopped all six instances mid-run, at 18:31, in the same second --
+defect 19 again, across both sites this time. TNF came back with no
+intervention: clusterversion stayed Available on the surviving node throughout,
+etcd re-formed on its own, and the MachineConfig rollout that was half-applied
+resumed and finished. That is the second time this two-node cluster has survived
+losing *both* control-plane nodes at once, which is what fencing does to one of
+them.
+
+And the reordering held again. `make iommu` rebooted both nodes serially with
+the pair re-forming each time, and the post-rollout health gate proved it --
+the failure from run 3 has not recurred in two runs.
