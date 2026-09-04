@@ -1,0 +1,52 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analyzer
+  labels: {app.kubernetes.io/name: analyzer, app.kubernetes.io/part-of: inspection}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: analyzer}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: analyzer}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: analyzer
+          image: REPLACED_BY_KUSTOMIZE/analyzer:latest
+          env:
+            - {name: RTSP_HOST, value: rtsp-server}
+            - {name: CAMERAS, value: "4"}
+            - {name: VLLM_URL, value: "http://vllm:8000/v1/chat/completions"}
+            - {name: VLLM_MODEL, value: Qwen/Qwen2.5-VL-3B-Instruct}
+            - {name: ANOMALY_THRESHOLD, value: "3.5"}
+            # Frames the reference is built from before anything is scored. Too
+            # low and the first defect trains the model to expect defects.
+            - {name: WARMUP_FRAMES, value: "90"}
+          ports:
+            - {name: http, containerPort: 8080}
+          resources:
+            # One GPU for the fast path. Raise CAMERAS rather than this: the
+            # per-frame work is small and the point is to fill the GPU with
+            # streams, not with a bigger model.
+            limits: {nvidia.com/gpu: "1", memory: 8Gi, cpu: "8"}
+            requests: {nvidia.com/gpu: "1", memory: 2Gi, cpu: "2"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            initialDelaySeconds: 15
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analyzer
+  labels: {app.kubernetes.io/name: analyzer}
+spec:
+  selector: {app.kubernetes.io/name: analyzer}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
