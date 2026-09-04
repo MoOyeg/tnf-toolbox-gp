@@ -43,6 +43,27 @@
       vars:
         op_kubeconfig: "{{ kubeconfig }}"
 
+    # HyperShift exposes each guest cluster's ingress by creating a wildcard
+    # Subdomain route on the infra cluster -- https.apps.<guest>.apps.<domain>
+    # -- pointing at a passthrough service for the guest's router. The default
+    # IngressController refuses wildcard routes unless told otherwise, and an
+    # unadmitted route fails quietly: the guest's console operator never goes
+    # Available, so its ClusterVersion stays state=Partial, and the NVIDIA GPU
+    # Operator refuses to start at all with "failed to find Completed Cluster
+    # Version". Two clusters away from the actual cause.
+    - name: Allow the wildcard routes that publish guest cluster ingress
+      kubernetes.core.k8s:
+        kubeconfig: "{{ kubeconfig }}"
+        state: patched
+        api_version: operator.openshift.io/v1
+        kind: IngressController
+        name: default
+        namespace: openshift-ingress-operator
+        definition:
+          spec:
+            routeAdmission:
+              wildcardPolicy: WildcardsAllowed
+
     - name: Install MultiCluster Engine
       ansible.builtin.include_role:
         name: acm
