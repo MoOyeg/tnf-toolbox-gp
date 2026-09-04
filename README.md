@@ -31,7 +31,9 @@ ACM site  VPC 10.1.0.0/16              TNF site  VPC 10.0.0.0/16
                   └────────── VPC peering ─────────────┘
                     ACM drives TNF as its KubeVirt infra cluster:
                     HostedCluster + control-plane pods on the ACM cluster,
-                    worker VMs and their GPUs on TNF.
+                    worker VMs and their GPUs on TNF. TNF is also imported
+                    into the hub as a managed cluster, so ACM sees the
+                    infrastructure and not just the clusters on it.
 ```
 
 No nested virtualization anywhere. OpenShift Virtualization runs on the metal,

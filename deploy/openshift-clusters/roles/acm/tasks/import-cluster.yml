@@ -1,0 +1,118 @@
+---
+# Import an existing cluster into the hub as a ManagedCluster.
+#
+# ACM auto-imports the clusters it creates itself -- local-cluster, and every
+# HostedCluster it provisions -- but not one that was already there. TNF is
+# where the guest clusters' VMs and GPUs actually run, so until it is imported
+# the hub can see the hosted clusters but not the infrastructure underneath
+# them.
+#
+# The target is named by import_cluster_name and reached with
+# import_cluster_kubeconfig. Deliberately not cluster_name: that is an extra
+# var, and extra vars outrank include_role parameters, so a caller's value would
+# be accepted and then discarded.
+
+- name: "Create the hub namespace for {{ import_cluster_name }}"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ import_cluster_name }}"
+
+- name: "Register {{ import_cluster_name }} with the hub"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: cluster.open-cluster-management.io/v1
+      kind: ManagedCluster
+      metadata:
+        name: "{{ import_cluster_name }}"
+        labels:
+          name: "{{ import_cluster_name }}"
+          cloud: Amazon
+          vendor: OpenShift
+      spec:
+        hubAcceptsClient: true
+
+- name: "Enable the klusterlet addons on {{ import_cluster_name }}"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: agent.open-cluster-management.io/v1
+      kind: KlusterletAddonConfig
+      metadata:
+        name: "{{ import_cluster_name }}"
+        namespace: "{{ import_cluster_name }}"
+      spec:
+        clusterName: "{{ import_cluster_name }}"
+        clusterNamespace: "{{ import_cluster_name }}"
+        clusterLabels:
+          cloud: Amazon
+          vendor: OpenShift
+        applicationManager:
+          enabled: true
+        policyController:
+          enabled: true
+        searchCollector:
+          enabled: true
+        certPolicyController:
+          enabled: true
+
+# The hub generates the manifests asynchronously once the ManagedCluster exists.
+- name: "Wait for the hub to generate {{ import_cluster_name }}'s import manifests"
+  ansible.builtin.command: >-
+    oc get secret {{ import_cluster_name }}-import
+    -n {{ import_cluster_name }} -o jsonpath='{.data.import\.yaml}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: import_secret
+  changed_when: false
+  failed_when: false
+  retries: 30
+  delay: 10
+  until: import_secret.rc == 0 and import_secret.stdout | length > 0
+
+- name: Fail if the hub never produced the import manifests
+  ansible.builtin.assert:
+    that: import_secret.stdout | length > 0
+    fail_msg: >-
+      {{ import_cluster_name }}-import was never populated in namespace
+      {{ import_cluster_name }}. Without it the klusterlet cannot be installed
+      on the target cluster.
+
+# crds.yaml first: import.yaml contains the custom resources those CRDs define,
+# and applying it first fails with "no matches for kind Klusterlet".
+- name: "Install the klusterlet on {{ import_cluster_name }}"
+  ansible.builtin.shell: |
+    set -o pipefail
+    for key in crds.yaml import.yaml; do
+      oc --kubeconfig {{ op_kubeconfig }} get secret {{ import_cluster_name }}-import \
+        -n {{ import_cluster_name }} -o jsonpath="{.data.${key//./\\.}}" \
+        | base64 -d \
+        | oc --kubeconfig {{ import_cluster_kubeconfig }} apply -f -
+    done
+  register: klusterlet_applied
+  changed_when: "'created' in klusterlet_applied.stdout or 'configured' in klusterlet_applied.stdout"
+
+# Available means the klusterlet came up on the target and is talking back to
+# the hub. Joined alone only means the registration was accepted.
+- name: "Wait for {{ import_cluster_name }} to come online in the hub"
+  ansible.builtin.command: >-
+    oc get managedcluster {{ import_cluster_name }}
+    -o jsonpath='{.status.conditions[?(@.type=="ManagedClusterConditionAvailable")].status}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: managed_available
+  changed_when: false
+  retries: "{{ (managed_cluster_timeout | int / 20) | int }}"
+  delay: 20
+  until: managed_available.stdout == "True"
+
+- name: "Report {{ import_cluster_name }}"
+  ansible.builtin.debug:
+    msg: "{{ import_cluster_name }} is imported into the hub and reporting Available."

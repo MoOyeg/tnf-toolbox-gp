@@ -69,3 +69,16 @@
         tasks_from: infra-credentials
       vars:
         op_kubeconfig: "{{ acm_kubeconfig }}"
+
+    # Last, because it needs the credential the previous step wrote. ACM
+    # auto-imports what it creates; TNF already existed, so the hub would
+    # otherwise manage the guest clusters without seeing the cluster their VMs
+    # and GPUs actually run on.
+    - name: Import the TNF cluster into the hub
+      ansible.builtin.include_role:
+        name: acm
+        tasks_from: import-cluster
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+        import_cluster_name: "{{ cluster_name }}"
+        import_cluster_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
