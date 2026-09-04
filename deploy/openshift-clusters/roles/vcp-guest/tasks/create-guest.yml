@@ -51,6 +51,8 @@
       --release-image {{ guest_release_image }}
       --pull-secret {{ guest_workdir }}/pull-secret.json
       --node-pool-replicas {{ guest_nodepool_replicas }}
+      --control-plane-availability-policy {{ guest_control_plane_availability }}
+      --infra-availability-policy {{ guest_infra_availability }}
       --cores {{ guest_vm_cores }}
       --memory {{ guest_vm_memory }}
       --root-volume-size {{ guest_vm_root_disk | regex_replace('Gi$', '') }}

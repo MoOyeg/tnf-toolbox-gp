@@ -16,3 +16,12 @@ nodepool_timeout: 3600
 # Deliberately not named after an extra var: extra vars outrank include_role
 # parameters, so a caller's override would be silently discarded.
 guest_api_address: "{{ master0_private_ip }}"
+
+# hcp defaults the control plane to HighlyAvailable, which runs etcd as a
+# three-replica StatefulSet with anti-affinity across three nodes. Neither hub
+# here has three: the ACM hub is a single node and TNF is a pair. etcd-1 and
+# etcd-2 stay Pending with their PVCs unbound, etcd-0 crashloops because it can
+# never reach quorum, and the hosted control plane never comes up.
+guest_control_plane_availability: SingleReplica
+# Likewise inside the guest, which has one worker VM.
+guest_infra_availability: SingleReplica

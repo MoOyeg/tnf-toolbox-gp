@@ -843,3 +843,34 @@ reuse the extra var's name, or the override would be discarded in silence.
 
 The site-agnostic check now covers `vcp-guest` as well as `loadbalancer`: both
 run against whichever site is hosting, so neither may name TNF's variables.
+
+### 33. The guest control plane defaulted to three etcd replicas on a one-node hub
+
+With NodePort publishing the control plane finally started deploying -- nine
+pods where there had been three -- and then stalled:
+
+```
+etcd-0            3/4  CrashLoopBackOff  11 times
+etcd-1            0/4  Pending
+etcd-2            0/4  Pending
+data-etcd-1       Pending  lvms-vg1
+data-etcd-2       Pending  lvms-vg1
+etcd-recovery-*   Error    (eight of them)
+```
+
+`hcp create cluster` defaults `--control-plane-availability-policy` to
+`HighlyAvailable`, which runs etcd as a three-replica StatefulSet with
+anti-affinity across three nodes. The ACM hub is a single node, so two replicas
+could never be scheduled, their PVCs stayed unbound behind
+WaitForFirstConsumer, and etcd-0 crashlooped because it could not reach quorum
+on its own. HyperShift's own etcd-recovery jobs then failed in a loop.
+
+TNF would not have satisfied it either, at two nodes.
+
+*Fix:* `SingleReplica` for both the control plane and the guest's own
+infrastructure services, as role defaults, since every hub this toolbox builds
+is smaller than three nodes.
+
+This one was only reachable after defect 32: while the private router blocked
+InfrastructureReady, etcd was never created at all, so the topology mismatch had
+nothing to surface through.
