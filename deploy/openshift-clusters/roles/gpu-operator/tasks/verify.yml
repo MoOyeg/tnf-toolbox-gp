@@ -40,28 +40,30 @@
   ansible.builtin.include_role:
     name: common
     tasks_from: discover-gpu-resource
-  when: gpu_sandbox_workloads | bool
+  when: gpu_check_passthrough | bool
 
-# On the base cluster each mode should have produced its own resource name. A
-# vm-passthrough node advertising nvidia.com/gpu means vfio-manager did not
-# take the GPUs, and every later hostDevices request would fail to schedule.
-- name: Confirm each node advertises the resource its workload mode implies
-  when: gpu_sandbox_workloads | bool
+# Every node carries both halves now, so every node should advertise both
+# resource names. A node missing the passthrough one means the split unit did
+# not run before nvidia.ko claimed the lot; a node missing nvidia.com/gpu means
+# it bound everything to vfio-pci. Either way the counts below are wrong and
+# guest VMs or container workloads would fail to schedule on that machine.
+- name: Confirm every node advertises both container and passthrough GPUs
+  when: gpu_check_passthrough | bool
   ansible.builtin.assert:
     that:
       - >-
         gpu_resources.stdout_lines
-        | select('search', '^' ~ item.name ~ ' ' ~ expected_resource)
+        | select('search', '^' ~ item.name ~ ' nvidia.com/gpu ')
+        | list | length > 0
+      - >-
+        gpu_resources.stdout_lines
+        | select('search', '^' ~ item.name ~ ' ' ~ gpu_resource_name)
         | list | length > 0
     fail_msg: >-
-      {{ item.name }} is labelled {{ item.gpu_workload }} but does not
-      advertise {{ expected_resource }}. Found:
+      {{ item.name }} should advertise both nvidia.com/gpu and
+      {{ gpu_resource_name }}, because half its GPUs go to each. Found:
       {{ gpu_resources.stdout_lines | select('search', '^' ~ item.name) | list }}
-    success_msg: "{{ item.name }} ({{ item.gpu_workload }}) advertises {{ expected_resource }}"
-  vars:
-    expected_resource: >-
-      {{ 'nvidia.com/gpu' if item.gpu_workload == 'container'
-         else gpu_resource_name }}
+    success_msg: "{{ item.name }} advertises both container and passthrough GPUs"
   loop: "{{ control_plane_nodes }}"
   loop_control:
     label: "{{ item.name }}"

@@ -1,0 +1,73 @@
+#!/bin/bash
+# Split this node's NVIDIA GPUs between the NVIDIA driver and vfio-pci.
+#
+# The GPU Operator cannot do this. Its sandboxWorkloads model labels a whole
+# node container or vm-passthrough and binds every GPU on it the same way, so
+# splitting within a node means binding the passthrough half here, before the
+# operator's driver container loads nvidia.ko and claims everything it finds.
+#
+# Sorted by PCI address and takes the first half, so the same unit produces the
+# same split on every node without being told each node's addresses -- which a
+# MachineConfig could not express anyway, since it applies to a whole pool.
+#
+# Note for editors: this file is rendered by Jinja, so it avoids bash's
+# ${!name[@]} length syntax -- the brace-hash opens a Jinja comment and the
+# template fails to render.
+set -euo pipefail
+
+VENDOR="0x{{ gpu_pci_vendor_device.split(':')[0] | lower }}"
+DEVICE="0x{{ gpu_pci_vendor_device.split(':')[1] | lower }}"
+
+modprobe vfio-pci || true
+
+gpu_list="$(
+  for d in /sys/bus/pci/devices/*; do
+    [ "$(cat "$d/vendor" 2>/dev/null || true)" = "$VENDOR" ] || continue
+    [ "$(cat "$d/device" 2>/dev/null || true)" = "$DEVICE" ] || continue
+    basename "$d"
+  done | sort
+)"
+
+total="$(printf '%s\n' "$gpu_list" | grep -c . || true)"
+if [ "$total" -eq 0 ]; then
+  echo "no GPUs matching ${VENDOR}:${DEVICE}; nothing to do"
+  exit 0
+fi
+
+half=$(( total / 2 ))
+echo "found ${total} GPUs; binding ${half} to vfio-pci"
+
+index=0
+while read -r bdf; do
+  [ -n "$bdf" ] || continue
+  dev="/sys/bus/pci/devices/${bdf}"
+  index=$(( index + 1 ))
+
+  if [ "$index" -gt "$half" ]; then
+    # Left for the NVIDIA driver. Clear any override a previous split set, in
+    # case the GPU count changed.
+    if [ -e "${dev}/driver_override" ]; then
+      echo "" > "${dev}/driver_override" || true
+    fi
+    continue
+  fi
+
+  current=""
+  if [ -e "${dev}/driver" ]; then
+    current="$(basename "$(readlink -f "${dev}/driver")")"
+  fi
+
+  if [ "$current" = "vfio-pci" ]; then
+    echo "${bdf} already bound to vfio-pci"
+    continue
+  fi
+
+  # Re-runnable: after a reboot the GPU Operator may already hold the device.
+  if [ -n "$current" ]; then
+    echo "${bdf}" > "${dev}/driver/unbind" || true
+  fi
+
+  echo vfio-pci > "${dev}/driver_override"
+  echo "${bdf}" > /sys/bus/pci/drivers_probe || true
+  echo "${bdf} -> vfio-pci"
+done <<< "$gpu_list"

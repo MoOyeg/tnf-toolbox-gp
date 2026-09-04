@@ -7,3 +7,9 @@ iommu_kernel_args:
   - iommu=pt
 machine_config_name: "{{ iommu_machine_config_name | default('100-master-gpu-passthrough') }}"
 target_mcp: master
+
+# Where the per-node GPU split lands on disk, and the unit that runs it. It has
+# to run before kubelet, so the GPU Operator's driver container finds the
+# passthrough half already taken by vfio-pci.
+gpu_split_script_path: /usr/local/bin/gpu-vfio-split.sh
+gpu_split_unit_name: gpu-vfio-split.service

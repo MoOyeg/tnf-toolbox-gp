@@ -6,115 +6,135 @@ cluster has sixteen. They cannot all do both jobs.
 ## The constraint: a GPU has one driver
 
 A GPU is bound either to the NVIDIA kernel driver, which lets containers use it,
-or to `vfio-pci`, which lets a virtual machine take it whole. Not both.
+or to `vfio-pci`, which lets a virtual machine take it whole. Not both. That part
+is real and unavoidable.
 
-The NVIDIA GPU Operator models this per **node**, not per GPU. With
-`sandboxWorkloads.enabled: true`, a node is labelled:
+What is *not* forced is doing it a whole node at a time. The NVIDIA GPU Operator
+models the choice per **node**: with `sandboxWorkloads.enabled: true` a node is
+labelled
 
 ```
 nvidia.com/gpu.workload.config=container        # NVIDIA driver, pods
 nvidia.com/gpu.workload.config=vm-passthrough   # vfio-pci, KubeVirt VMs
 ```
 
-and the operator's `vfio-manager` binds *all* of that node's GPUs accordingly.
-There is no supported per-GPU split within a node.
+and its `vfio-manager` binds *all* of that node's GPUs accordingly. Following
+that model with two nodes means one machine's eight GPUs serve containers and
+the other's eight serve VMs -- and then every GPU-bearing VM in the environment
+is on one machine. Losing it loses all of them, and no VM can ever be scheduled
+anywhere else.
 
-So with two nodes, the split is: one node's eight GPUs for containers, the
-other node's eight for virtual machines.
+## What this toolbox does instead: half of every node
 
-## The default
+Each node keeps half its GPUs for containers and passes the other half through:
+
+```
+master-0   4x T4 -> NVIDIA driver     4x T4 -> vfio-pci
+master-1   4x T4 -> NVIDIA driver     4x T4 -> vfio-pci
+```
+
+The totals are identical -- eight of each -- but neither capability is stranded
+on one machine, and guest worker VMs can be spread across both.
+
+The operator cannot express this, so it is not asked to. `sandboxWorkloads` is
+disabled, and a systemd unit shipped by the IOMMU MachineConfig
+(`gpu-vfio-split.service`) binds the passthrough half at boot, before kubelet
+starts:
+
+1. enumerate this node's GPUs from `/sys/bus/pci/devices` by vendor and device id
+2. sort by PCI address and take the first half
+3. unbind anything already holding them, set `driver_override=vfio-pci`, re-probe
+
+It computes the half itself rather than being handed a list of PCI addresses,
+because a MachineConfig applies to a whole pool: one unit has to be correct on
+every node without knowing any node's addresses.
+
+The GPU Operator's driver container then loads `nvidia.ko` and finds only the
+GPUs that are still free, so it advertises `nvidia.com/gpu: 4` per node. KubeVirt
+discovers the `vfio-pci`-bound ones and advertises them under
+`permittedHostDevices` as `nvidia.com/TU104GL_TESLA_T4: 4` per node -- which is
+why `externalResourceProvider` is **false**: with the operator's sandbox device
+plugin switched off, KubeVirt is the one doing the advertising.
+
+Both halves are verified rather than assumed. `make iommu` counts the drivers
+actually bound on each node and fails if either half is empty, and `make
+virt-mce` fails if any node advertises no passthrough GPUs.
+
+## Sizing the guests against it
+
+Eight passthrough GPUs is the budget, and the guest clusters spend it:
 
 ```bash
 # config/instance.env
-export MASTER0_GPU_WORKLOAD=container        # 8x T4 -> pods on the base cluster
-export MASTER1_GPU_WORKLOAD=vm-passthrough   # 8x T4 -> guest cluster worker VMs
+export GUEST_CLUSTER_COUNT=2         # guest clusters
+export GUEST_NODEPOOL_REPLICAS=3     # workers each
+export GUEST_GPUS_PER_NODE=1         # GPUs per worker
 ```
 
-Which gives:
+2 x 3 x 1 = 6 of the 8. `make guests-from-acm` checks that sum against what the
+infra cluster actually advertises before it creates anything, because the
+alternative is a NodePool that sits Pending for its whole timeout with the real
+reason buried in a pod event.
 
-| Node | Mode | Advertises | Consumed by |
-|---|---|---|---|
-| `master-0` | `container` | `nvidia.com/gpu: 8` | pods on the base cluster |
-| `master-1` | `vm-passthrough` | `nvidia.com/TU104GL_Tesla_T4: 8` | KubeVirt VMs, i.e. guest cluster workers |
-
-The two modes advertise **different resource names**, which is the quickest way
-to tell whether the split took:
-
-```bash
-oc get nodes -o json | jq -r '.items[]
-  | .metadata.name as $n
-  | .status.allocatable | to_entries[]
-  | select(.key | startswith("nvidia.com/"))
-  | "\($n) \(.key)=\(.value)"'
-```
-
-A node labelled `vm-passthrough` that advertises `nvidia.com/gpu` means
-`vfio-manager` did not take the GPUs, and every `hostDevices` request will fail
-to schedule. The `gpu-operator` role asserts this rather than leaving it to be
-discovered later.
+Raising `GUEST_GPUS_PER_NODE` to 2 would need 12 and fail that check.
 
 ## Changing the split
 
-Edit `config/instance.env` and re-run:
+The split is computed on the node, as half of whatever it finds, so there is no
+per-node setting to edit. To change the ratio, change the arithmetic in
+`roles/gpu-passthrough/templates/gpu-vfio-split.sh.j2` -- it is three lines --
+and re-run:
 
 ```bash
-cd deploy/ && make gpu
+cd deploy/ && make iommu
 ```
 
-Relabelling a node makes the GPU Operator rebind its GPUs, which restarts the
-driver daemonset on that node. Do it before creating guest clusters, not after
-— a guest worker VM holding a GPU on a node being flipped to `container` mode
-will not survive.
+That reapplies the MachineConfig and reboots both nodes serially, which is why
+it lives in the IOMMU stage rather than `make gpu`.
 
-**Both nodes to `vm-passthrough`** gives 16 GPUs for guest clusters and none for
-containers on the base cluster. Reasonable if the base cluster is purely a
-hosting platform, but it means `make gpu`'s container-mode verification has
-nothing to check.
+**Do it before creating guest clusters, not after.** Rebinding a GPU that a
+running worker VM is holding will not go well, and the VM cannot follow its GPU
+to another machine.
 
-**Both nodes to `container`** gives no passthrough GPUs, so `make guests` fails
-its budget check before creating anything.
-
-## The GPU budget
-
-`make guests` does the arithmetic up front, because creating clusters that
-cannot possibly schedule wastes half an hour before failing:
-
-```
-GUEST_CLUSTER_COUNT x GUEST_NODEPOOL_REPLICAS x GUEST_GPUS_PER_NODE
-  <= allocatable nvidia.com/TU104GL_Tesla_T4
-```
-
-Defaults are 2 clusters x 1 worker x 2 GPUs = 4 of 8. Room for another two
-clusters, or for four GPUs per worker.
+To give everything to containers, drop the systemd unit from the MachineConfig;
+`make guests` then fails its budget check before creating anything, because
+nothing advertises the passthrough resource.
 
 ## Where guest workers land
 
-Only the `vm-passthrough` node advertises the passthrough resource, so **every
-guest cluster worker VM schedules on that one node**. Two consequences:
+Both nodes advertise passthrough GPUs, so guest worker VMs can schedule on
+either, and the scheduler spreads them. This is the main practical gain over
+dedicating one node:
 
-- All guest workers compete for one machine's 96 vCPU and 384 GiB. The default
-  worker is 8 cores and 32 GiB, so the node is not the binding constraint until
-  roughly a dozen workers.
-- Fencing that node takes every guest cluster's workers with it. The guest
-  *control planes* run as pods and can reschedule to the other node; the
-  workers cannot, because their GPUs are physically on the fenced machine.
+- A worker VM is no longer pinned to one machine by the location of its GPUs.
+- Fencing a node costs half the passthrough capacity rather than all of it, and
+  the guest workers that were not on it keep running. Their control planes are
+  pods on the ACM hub, at the other site, and are unaffected either way.
 
-That second point is worth knowing before running a fencing test against a rig
-with guest clusters on it. It is a property of GPU passthrough, not a bug.
+A worker VM still cannot migrate while holding a passed-through GPU -- that is a
+property of passthrough, not of this layout -- so fencing a node does destroy the
+workers that were on it. The difference is that it is now some of them rather
+than all of them.
 
 ## What runs where
 
 ```
-master-0  container mode
-  NVIDIA driver daemonset, device plugin, DCGM exporter
-  nvidia.com/gpu: 8   -> any pod on the base cluster can request one
+master-0 and master-1, both the same
 
-master-1  vm-passthrough mode
-  vfio-manager binds all 8 T4s to vfio-pci
-  sandbox device plugin advertises nvidia.com/TU104GL_Tesla_T4: 8
-  OpenShift Virtualization permits 10DE:1EB8 with externalResourceProvider: true
-     -> KubeVirt VMs request it through spec.domain.devices.hostDevices
-     -> guest NodePools request it through platform.kubevirt.hostDevices
+  gpu-vfio-split.service, before kubelet
+    binds the first 4 T4s by PCI address to vfio-pci
+
+  NVIDIA GPU Operator, sandboxWorkloads off
+    driver daemonset, device plugin, DCGM exporter
+    finds only the 4 GPUs still free
+    nvidia.com/gpu: 4   -> any pod on the base cluster can request one
+
+  OpenShift Virtualization
+    permits 10DE:1EB8 with externalResourceProvider: false, so KubeVirt's own
+    device plugin advertises the vfio-pci-bound ones
+    nvidia.com/TU104GL_TESLA_T4: 4
+      -> KubeVirt VMs request it through spec.domain.devices.hostDevices
+      -> guest NodePools request it through platform.kubevirt.hostDevices
 
 inside each guest cluster
   the T4 is an ordinary PCI device on the VM
@@ -122,8 +142,10 @@ inside each guest cluster
   nvidia.com/gpu: N   -> pods in the guest cluster can request one
 ```
 
-The GPU Operator runs twice on two different levels, in two different modes, for
-two different reasons — that is the part most worth holding onto.
+The GPU Operator runs on two levels for two different reasons, and on neither of
+them does it own the passthrough half: on the base cluster a systemd unit takes
+those GPUs before the operator starts, and inside a guest there is nothing left
+to pass through. That is the part most worth holding onto.
 
 ## Checking a GPU end to end
 

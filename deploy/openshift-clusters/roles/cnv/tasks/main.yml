@@ -32,6 +32,12 @@
       # permittedHostDevices only where there are GPUs. The ACM site has none, and
       # naming a device nothing advertises would leave HyperConverged permitting
       # a resource that can never be satisfied.
+      #
+      # externalResourceProvider says who advertises them. It was true while the
+      # GPU Operator's sandbox device plugin owned whole passthrough nodes; now
+      # that each node is split and the operator's sandbox machinery is off,
+      # KubeVirt's own device plugin discovers the vfio-pci-bound GPUs and
+      # advertises them under this resource name.
       spec: >-
         {{
           {
@@ -40,7 +46,7 @@
                 {
                   "pciDeviceSelector": gpu_pci_vendor_device,
                   "resourceName": gpu_resource_name,
-                  "externalResourceProvider": true
+                  "externalResourceProvider": cnv_external_gpu_provider
                 }
               ]
             }
@@ -59,9 +65,12 @@
   delay: 30
   until: hco_available.stdout == "True"
 
-# The resource has to be schedulable, not merely permitted. If vfio-manager has
-# not bound the GPUs, this stays absent and every guest cluster NodePool would
-# sit Pending with no obvious reason.
+# The resource has to be schedulable, not merely permitted. If the split unit
+# has not bound any GPUs to vfio-pci, this stays absent and every guest cluster
+# NodePool would sit Pending with no obvious reason.
+#
+# This is where the passthrough half is checked, not in the base GPU stage:
+# KubeVirt advertises it, so it does not exist until this role has run.
 - name: Confirm the GPU resource is allocatable on the passthrough node
   when: cnv_permit_gpu | default(true)
   # Every line is indented identically on purpose. In a folded (>-) scalar a
@@ -81,6 +90,26 @@
   retries: 30
   delay: 20
   until: passthrough_capacity.rc == 0 and passthrough_capacity.stdout != ""
+
+# Every node is split, so every node should offer some. One node short means
+# its GPUs all went to the NVIDIA driver, and the guests would crowd onto the
+# other -- which is exactly the single-node concentration the split removes.
+- name: Fail if any node is missing its passthrough GPUs
+  when: cnv_permit_gpu | default(true)
+  ansible.builtin.assert:
+    that:
+      - >-
+        passthrough_capacity.stdout_lines
+        | select('search', '^' ~ item.name ~ ' ')
+        | list | length > 0
+    fail_msg: >-
+      {{ item.name }} advertises no {{ gpu_resource_name }}. Half its GPUs
+      should be bound to vfio-pci by {{ gpu_split_unit_name | default('the split unit') }};
+      check that unit on the node.
+    success_msg: "{{ item.name }} offers passthrough GPUs"
+  loop: "{{ control_plane_nodes }}"
+  loop_control:
+    label: "{{ item.name }}"
 
 - name: Report the passthrough capacity
   when: cnv_permit_gpu | default(true)

@@ -51,5 +51,9 @@
         op_kubeconfig: "{{ kubeconfig }}"
         # Sandbox workloads is what allows one node's GPUs to be bound to
         # vfio-pci for passthrough while the other node's drive containers.
-        gpu_sandbox_workloads: true
+        # Off: the passthrough half of each node is already bound to vfio-pci
+        # by the time the operator starts, so its vfio-manager has nothing to
+        # do -- and if it ran it would fight that binding, since it only knows
+        # how to take a whole node one way or the other.
+        gpu_sandbox_workloads: false
         gpu_default_workload: container

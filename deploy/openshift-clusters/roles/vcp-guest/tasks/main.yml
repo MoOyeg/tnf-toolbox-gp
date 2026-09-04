@@ -33,6 +33,39 @@
     dest: "{{ guest_workdir }}/pull-secret.json"
     mode: '0600'
 
+# The VMs land on the infra cluster, so that is where the GPUs have to be --
+# not on the hub this role is talking to. Checked before anything is created,
+# because the alternative is a NodePool that sits Pending for its whole timeout
+# with "Insufficient nvidia.com/..." buried in a pod event.
+- name: Count the passthrough GPUs available to the guests
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get nodes -o json
+    | jq --arg r "{{ gpu_resource_name }}"
+    '[.items[].status.allocatable[$r] // "0" | tonumber] | add'
+  environment:
+    KUBECONFIG: "{{ guest_infra_kubeconfig | default(op_kubeconfig) }}"
+  register: passthrough_supply
+  changed_when: false
+
+- name: Fail if the guests would need more GPUs than exist
+  ansible.builtin.assert:
+    that: gpu_demand | int <= (passthrough_supply.stdout | trim | int)
+    fail_msg: >-
+      {{ guest_cluster_count }} guest clusters x {{ guest_nodepool_replicas }}
+      workers x {{ guest_gpus_per_node }} GPUs needs {{ gpu_demand }}
+      {{ gpu_resource_name }}, and the infra cluster offers
+      {{ passthrough_supply.stdout | trim }}. Lower guest_gpus_per_node or
+      guest_nodepool_replicas, or pass through more of each node's GPUs.
+    success_msg: >-
+      {{ gpu_demand }} of {{ passthrough_supply.stdout | trim }} passthrough
+      GPUs will be used
+  vars:
+    gpu_demand: >-
+      {{ guest_cluster_count | int
+         * guest_nodepool_replicas | int
+         * guest_gpus_per_node | int }}
+
 - name: Create each guest cluster
   ansible.builtin.include_tasks: create-guest.yml
   loop: "{{ range(1, (guest_cluster_count | int) + 1) | list }}"

@@ -54,8 +54,6 @@ jq -n \
   --arg ssh_public_key       "$(cat "${SSH_PUBLIC_KEY}")" \
   --arg fencing_base_url     "$(read_state fencing_base_url)" \
   --arg ignition_base_url    "$(read_state ignition_base_url)" \
-  --arg master0_gpu_workload "${MASTER0_GPU_WORKLOAD}" \
-  --arg master1_gpu_workload "${MASTER1_GPU_WORKLOAD}" \
   --arg master0_data_volume  "$(read_state master0_data_volume)" \
   --arg master1_data_volume  "$(read_state master1_data_volume)" \
   --arg acm_cluster_name     "${ACM_CLUSTER_NAME}" \

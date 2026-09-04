@@ -9,3 +9,8 @@ gpu_cluster_policy_name: gpu-cluster-policy
 gpu_sandbox_workloads: false
 gpu_default_workload: container
 gpu_policy_timeout: 1800
+
+# Whether to check for passthrough GPUs alongside the container ones. True on
+# the base cluster, where each node is split; false inside a guest, where the
+# T4 is an ordinary PCI device and there is no second level of passthrough.
+gpu_check_passthrough: false
