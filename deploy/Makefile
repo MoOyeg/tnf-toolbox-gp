@@ -1,19 +1,27 @@
 ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 
-.PHONY: all infra acm-infra peering tnf kubeconfig iommu gpu virt-mce acm-site \
-        guests guests-from-acm guest-gpu doctor ssh acm-ssh status inventory \
-        clean clean-guests destroy destroy-acm help
+.PHONY: all keypair infra acm-infra peering tnf kubeconfig iommu gpu virt-mce \
+        acm-site guests guests-from-acm guest-gpu doctor ssh acm-ssh status \
+        inventory clean clean-guests destroy destroy-acm help
 
 # ---------------------------------------------------------------- end to end
 # Ordering is deliberate. The cluster must be fully up and healthy *as TNF*
 # before anything reboots it, and its credentials must be on your workstation
 # before the one stage that can break it.
-all: infra acm-infra peering tnf kubeconfig iommu gpu virt-mce acm-site \
+all: keypair infra acm-infra peering tnf kubeconfig iommu gpu virt-mce acm-site \
      guests-from-acm guest-gpu
 	@echo ""
 	@echo "Everything is up. 'make status' for a summary."
 
 # ---------------------------------------------------------------- stages
+# Creates whichever half of the SSH key pair is missing -- the local files or
+# the EC2 key pair CloudFormation stamps onto every instance -- and refuses to
+# continue if the two do not match. Idempotent, and cheap enough to leave in
+# 'all': a sandbox account that gets reissued keeps the local key and loses the
+# EC2 one, and the mismatch would otherwise surface as an unloggable bastion.
+keypair:
+	@./aws-infra/scripts/create-keypair.sh
+
 infra:
 	@./aws-infra/scripts/create-network.sh
 	@./aws-infra/scripts/create-services.sh
@@ -88,6 +96,7 @@ destroy:
 
 help:
 	@echo "End to end:"
+	@echo "  make keypair       - create the SSH key pair from instance.env"
 	@echo "  make all           - infra -> tnf -> gpu -> virt-mce -> acm-site -> guests -> guest-gpu"
 	@echo ""
 	@echo "Stages (each is resumable and safe to re-run):"

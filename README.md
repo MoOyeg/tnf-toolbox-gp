@@ -43,7 +43,7 @@ so a GPU travels exactly one hop — host PCI device → guest worker VM.
 
 ```bash
 cp config/instance.env.template config/instance.env
-$EDITOR config/instance.env                       # AZ, key pair, BMC password
+$EDITOR config/instance.env                       # AZ, key pair name, BMC password
 cp ~/Downloads/pull-secret.json config/
 
 cd deploy/
@@ -55,6 +55,7 @@ Each stage is independently re-runnable:
 
 | Stage | What it does | Measured |
 |---|---|---|
+| `make keypair` | create the SSH key pair from `instance.env`, or check the existing one matches | seconds |
 | `make infra` | VPC, subnet, private DNS, bastion, fencing endpoint | 2 min |
 | `make tnf` | install TNF 4.22 on two `g4dn.metal`, then verify it is healthy *as TNF* | 52 min |
 | `make kubeconfig` | save every cluster's credentials locally and write `deploy/clusters/access.md` | seconds |
