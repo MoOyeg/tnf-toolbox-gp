@@ -69,52 +69,71 @@ cannot schedule, and on this rig that is almost always the GPU request — only
 the `vm-passthrough` node advertises the resource. The failure path dumps the
 NodePool, the VMIs, any Pending pods, and the per-node GPU capacity.
 
-## Ingress: a known gap
+## Ingress: how it is published, and what it took
 
-**Guest cluster APIs work. Guest cluster `*.apps` does not.**
+**Guest cluster APIs and `*.apps` both work.** This was the last thing in the
+build to come right, and the way it failed is worth keeping.
 
-The guest API is published through the hub's ingress with the `Route` strategy,
-which needs no load balancer and works fine. `oc` against a guest kubeconfig
-works, workers join, operators install.
+### The control-plane services
 
-Guest *ingress* is different. The KubeVirt provider expects the guest's ingress
-to be reachable through a `LoadBalancer` service created on the hub, and the
-documented way to satisfy that on bare metal is MetalLB. MetalLB's L2 mode
-announces addresses over ARP, and a VPC does not honour gratuitous ARP for
-addresses it has not assigned to an ENI — so L2 mode does not work on AWS
-without pinning each address to an ENI as a secondary private IP, which
-defeats the failover it exists to provide.
+`hcp create cluster kubevirt` renders the API with
+`servicePublishingStrategy: LoadBalancer`. On `platform: none` nothing
+provisions one, so it stays `<pending>` and the cluster never comes up.
 
-The consequence is a guest cluster whose ingress ClusterOperator is degraded and
-whose console is unreachable. Everything else — the API, the nodes, NFD, the GPU
-Operator, GPU workloads — is unaffected.
+Switching it to `Route` removes that load balancer and creates another:
+HyperShift then deploys a private router to serve the route and exposes *that*
+with a `LoadBalancer`, which is equally stuck. The control-plane-operator
+reconciles the Service back within seconds of being patched, so it cannot be
+worked around after creation.
 
-### Working around it
+The documented answer is MetalLB on the hosting cluster, which does not fit
+here: MetalLB's L2 mode announces over ARP, and a VPC does not honour
+gratuitous ARP for addresses it has not assigned to an ENI.
 
-Reach a guest workload without ingress:
+So all four services are rewritten to **`NodePort`** at render time, on the hub
+node's own address. No load balancer is needed, and with no `Route`-strategy
+service left HyperShift never creates the private router at all. The guest's
+worker VMs run on the infra cluster and reach that address across the VPC
+peering connection.
 
-```bash
-export KUBECONFIG=~/clusters/tnf-gp/guests/vcp-1.kubeconfig
-oc port-forward -n <namespace> svc/<service> 8080:80
+### The `*.apps` wildcard
+
+HyperShift handles this itself, and better than expected: it creates a wildcard
+`Subdomain` route on the **infra** cluster —
+`https.apps.<guest>.apps.<infra domain>` — pointing at a passthrough service for
+the guest's router. DNS already resolves, because a wildcard record synthesises
+for deeper names.
+
+What it cannot do is admit that route. An OpenShift IngressController refuses
+wildcard routes unless told otherwise, so both routes sat at `RouteNotAdmitted`
+and nothing said so anywhere useful. `30-virt-mce.yml` sets:
+
+```yaml
+routeAdmission:
+  wildcardPolicy: WildcardsAllowed
 ```
 
-Or expose it through the hub. The KubeVirt cloud provider maps a guest
-`LoadBalancer` service to a hub service in the guest's hosted namespace; patch
-that to `NodePort` and add a backend to the bastion's haproxy:
+Until it did, the consequences surfaced two clusters away and looked unrelated:
+guest ingress unreachable, so the guest's console operator never went Available,
+so its ClusterVersion stayed `state=Partial`, so the NVIDIA GPU Operator inside
+the guest refused to start with `failed to find Completed Cluster Version` and
+never installed a driver. One `wildcardPolicy` on the infra cluster cleared the
+whole chain.
+
+### Checking it
 
 ```bash
-# on the hub
-oc -n clusters-vcp-1 patch svc <service> -p '{"spec":{"type":"NodePort"}}'
-oc -n clusters-vcp-1 get svc <service> -o jsonpath='{.spec.ports[0].nodePort}'
+# on the infra cluster: both routes should be Admitted=True
+oc get route -n <infra namespace> -o custom-columns=\
+HOST:.spec.host,ADMITTED:.status.ingress[0].conditions[0].status
+
+# from anywhere: the guest console answers on the infra cluster's wildcard
+curl -sk -o /dev/null -w '%{http_code}\n' \
+  https://console-openshift-console.apps.<guest>.apps.<infra domain>/
 ```
 
-then add a `listen` block to `/etc/haproxy/haproxy.cfg` on the bastion pointing
-at both nodes on that NodePort. This is not automated, and it has not been
-tested here.
-
-If guest ingress matters more than the GPU work, the honest fix is to run the
-hub somewhere MetalLB works — real hardware on a flat L2 network — rather than
-on EC2.
+The guest API is a NodePort on a private address, so it answers from the
+bastions rather than from a workstation; the consoles answer from anywhere.
 
 ## Day-2
 

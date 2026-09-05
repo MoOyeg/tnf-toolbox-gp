@@ -48,26 +48,39 @@ cp ~/Downloads/pull-secret.json config/
 
 cd deploy/
 make doctor        # read-only preflight -- run this first, it is cheap
-make all           # infra -> tnf -> gpu -> virt-mce -> acm-site -> guests -> guest-gpu
+make all           # about three hours, mostly waiting
 ```
 
-Each stage is independently re-runnable:
+`make all` runs the stages below in order. Each is independently re-runnable and
+idempotent, so a failure part-way through is resumed by re-running that stage
+rather than starting over.
 
-| Stage | What it does | Measured |
+| Stage | What it does | Time |
 |---|---|---|
 | `make keypair` | create the SSH key pair from `instance.env`, or check the existing one matches | seconds |
-| `make infra` | VPC, subnet, private DNS, bastion, fencing endpoint | 2 min |
-| `make tnf` | install TNF 4.22 on two `g4dn.metal`, then verify it is healthy *as TNF* | 52 min |
-| `make kubeconfig` | save every cluster's credentials locally and write `deploy/clusters/access.md` | seconds |
-| `make iommu` | the IOMMU MachineConfig — **reboots both nodes** | 40 min |
-| `make gpu` | NFD + NVIDIA GPU Operator (no reboots) | 10 min |
+| `make infra` | TNF site: VPC, subnet, split-horizon DNS, bastion, fencing endpoint | 2 min |
+| `make acm-infra` | ACM site: its own VPC, subnet and bastion | 2 min |
+| `make peering` | the VPC peering connection, and the private zones each side needs | 1 min |
+| `make tnf` | install TNF 4.22 on two `g4dn.metal`, then verify it is healthy *as TNF* | 50 min |
+| `make kubeconfig` | fetch every cluster's credentials and write `deploy/clusters/access.md` | seconds |
+| `make iommu` | the IOMMU MachineConfig — **reboots both nodes, one at a time** | 40 min |
+| `make gpu` | NFD + NVIDIA GPU Operator on the base cluster | 10 min |
 | `make virt-mce` | LVM Storage, OpenShift Virtualization, MultiCluster Engine | 15 min |
-| `make guests` | the virtualized control-plane guest clusters | 30–45 min* |
-| `make guest-gpu` | NFD + GPU Operator inside each guest | 30 min* |
+| `make acm-site` | single-node OpenShift at the ACM site, then ACM on it, then import TNF into the hub | 56 min |
+| `make guests-from-acm` | guest clusters created by ACM, with their VMs and GPUs on TNF | 40 min |
+| `make guest-gpu` | NFD + GPU Operator inside each guest | 33 min |
 
-Timings are from real runs in `eu-west-1`; `*` are still estimates. Most of
-`make tnf` is `wait-for bootstrap-complete` (31 min) and `install-complete`
-(14 min).
+Timings are measured, from a full run in `eu-west-1`. Most of `make tnf` is
+`wait-for bootstrap-complete` (31 min) and `install-complete` (14 min), and most
+of `make acm-site` is the same two waits for the ACM cluster.
+
+`make tnf` and `make acm-site` build different sites and can run at the same
+time if you are in a hurry; `make acm-site` waits for TNF's kubeconfig at the one
+point it needs it.
+
+There is also `make guests`, for guest clusters hosted by TNF's own MultiCluster
+Engine rather than by ACM. `make all` uses `guests-from-acm`, because keeping the
+hub off the cluster it manages is the point of the two-site layout.
 
 **The ordering is deliberate.** `make iommu` is the only stage that reboots the
 cluster, and on two nodes each reboot takes it down to one. So it runs by
@@ -140,17 +153,21 @@ minutes here**, because stopping a bare metal instance takes minutes where a BMC
 cuts power in seconds. The playbooks raise Pacemaker's timeouts to match.
 Details in [docs/fencing-on-aws.md](docs/fencing-on-aws.md).
 
-### GPUs split per node, not per GPU
+### GPUs are assigned per node, not per GPU
 
 The NVIDIA GPU Operator assigns a whole node to one mode: its GPUs are bound
 either to the NVIDIA driver (containers) or to `vfio-pci` (VM passthrough).
-There is no supported way to split a single node's GPUs between the two.
+There is no way to split a single node between the two — the operator's driver
+container unbinds `vfio-pci` from every device on a node it manages, so a
+per-GPU split is undone minutes after it is made. That was measured here, not
+assumed; defect 37 in [docs/deploy-log.md](docs/deploy-log.md) has the evidence.
 
-With two nodes and eight T4s each, the default gives `master-0` to container
-workloads on the base cluster and `master-1`'s eight T4s to the guest clusters.
-Change it in `config/instance.env`. [docs/gpu-allocation.md](docs/gpu-allocation.md)
-covers the trade-off, including what it means that every guest worker VM lands
-on one node.
+Both nodes default to `vm-passthrough`, so all sixteen T4s go to virtual
+machines and a guest cluster's workers spread across both machines instead of
+piling onto whichever node held the GPUs. The cost is that no pod on the base
+cluster can request a GPU. Set `MASTER0_GPU_WORKLOAD=container` in
+`config/instance.env` for one node each way instead.
+[docs/gpu-allocation.md](docs/gpu-allocation.md) covers the trade-off.
 
 ### Storage is pinned to EBS, deliberately
 
@@ -163,13 +180,23 @@ instance store.
 
 ## Cost
 
-Two `g4dn.metal` are roughly **$15.70/hour on demand** before storage and
-transfer, and they are the entire bill for practical purposes. `make destroy`
-when you are done; `make clean` keeps the network and bastion (and therefore the
-fencing address) while removing the expensive part.
+Bare metal is the entire bill for practical purposes:
 
-The G/VT vCPU quota needs to be at least 192 for two of them. `make doctor`
-checks that, along with whether `g4dn.metal` is offered in your AZ at all.
+| | |
+|---|---|
+| 2 x `g4dn.metal` (TNF) | ~$15.70/hour |
+| 1 x `m5zn.metal` (ACM site) | ~$4.00/hour |
+| 2 x `m5.large` bastions | ~$0.20/hour |
+
+Roughly **$20/hour on demand** before storage and transfer, for both sites.
+
+`make destroy` removes the TNF site and `make destroy-acm` the ACM one — run
+both. `make clean` keeps the network and bastion, and therefore the fencing
+address, while removing the expensive part.
+
+The G/VT vCPU quota needs to be at least 192 for the two `g4dn.metal`.
+`make doctor` checks that, along with whether the instance types are offered in
+your AZ at all.
 
 ## Repository layout
 
@@ -177,10 +204,11 @@ checks that, along with whether `g4dn.metal` is offered in your AZ at all.
 config/                  instance.env + pull secret (both gitignored)
 deploy/
   aws-infra/             CloudFormation and the stack lifecycle scripts
-    templates/           network / services / compute / bootstrap stacks
+    templates/           network / services / compute / bootstrap / peering /
+                         sno-compute stacks, for both sites
     scripts/             create, destroy, doctor, status, inventory, ssh
-  openshift-clusters/    Ansible: five numbered stages plus teardown
-    roles/               one role per layer, reused across base and guest clusters
+  openshift-clusters/    Ansible: the numbered stages, plus teardown
+    roles/               one role per layer, reused across sites and guests
 docs/                    architecture, fencing, GPU allocation, guest clusters
 hack/                    lint and static template checks
 tools/redfish-ec2/       the Redfish → EC2 fencing shim, with unit tests
@@ -197,27 +225,33 @@ means it is the only host that can drive an install.
 - **19 unit tests** for the Redfish shim — routing, both auth modes, the
   power-state mapping including every transitional EC2 state, and reset-type
   translation. The EC2 layer is stubbed.
-- **40 static checks** over the templates — every Jinja template renders under
+- **70 static checks** over the templates — every Jinja template renders under
   `StrictUndefined`, the rendered `install-config.yaml` has the fencing shape
   TNF requires, the ignition pointers are valid JSON inside the CloudFormation
   parameter limit, haproxy drops bootstrap from the ingress backends, and every
   CloudFormation `Ref`/`GetAtt` resolves to something declared.
-- **Playbook syntax checks** for all seven playbooks.
+- **Playbook syntax checks** for all ten playbooks.
 
-**This has now been run against real `g4dn.metal` hardware in AWS**, which
-found eight bugs that no amount of static checking would have caught — a
-package missing from a repository, a CLI that cannot encode an ignition config
-as a parameter, a device name already claimed by instance store, an
-idempotency guard checking a file the installer creates too early. Each one and
-its fix is written up in [docs/deploy-log.md](docs/deploy-log.md).
+**This has been run end to end against real hardware in AWS**, and the whole
+pipeline completes: both sites, GPUs reaching guest cluster workers, and
+`nvidia.com/gpu` schedulable inside the guests.
 
-Progress of that run is recorded there too, including which stages are
-confirmed working end to end and which are still unproven.
+Getting there found **37 defects** that no amount of static checking would have
+caught — a CLI that cannot encode an ignition config as a parameter, a device
+name already claimed by instance store, an Ansible precedence rule that silently
+discards a role parameter sharing a name with an extra var, an ingress setting on
+one cluster that stops a GPU operator two clusters away. Each one, its symptom
+and its fix is written up in [docs/deploy-log.md](docs/deploy-log.md), which is
+worth reading before a first run.
 
-Guest cluster **ingress is a known gap** — the KubeVirt provider expects a
-`LoadBalancer` service, which needs MetalLB, and MetalLB's L2 mode does not work
-in a VPC. Guest APIs are published through the hub's ingress with the `Route`
-strategy and work; guest `*.apps` does not. The workaround is in
+Guest cluster ingress **works**, and was the last thing to. The KubeVirt
+provider expects a `LoadBalancer` for it, which needs MetalLB, whose L2 mode
+does not work in a VPC — so the guest's control-plane services are published on
+`NodePort` instead, and its `*.apps` wildcard is served by a passthrough route on
+the infra cluster. That route has to be *admitted*, which needs
+`wildcardPolicy: WildcardsAllowed` on the infra cluster's IngressController;
+without it the guest console never comes up, its ClusterVersion never completes,
+and the NVIDIA GPU Operator inside the guest refuses to start. See
 [docs/vcp-guests.md](docs/vcp-guests.md).
 
 ## Documentation
@@ -226,10 +260,10 @@ strategy and work; guest `*.apps` does not. The workaround is in
   `platform: none`
 - [docs/fencing-on-aws.md](docs/fencing-on-aws.md) — the shim, timeouts, and
   how to test a fence
-- [docs/gpu-allocation.md](docs/gpu-allocation.md) — the per-node split and how
-  to change it
+- [docs/gpu-allocation.md](docs/gpu-allocation.md) — why the split is per node,
+  what both-nodes-passthrough costs, and how to change it
 - [docs/vcp-guests.md](docs/vcp-guests.md) — guest clusters, GPU passthrough,
-  and the ingress gap
+  and how their ingress is published
 - [tools/redfish-ec2/README.md](tools/redfish-ec2/README.md) — the shim in
   detail
 - [docs/deploy-log.md](docs/deploy-log.md) — what actually broke on real
