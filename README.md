@@ -20,7 +20,7 @@ ACM site  VPC 10.1.0.0/16              TNF site  VPC 10.0.0.0/16
 │                                      │     ├── haproxy      api / api-int / *.apps
 │                                      │     ├── redfish-ec2  Redfish → EC2 Stop/Start
 │                                      │     └── ignition server
-└── sno-0  m5zn.metal  10.1.0.10       ├── master-0  g4dn.metal  8× T4 → container mode
+└── sno-0  m5zn.metal  10.1.0.10       ├── master-0  g4dn.metal  8× T4 → vfio-pci
       single-node OpenShift            └── master-1  g4dn.metal  8× T4 → vfio-pci
       ├── ACM + MCE + HyperShift             TNF 4.22, platform:none
       └── OpenShift Virtualization           ├── NFD + NVIDIA GPU Operator

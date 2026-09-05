@@ -4,8 +4,9 @@ cnv_namespace: openshift-cnv
 hco_name: kubevirt-hyperconverged
 hco_timeout: 1800
 
-# Who advertises the passthrough GPUs. False means KubeVirt discovers the
-# vfio-pci-bound devices itself, which is what the per-node split needs; true
-# hands that job to the GPU Operator's sandbox device plugin, which can only
-# take a whole node.
-cnv_external_gpu_provider: false
+# Who advertises the passthrough GPUs. True hands that to the GPU Operator's
+# sandbox device plugin, which is what binds and publishes them on a
+# vm-passthrough node. False would make KubeVirt discover vfio-pci devices
+# itself, which is only useful if something other than the operator did the
+# binding.
+cnv_external_gpu_provider: true

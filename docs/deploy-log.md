@@ -992,3 +992,48 @@ waiting for a re-render that is never coming.
 The verification is what caught this. Without it the stage would have reported
 success, and the failure would have surfaced two stages later as guest VMs that
 could not schedule.
+
+### 37. A node's GPUs cannot be split between containers and passthrough
+
+The refactor to "half of every node" does not work, and the way it fails is
+worth recording because it looks like it works first.
+
+A systemd unit shipped in the IOMMU MachineConfig binds half the node's GPUs to
+`vfio-pci` at boot, ordered before kubelet. That part is fine -- master-0 came
+back from its reboot exactly right:
+
+```
+found 8 GPUs; binding 4 to vfio-pci
+0000:18:00.0 -> vfio-pci   0000:19:00.0 -> vfio-pci
+0000:35:00.0 -> vfio-pci   0000:36:00.0 -> vfio-pci
+vfio-pci=4 other=4
+```
+
+Minutes later the same node reported `vfio=0 other=8`, and `0000:18:00.0` was
+held by `nvidia`. The GPU Operator's driver container had started:
+
+```
+15:47:00  master-0  msg=Unbinding vfio-pci driver from all devices
+16:08:29  master-1  msg=Unbinding vfio-pci driver from all devices
+```
+
+It is the *driver daemonset*, not `vfio-manager` -- that never ran
+(`desired=0`). The driver container unbinds vfio-pci from every device on the
+node before installing, because the operator assumes it owns all of them.
+Disabling `sandboxWorkloads` does not change it: that flag selects which
+daemonsets deploy, not what the driver container does on startup.
+
+Rebinding afterwards is not available either. `systemctl restart` on the split
+unit hangs, because writing to `driver/unbind` blocks while the NVIDIA driver
+holds the device. The binding can only be established before `nvidia.ko` loads,
+and the operator undoes it after.
+
+So the split really is per node, as the role originally said. Reverted, and both
+nodes now go to `vm-passthrough` -- all sixteen T4s to virtual machines, no GPU
+pods on the base cluster, and a guest's workers free to spread across both
+machines instead of piling onto the one node that held the GPUs.
+
+Three things from the attempt were kept, because they are unrelated to it and
+each caught something real: the rollout re-render wait (defect 36), the guest
+GPU budget check, and the per-node assertion that a passthrough node actually
+advertises GPUs.

@@ -31,11 +31,11 @@ feature_set: ""
 control_plane_nodes:
   - name: master-0
     private_ip: "{{ master0_private_ip }}"
-    gpu_workload: container
+    gpu_workload: "{{ master0_gpu_workload }}"
     data_volume: "{{ master0_data_volume | default('') }}"
   - name: master-1
     private_ip: "{{ master1_private_ip }}"
-    gpu_workload: container
+    gpu_workload: "{{ master1_gpu_workload }}"
     data_volume: "{{ master1_data_volume | default('') }}"
 
 # The hostname each node reports must equal the name in

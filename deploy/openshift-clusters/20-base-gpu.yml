@@ -49,9 +49,9 @@
         name: gpu-operator
       vars:
         op_kubeconfig: "{{ kubeconfig }}"
-        # Off: the passthrough half of each node is already bound to vfio-pci
-        # by the time the operator starts, so its vfio-manager has nothing to
-        # do -- and if it ran it would fight that binding, since it only knows
-        # how to take a whole node one way or the other.
-        gpu_sandbox_workloads: false
+        # On: vfio-manager is what binds a vm-passthrough node's GPUs to
+        # vfio-pci, and the sandbox device plugin is what advertises them. Both
+        # nodes are vm-passthrough, so nothing here advertises nvidia.com/gpu --
+        # the base cluster hosts the VMs rather than GPU pods.
+        gpu_sandbox_workloads: true
         gpu_default_workload: container

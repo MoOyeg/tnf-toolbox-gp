@@ -1,17 +1,16 @@
 ---
-# Prepare the bare metal nodes for GPU passthrough: every node keeps half its
-# GPUs for containers and passes the other half to virtual machines.
+# Prepare the bare metal nodes for GPU passthrough, and record which node's
+# GPUs go to containers and which node's go to virtual machines.
 #
-# A GPU still has exactly one driver, but the split is per GPU rather than per
-# node. The GPU Operator cannot express that -- sandboxWorkloads labels a whole
-# node and its vfio-manager binds every GPU on it the same way -- so the
-# passthrough half is bound here instead, by a systemd unit that runs before
-# the operator's driver container loads nvidia.ko. The operator then finds only
-# the GPUs still available to it, and KubeVirt advertises the vfio-bound ones
-# itself.
+# The split is per node, not per GPU. The GPU Operator binds every GPU on a
+# node to one driver: either the NVIDIA driver (containers) or vfio-pci (VM
+# passthrough), and its driver container unbinds vfio-pci from every device on
+# the node before installing, so a per-GPU split does not survive. That was
+# measured, not assumed -- see defect 37 in docs/deploy-log.md.
 #
-# The point is that neither capability is stranded on one machine: losing a node
-# costs half of each, not all of one. See docs/gpu-allocation.md.
+# Both nodes are vm-passthrough here, so all sixteen T4s are available to guest
+# VMs and a guest's workers can spread across both machines. See
+# docs/gpu-allocation.md.
 
 # Nothing below can run against a node that is rebooting, and re-running this
 # role during an in-flight MachineConfig rollout is normal. `oc debug` on a
@@ -92,36 +91,6 @@
           machineconfiguration.openshift.io/role: "{{ target_mcp }}"
       spec:
         kernelArguments: "{{ iommu_kernel_args }}"
-        # Same MachineConfig as the kernel arguments on purpose: both need a
-        # reboot, and on two nodes each reboot runs the cluster on one.
-        config:
-          ignition:
-            version: 3.4.0
-          storage:
-            files:
-              - path: "{{ gpu_split_script_path }}"
-                mode: 493
-                overwrite: true
-                contents:
-                  source: >-
-                    data:text/plain;charset=utf-8;base64,{{
-                      lookup('template', 'gpu-vfio-split.sh.j2') | b64encode
-                    }}
-          systemd:
-            units:
-              - name: "{{ gpu_split_unit_name }}"
-                enabled: true
-                contents: |
-                  [Unit]
-                  Description=Bind half of this node's GPUs to vfio-pci
-                  After=systemd-modules-load.service
-                  Before=kubelet.service
-                  [Service]
-                  Type=oneshot
-                  RemainAfterExit=yes
-                  ExecStart={{ gpu_split_script_path }}
-                  [Install]
-                  WantedBy=multi-user.target
   register: iommu_mc
 
 # This reboots both nodes, one at a time. On a two-node cluster that means
@@ -135,11 +104,7 @@
     # unchanged re-run would wait for a re-render that will never happen.
     previous_rendered_config: "{{ mcp_before.stdout | default('') if iommu_mc.changed else '' }}"
 
-# Every node is a container node as far as the operator is concerned. The
-# passthrough half is already bound to vfio-pci by the time its driver starts,
-# so it never sees those GPUs -- which is the only way to get both kinds on one
-# machine.
-- name: Label each node for container workloads
+- name: Label each node with its GPU workload mode
   kubernetes.core.k8s:
     kubeconfig: "{{ op_kubeconfig | default(kubeconfig) }}"
     state: patched
@@ -176,50 +141,9 @@
 
 - name: Report the IOMMU group count
   ansible.builtin.debug:
-    msg: "{{ item.item.name }}: {{ item.stdout | trim }} IOMMU groups"
+    msg: >-
+      {{ item.item.name }}: {{ item.stdout | trim }} IOMMU groups,
+      GPUs assigned to {{ item.item.gpu_workload }}
   loop: "{{ iommu_groups.results }}"
-  loop_control:
-    label: "{{ item.item.name }}"
-
-# The split is the whole point of this role, so it is checked rather than
-# assumed. Counted from the driver each device is actually bound to, not from
-# what the unit was asked to do.
-- name: Count how each node's GPUs are bound
-  ansible.builtin.command: >-
-    oc debug node/{{ item.name }} --quiet --request-timeout=120s --
-    chroot /host bash -c
-    'v=0; n=0;
-     for d in /sys/bus/pci/devices/*; do
-       [ "$(cat $d/vendor 2>/dev/null)" = "0x{{ gpu_pci_vendor_device.split(":")[0] | lower }}" ] || continue;
-       [ "$(cat $d/device 2>/dev/null)" = "0x{{ gpu_pci_vendor_device.split(":")[1] | lower }}" ] || continue;
-       drv=$(basename $(readlink -f $d/driver 2>/dev/null) 2>/dev/null);
-       if [ "$drv" = "vfio-pci" ]; then v=$((v+1)); else n=$((n+1)); fi;
-     done; echo "$v $n"'
-  environment:
-    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
-  loop: "{{ control_plane_nodes }}"
-  loop_control:
-    label: "{{ item.name }}"
-  register: gpu_split
-  changed_when: false
-  retries: 10
-  delay: 30
-  until: gpu_split is not failed and (gpu_split.stdout | default('') | trim | length) > 0
-
-- name: Fail if a node did not end up with both kinds of GPU
-  ansible.builtin.assert:
-    that:
-      - item.stdout.split()[0] | int > 0
-      - item.stdout.split()[1] | int > 0
-    fail_msg: >-
-      {{ item.item.name }} has {{ item.stdout.split()[0] }} GPUs on vfio-pci and
-      {{ item.stdout.split()[1] }} left for the NVIDIA driver. Both halves are
-      needed on every node. If vfio-pci has none, {{ gpu_split_unit_name }} did
-      not run or ran after nvidia.ko had already claimed them; if the driver has
-      none, the unit bound too many.
-    success_msg: >-
-      {{ item.item.name }}: {{ item.stdout.split()[0] }} GPUs passed through,
-      {{ item.stdout.split()[1] }} kept for containers
-  loop: "{{ gpu_split.results }}"
   loop_control:
     label: "{{ item.item.name }}"
