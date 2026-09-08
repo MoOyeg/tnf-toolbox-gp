@@ -24,9 +24,21 @@
   changed_when: false
   failed_when: false
 
+# The two checks above are one API call each. This one goes through oc debug,
+# which schedules a pod on the node and costs about a minute -- and it runs
+# after every step in the ladder. There is no point paying for it to confirm
+# what a cheap check has already ruled out.
+- name: Note whether the cheap checks passed
+  ansible.builtin.set_fact:
+    rc_cheap_ok: >-
+      {{ (rc_nodes.stdout | default('0') | trim | int == control_plane_nodes | length)
+         and (rc_etcd.stdout | default('') is search('Available=True'))
+         and (rc_etcd.stdout | default('') is search('Degraded=False')) }}
+
 # Parsed in shell for the same reason health.yml does it: pcs prints
 # "Online: [ ... ]", and a bare colon in an unquoted Ansible expression is YAML.
 - name: "check: is Pacemaker quorate with both nodes"
+  when: rc_cheap_ok | bool
   ansible.builtin.shell: >-
     set -o pipefail;
     oc debug node/{{ tnf_survivor }} --quiet --request-timeout=120s --
@@ -41,12 +53,10 @@
 - name: Record whether the cluster is healthy
   ansible.builtin.set_fact:
     tnf_healthy: >-
-      {{ (rc_nodes.stdout | default('0') | trim | int == control_plane_nodes | length)
-         and (rc_etcd.stdout | default('') is search('Available=True'))
-         and (rc_etcd.stdout | default('') is search('Degraded=False'))
+      {{ rc_cheap_ok | bool
          and (rc_pcs.stdout | default('') | trim
               == 'quorum=yes online=' ~ (control_plane_nodes | length)) }}
     tnf_health_summary: >-
       nodes Ready {{ rc_nodes.stdout | default('?') | trim }}/{{ control_plane_nodes | length }},
       etcd {{ rc_etcd.stdout | default('unknown') | trim }},
-      pacemaker {{ rc_pcs.stdout | default('unknown') | trim }}
+      pacemaker {{ (rc_pcs.stdout | default('') | trim) or 'not checked -- an earlier signal had already failed' }}

@@ -22,11 +22,6 @@
           - "Cluster is not healthy: {{ tnf_health_summary }}"
           - "Working through the documented recovery steps in order."
 
-    # Read-only, and worth having in the log before anything is changed: if none
-    # of the steps below work, this is what the next person needs.
-    - name: Collect diagnostics
-      ansible.builtin.include_tasks: diagnose.yml
-
     # Whether the missing node is genuinely gone decides which steps are safe.
     # Confirming a fence, or unblocking quorum, while the peer is still running
     # is how both halves come to believe they own etcd.
@@ -66,7 +61,12 @@
           surviving node's saved /etc/corosync/corosync.conf.<timestamp> and
           reloading corosync, which this role will not do unattended.
 
-          The diagnostics above are the input to both.
+          For the detail behind the summary above, on {{ tnf_survivor }}:
+
+            oc debug node/{{ tnf_survivor }} -- chroot /host pcs status --full
+            oc debug node/{{ tnf_survivor }} -- chroot /host corosync-quorumtool -s
+            oc debug node/{{ tnf_survivor }} -- chroot /host bash -c \
+              'journalctl -u pacemaker | grep podman-etcd | tail -20'
   vars:
     # The order is the documentation's, least invasive first. Each runs only if
     # everything before it left the cluster still broken.

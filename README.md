@@ -151,8 +151,14 @@ It runs from whichever node is still `Ready`, not from a fixed one — the node
 that is down is as likely to be the first as the second, and `oc debug` against
 a `NotReady` node hangs for minutes before failing.
 
-If every step leaves it broken the run fails and says so, with the diagnostics
-it gathered first. Two things it will not do unattended: replace a node, and
+It gathers nothing for a support bundle — only what a step needs in order to
+decide. The expensive probe (Pacemaker, via `oc debug`, about a minute) is
+skipped whenever a one-call check has already shown the cluster is unwell, which
+matters because the checks run after every step.
+
+If every step leaves it broken the run fails, prints the state, and names the
+commands to look further with. Two things it will not do unattended: replace a
+node, and
 restore the surviving node's saved `/etc/corosync/corosync.conf.<timestamp>`
 over its single-node one. The second is the repair when the two nodes simply
 disagree about membership and neither is down — which is not a case the
