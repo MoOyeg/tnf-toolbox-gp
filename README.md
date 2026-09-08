@@ -109,6 +109,55 @@ not a mysterious GPU problem two stages later. See
 [docs/deploy-log.md](docs/deploy-log.md) for the run where that distinction was
 learned.
 
+## When the cluster does not come back
+
+A MachineConfig rollout reboots the two nodes one at a time, and the pair does
+not always re-form. The surviving node rewrites corosync to a single-node
+cluster to keep quorum — that part is designed — and does not always re-add the
+peer when it returns. The node that comes back then has no quorum, Pacemaker
+starts nothing on it, and its kubelet never reports. It has happened three times
+here; `docs/deploy-log.md` defect 20 has the anatomy.
+
+```bash
+cd deploy/ && make tnf-recover
+```
+
+This works through the procedure in the OpenShift documentation — *Two-node
+with Fencing → Post-installation troubleshooting and recovery → Manually
+recovering from a disruption event when automated recovery is unavailable* — in
+the order it gives, least invasive first, re-checking the cluster after each
+step and stopping at the first one that fixes it:
+
+| | step | runs when |
+|---|---|---|
+| 1 | `pcs resource cleanup` | always |
+| 2 | `pcs resource cleanup etcd` | always |
+| 3 | `pcs quorum unblock` | the peer is genuinely unreachable |
+| 4 | `pcs stonith confirm <node>` | opt-in **and** the peer is unreachable |
+| 5 | restore etcd from `/var/lib/etcd-backup` | opt-in |
+
+Steps 3 and 4 are gated on the missing node actually being gone, which the role
+checks by pinging it from the survivor rather than taking the cluster's word for
+it. The documentation is blunt about why: confirming a fence for a node that is
+in fact running leaves both halves believing they own etcd, which loses data
+rather than time. Steps 4 and 5 need saying so as well:
+
+```bash
+make tnf-recover EXTRA_ARGS='-e tnf_recover_allow_fence_confirm=true'
+make tnf-recover EXTRA_ARGS='-e tnf_recover_allow_etcd_restore=true'
+```
+
+It runs from whichever node is still `Ready`, not from a fixed one — the node
+that is down is as likely to be the first as the second, and `oc debug` against
+a `NotReady` node hangs for minutes before failing.
+
+If every step leaves it broken the run fails and says so, with the diagnostics
+it gathered first. Two things it will not do unattended: replace a node, and
+restore the surviving node's saved `/etc/corosync/corosync.conf.<timestamp>`
+over its single-node one. The second is the repair when the two nodes simply
+disagree about membership and neither is down — which is not a case the
+documented ladder covers.
+
 ## Credentials
 
 `make kubeconfig` collects every cluster's credentials onto your workstation and
@@ -277,7 +326,8 @@ and the NVIDIA GPU Operator inside the guest refuses to start. See
 - [docs/architecture.md](docs/architecture.md) — how the pieces fit, and why
   `platform: none`
 - [docs/fencing-on-aws.md](docs/fencing-on-aws.md) — the shim, timeouts, and
-  how to test a fence
+  how to test a fence. `make tnf-recover` is what to run when a fence or a
+  reboot leaves the pair unable to re-form
 - [docs/gpu-allocation.md](docs/gpu-allocation.md) — why the split is per node,
   what both-nodes-passthrough costs, and how to change it
 - [docs/hcp-guests.md](docs/hcp-guests.md) — guest clusters, GPU passthrough,

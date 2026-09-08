@@ -32,6 +32,16 @@
     - health_nodes.rc == 0
     - health_nodes.stdout_lines | select('search', ' Ready') | list | length == control_plane_nodes | length
 
+# Each of these waits has its own timeout, and a cluster whose nodes are not
+# Ready will not have healthy operators, etcd or quorum either. Without this the
+# waits run in series and the verdict below -- the message that actually names
+# the problem -- arrives well over two hours after the problem was knowable.
+- name: Note whether the nodes converged
+  ansible.builtin.set_fact:
+    health_still_converging: >-
+      {{ health_nodes.stdout_lines | select('search', ' Ready') | list | length
+         == control_plane_nodes | length }}
+
 - name: Wait for every cluster operator to be Available and not Degraded
   ansible.builtin.shell: >-
     set -o pipefail;
@@ -45,6 +55,13 @@
   retries: "{{ (tnf_health_timeout | int / 30) | int }}"
   delay: 30
   until: health_operators.rc == 0 and health_operators.stdout == ""
+  when: health_still_converging | default(true) | bool
+
+- name: Note whether the operators converged
+  ansible.builtin.set_fact:
+    health_still_converging: >-
+      {{ health_still_converging | bool
+         and health_operators.stdout | default('unset') == '' }}
 
 # etcd is the reason TNF exists. One member is a cluster that has already lost
 # its redundancy, whatever the ClusterVersion says.
@@ -63,6 +80,13 @@
   retries: "{{ (tnf_health_timeout | int / 30) | int }}"
   delay: 30
   until: health_etcd.stdout == "Available=True Degraded=False"
+  when: health_still_converging | default(true) | bool
+
+- name: Note whether etcd converged
+  ansible.builtin.set_fact:
+    health_still_converging: >-
+      {{ health_still_converging | bool
+         and health_etcd.stdout | default('') == 'Available=True Degraded=False' }}
 
 # The checks that actually distinguish a healthy TNF cluster from a split one.
 # The parsing happens in shell rather than Jinja: pcs prints "Online: [ ... ]",
@@ -81,6 +105,14 @@
   retries: "{{ (tnf_health_timeout | int / 30) | int }}"
   delay: 30
   until: health_pcs.stdout == "quorum=yes online=" ~ (control_plane_nodes | length)
+  when: health_still_converging | default(true) | bool
+
+- name: Note whether Pacemaker converged
+  ansible.builtin.set_fact:
+    health_still_converging: >-
+      {{ health_still_converging | bool
+         and health_pcs.stdout | default('')
+             == 'quorum=yes online=' ~ (control_plane_nodes | length) }}
 
 - name: Wait for corosync to be quorate with both members
   ansible.builtin.shell: >-
@@ -96,23 +128,29 @@
   retries: 10
   delay: 30
   until: health_quorum.stdout == "quorate=Yes nodes=" ~ (control_plane_nodes | length)
+  when: health_still_converging | default(true) | bool
 
 - name: Report the TNF health verdict
   ansible.builtin.assert:
     that:
-      - health_nodes.stdout_lines | select('search', ' Ready') | list | length == control_plane_nodes | length
-      - health_operators.stdout == ""
-      - health_etcd.stdout == "Available=True Degraded=False"
-      - health_pcs.stdout == "quorum=yes online=" ~ (control_plane_nodes | length)
-      - health_quorum.stdout == "quorate=Yes nodes=" ~ (control_plane_nodes | length)
+      - health_nodes.stdout_lines | default([]) | select('search', ' Ready') | list | length == control_plane_nodes | length
+      - health_operators.stdout | default('unset') == ""
+      - health_etcd.stdout | default('') == "Available=True Degraded=False"
+      - health_pcs.stdout | default('') == "quorum=yes online=" ~ (control_plane_nodes | length)
+      - health_quorum.stdout | default('') == "quorate=Yes nodes=" ~ (control_plane_nodes | length)
     fail_msg: |
       The cluster is not healthy as a two-node fencing cluster.
 
-        nodes Ready ......... {{ health_nodes.stdout_lines | select('search', ' Ready') | list | length }} of {{ control_plane_nodes | length }}
-        operators unhealthy . {{ health_operators.stdout_lines | default([]) | join(', ') | default('none', true) }}
+        nodes Ready ......... {{ health_nodes.stdout_lines | default([]) | select('search', ' Ready') | list | length }} of {{ control_plane_nodes | length }}
+        operators unhealthy . {{ health_operators.stdout_lines | default(['not checked']) | join(', ') | default('none', true) }}
         etcd ................ {{ health_etcd.stdout | default('unknown', true) }}
         pacemaker ........... {{ health_pcs.stdout | default('unknown', true) }}
         corosync ............ {{ health_quorum.stdout | default('unknown', true) }}
+
+      Checks after the first failure are skipped rather than waited on, so
+      "unknown" below means the one above it had already failed.
+
+      'make tnf-recover' works through the documented recovery steps for this.
 
       Do not apply a MachineConfig to a cluster in this state: the rollout
       reboots one node at a time, and a cluster that cannot re-form a two-node

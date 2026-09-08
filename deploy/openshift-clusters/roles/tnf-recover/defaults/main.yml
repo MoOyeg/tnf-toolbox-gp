@@ -1,0 +1,35 @@
+---
+# Manual recovery for a TNF cluster that has not recovered on its own, following
+# the procedure in the OpenShift documentation:
+#
+#   Installing a two-node OpenShift cluster -> Two-node with Fencing ->
+#   Post-installation troubleshooting and recovery ->
+#   Manually recovering from a disruption event when automated recovery is
+#   unavailable
+#
+# The steps are attempted in the documented order, least invasive first, and the
+# cluster is re-checked after each one. The first step that makes it healthy is
+# the last step that runs.
+
+# Two of the documented steps are destructive and are therefore opt-in.
+#
+# Confirming a fence tells Pacemaker a node is definitively gone. Doing that
+# while the node is in fact running is how a two-node cluster ends up with two
+# nodes both believing they own etcd, which is data loss rather than downtime.
+# The role refuses it anyway while the peer still answers, but the flag has to
+# be set as well.
+tnf_recover_allow_fence_confirm: false
+
+# Restoring etcd from /var/lib/etcd-backup discards whatever the running member
+# has learned since that backup was taken.
+tnf_recover_allow_etcd_restore: false
+
+# The documentation asks for 30 seconds after a fencing confirmation before
+# expecting Pacemaker to have acted.
+tnf_recover_settle_seconds: 30
+
+# How long to give the cluster to converge after a step before deciding that
+# step did not fix it. Pacemaker restarts etcd and the API comes back through
+# haproxy, so this is not instant.
+tnf_recover_check_retries: 10
+tnf_recover_check_delay: 15

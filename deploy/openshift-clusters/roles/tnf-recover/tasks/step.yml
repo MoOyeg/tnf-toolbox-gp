@@ -1,0 +1,35 @@
+---
+# One rung of the ladder: run a remediation command on the surviving node, give
+# the cluster a moment, then re-check. Skipped entirely once something earlier
+# has already fixed things.
+
+- name: "{{ step.name }}"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc debug node/{{ tnf_survivor }} --quiet --request-timeout=180s --
+    chroot /host {{ step.command }}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: step_result
+  changed_when: true
+  # A step that errors is not fatal. The ladder exists because no single step is
+  # expected to work, and the next one may.
+  failed_when: false
+
+- name: "{{ step.name }}: what it said"
+  ansible.builtin.debug:
+    msg: "{{ (step_result.stdout | default('') | trim) or '(no output)' }}"
+
+- name: "{{ step.name }}: let the cluster settle"
+  ansible.builtin.pause:
+    seconds: "{{ step.settle | default(tnf_recover_settle_seconds) | int }}"
+
+- name: "{{ step.name }}: re-check the cluster"
+  ansible.builtin.include_tasks: check.yml
+
+- name: "{{ step.name }}: result"
+  ansible.builtin.debug:
+    msg: >-
+      {{ 'FIXED -- ' ~ step.name ~ ' brought the cluster back. Nothing further will run.'
+         if tnf_healthy | bool
+         else 'not yet: ' ~ tnf_health_summary }}

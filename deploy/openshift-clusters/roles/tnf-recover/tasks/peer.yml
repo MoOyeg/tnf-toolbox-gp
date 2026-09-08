@@ -1,0 +1,43 @@
+---
+# Is the node the cluster thinks is gone actually gone?
+#
+# The documentation is explicit about this: "Verify that the failed node is
+# permanently inaccessible before proceeding." Confirming a fence, or unblocking
+# quorum, for a node that is in fact running leaves two nodes each believing
+# they hold etcd alone. That is the one failure here that loses data rather than
+# time, so it is checked rather than assumed.
+
+- name: Look up the down node's address
+  ansible.builtin.set_fact:
+    tnf_peer_address: >-
+      {{ (control_plane_nodes | selectattr('name', 'eq', tnf_down_nodes | first)
+          | map(attribute='private_ip') | list | first) | default('') }}
+
+- name: See whether it answers from the surviving node
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc debug node/{{ tnf_survivor }} --quiet --request-timeout=120s --
+    chroot /host bash -c 'ping -c2 -W2 {{ tnf_peer_address }} >/dev/null 2>&1 && echo up || echo down'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: peer_ping
+  changed_when: false
+  failed_when: false
+  when: tnf_peer_address | length > 0
+
+- name: Record whether the peer is still reachable
+  ansible.builtin.set_fact:
+    # Unknown counts as reachable. The steps this gates are the destructive
+    # ones, and the safe assumption for those is that the node is alive.
+    tnf_peer_reachable: >-
+      {{ not (peer_ping.stdout | default('') | trim == 'down') }}
+
+- name: Report what that means for the destructive steps
+  ansible.builtin.debug:
+    msg: >-
+      {{ tnf_down_nodes | first }} ({{ tnf_peer_address | default('no address') }})
+      {{ 'still answers, so quorum unblock and fence confirmation are skipped -- '
+         ~ 'the cluster is split rather than down, and telling Pacemaker the node '
+         ~ 'is gone while it is running risks both halves claiming etcd.'
+         if tnf_peer_reachable | bool
+         else 'does not answer, so the steps that need it to be genuinely gone are available.' }}

@@ -1,6 +1,7 @@
 ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 
 .PHONY: all keypair infra acm-infra peering tnf kubeconfig iommu gpu virt-mce \
+        tnf-recover \
         acm-site guests hcp-make-guests-from-acm vcp-make-guests-from-acm \
         guest-gpu doctor ssh acm-ssh status \
         inventory clean clean-guests destroy destroy-acm help
@@ -33,6 +34,15 @@ tnf:
 
 iommu:
 	@$(ANSIBLE) 15-iommu.yml $(EXTRA_ARGS)
+
+# Not part of 'all'. For when a stage has stopped because the cluster is not
+# healthy: works through the documented TNF recovery steps in order, least
+# invasive first, re-checking after each and stopping at the one that works.
+# The two destructive steps are opt-in:
+#   EXTRA_ARGS='-e tnf_recover_allow_fence_confirm=true'
+#   EXTRA_ARGS='-e tnf_recover_allow_etcd_restore=true'
+tnf-recover:
+	@$(ANSIBLE) 16-tnf-recover.yml $(EXTRA_ARGS)
 
 gpu:
 	@$(ANSIBLE) 20-base-gpu.yml $(EXTRA_ARGS)
@@ -106,6 +116,7 @@ destroy:
 help:
 	@echo "End to end:"
 	@echo "  make keypair       - create the SSH key pair from instance.env"
+	@echo "  make tnf-recover   - work through the documented TNF recovery steps in order"
 	@echo "  make all           - infra -> tnf -> gpu -> virt-mce -> acm-site -> guests -> guest-gpu"
 	@echo ""
 	@echo "Stages (each is resumable and safe to re-run):"

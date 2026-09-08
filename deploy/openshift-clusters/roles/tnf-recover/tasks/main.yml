@@ -1,0 +1,93 @@
+---
+# Work through the documented TNF recovery procedure, in order, stopping at the
+# first step that fixes the cluster.
+
+- name: Find a node to drive recovery from
+  ansible.builtin.include_tasks: survivor.yml
+
+- name: Check the cluster before touching it
+  ansible.builtin.include_tasks: check.yml
+
+- name: Report a cluster that needs nothing
+  when: tnf_healthy | bool
+  ansible.builtin.debug:
+    msg: "Cluster is already healthy: {{ tnf_health_summary }}. Nothing to recover."
+
+- name: Recover
+  when: not tnf_healthy | bool
+  block:
+    - name: Say what is wrong before changing anything
+      ansible.builtin.debug:
+        msg:
+          - "Cluster is not healthy: {{ tnf_health_summary }}"
+          - "Working through the documented recovery steps in order."
+
+    # Read-only, and worth having in the log before anything is changed: if none
+    # of the steps below work, this is what the next person needs.
+    - name: Collect diagnostics
+      ansible.builtin.include_tasks: diagnose.yml
+
+    # Whether the missing node is genuinely gone decides which steps are safe.
+    # Confirming a fence, or unblocking quorum, while the peer is still running
+    # is how both halves come to believe they own etcd.
+    - name: Find out whether the down node is really gone
+      ansible.builtin.include_tasks: peer.yml
+      when: tnf_down_nodes | length > 0
+
+    - name: Work through the recovery steps
+      ansible.builtin.include_tasks: step.yml
+      loop: "{{ tnf_recovery_ladder }}"
+      loop_control:
+        loop_var: step
+        label: "{{ step.name }}"
+      when:
+        - not tnf_healthy | bool
+        - step.when | default(true) | bool
+
+    - name: Report the outcome
+      ansible.builtin.debug:
+        msg: >-
+          {{ 'Recovered: ' ~ tnf_health_summary if tnf_healthy | bool
+             else 'Still not healthy: ' ~ tnf_health_summary }}
+
+    # Deliberately a failure. A recovery run that ends with the cluster still
+    # broken has not succeeded, and the next stage must not start on it.
+    - name: Fail if the cluster is still broken
+      ansible.builtin.assert:
+        that: tnf_healthy | bool
+        fail_msg: |
+          The documented recovery steps did not restore the cluster.
+
+          {{ tnf_health_summary }}
+
+          What is left is in the documentation under "Replace a control plane
+          node that cannot be recovered", or -- if the two nodes disagree about
+          corosync membership rather than either being down -- restoring the
+          surviving node's saved /etc/corosync/corosync.conf.<timestamp> and
+          reloading corosync, which this role will not do unattended.
+
+          The diagnostics above are the input to both.
+  vars:
+    # The order is the documentation's, least invasive first. Each runs only if
+    # everything before it left the cluster still broken.
+    tnf_recovery_ladder:
+      - name: "1. Reset resources Pacemaker has stopped retrying"
+        command: pcs resource cleanup
+      - name: "2. Reset the etcd resource specifically"
+        command: pcs resource cleanup etcd
+      - name: "3. Release the quorum block"
+        # Only when a node is genuinely gone. With both nodes up this is the
+        # wrong tool, and a dangerous one.
+        command: pcs quorum unblock --force
+        when: "{{ (tnf_down_nodes | default([]) | length > 0) and not tnf_peer_reachable | default(true) | bool }}"
+      - name: "4. Confirm the failed node is fenced"
+        command: "pcs stonith confirm {{ tnf_down_nodes | default(['unknown']) | first }} --force"
+        settle: "{{ tnf_recover_settle_seconds }}"
+        when: >-
+          {{ tnf_recover_allow_fence_confirm | bool
+             and (tnf_down_nodes | default([]) | length > 0)
+             and not tnf_peer_reachable | default(true) | bool }}
+      - name: "5. Restore etcd from its backup on the surviving node"
+        command: >-
+          bash -c 'cp -r /var/lib/etcd-backup/* /var/lib/etcd/ && chown -R etcd:etcd /var/lib/etcd'
+        when: "{{ tnf_recover_allow_etcd_restore | bool }}"

@@ -1,0 +1,41 @@
+---
+# Find a node that can actually run pcs.
+#
+# health.yml always asks control_plane_nodes[0], which is fine when the cluster
+# is well and useless when it is not: the node that is down is as likely to be
+# the first one as the second, and `oc debug` against a NotReady node hangs for
+# minutes before failing. Recovery has to run on whichever node is still there.
+
+- name: See which nodes the API considers Ready
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get nodes --no-headers
+    | awk '$2 ~ /^Ready/ {print $1}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: ready_nodes
+  changed_when: false
+  failed_when: false
+
+- name: Fail if no node is usable
+  ansible.builtin.assert:
+    that: ready_nodes.stdout_lines | length > 0
+    fail_msg: >-
+      No control-plane node is Ready, so there is nowhere to run pcs from and
+      this role cannot help. Both nodes are down or the API is unreachable --
+      the documented path from here is to power both on and let automatic
+      recovery run, then re-run this.
+
+- name: Choose the node to drive recovery from
+  ansible.builtin.set_fact:
+    tnf_survivor: "{{ ready_nodes.stdout_lines | first }}"
+    tnf_down_nodes: >-
+      {{ control_plane_nodes | map(attribute='name') | list
+         | difference(ready_nodes.stdout_lines) }}
+
+- name: Report the starting position
+  ansible.builtin.debug:
+    msg: >-
+      Driving recovery from {{ tnf_survivor }}.
+      {{ ('Down: ' ~ (tnf_down_nodes | join(', '))) if tnf_down_nodes | length > 0
+         else 'Both nodes are Ready; the fault is above the node level.' }}
