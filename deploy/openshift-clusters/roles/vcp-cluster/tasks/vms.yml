@@ -1,0 +1,86 @@
+---
+# The virtual machines, created on the infra cluster.
+#
+# Every node of this cluster is a VM here -- control plane included, which is
+# the whole difference from the hosted variant. They boot the hub's discovery
+# ISO over the peering connection and register themselves as Agents.
+
+- name: Create the VM namespace on the infra cluster
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_infra_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ vcp_vm_namespace }}"
+        labels:
+          tnf-toolbox-gp/owner: acm-vcp
+
+# One import for the whole cluster rather than one per VM: the ISO is the same
+# for every node, and CDI would otherwise pull it five times across the peering.
+- name: Import the discovery ISO once, as a shared DataVolume
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_infra_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: "{{ vcp_cluster_name }}-discovery"
+        namespace: "{{ vcp_vm_namespace }}"
+      spec:
+        source:
+          http:
+            url: "{{ iso_url.stdout }}"
+            # The image service presents the hub's ingress certificate, which
+            # this cluster has no reason to trust.
+            certConfigMap: ""
+        storage:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 8Gi
+          storageClassName: "{{ storage_class }}"
+
+- name: Wait for the discovery ISO to finish importing
+  ansible.builtin.command: >-
+    oc get datavolume {{ vcp_cluster_name }}-discovery
+    -n {{ vcp_vm_namespace }} -o jsonpath={.status.phase}
+  environment:
+    KUBECONFIG: "{{ vcp_infra_kubeconfig }}"
+  register: dv_phase
+  changed_when: false
+  retries: 60
+  delay: 20
+  until: dv_phase.stdout == "Succeeded"
+
+- name: Create the cluster's virtual machines
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_infra_kubeconfig }}"
+    state: present
+    definition: "{{ lookup('template', 'virtualmachine.yaml.j2') | from_yaml }}"
+  loop: "{{ vcp_nodes }}"
+  loop_control:
+    loop_var: vm
+    label: "{{ vm.name }} ({{ vm.role }})"
+
+- name: Wait for every VM to be running
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get vmi -n {{ vcp_vm_namespace }} --no-headers 2>/dev/null
+    | grep -c ' Running '
+  environment:
+    KUBECONFIG: "{{ vcp_infra_kubeconfig }}"
+  register: vmi_running
+  changed_when: false
+  failed_when: false
+  retries: 60
+  delay: 20
+  until: vmi_running.stdout | trim | int == vcp_nodes | length
+
+- name: Report the virtual machines
+  ansible.builtin.debug:
+    msg: >-
+      {{ vcp_nodes | length }} VMs running on the infra cluster:
+      {{ vcp_control_plane_replicas }} control plane, {{ vcp_worker_replicas }} workers.

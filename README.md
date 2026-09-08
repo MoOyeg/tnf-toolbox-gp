@@ -67,7 +67,7 @@ rather than starting over.
 | `make gpu` | NFD + NVIDIA GPU Operator on the base cluster | 10 min |
 | `make virt-mce` | LVM Storage, OpenShift Virtualization, MultiCluster Engine | 15 min |
 | `make acm-site` | single-node OpenShift at the ACM site, then ACM on it, then import TNF into the hub | 56 min |
-| `make guests-from-acm` | guest clusters created by ACM, with their VMs and GPUs on TNF | 40 min |
+| `make hcp-make-guests-from-acm` | guest clusters created by ACM: control plane as pods on the hub, worker VMs and GPUs on TNF | 40 min |
 | `make guest-gpu` | NFD + GPU Operator inside each guest | 33 min |
 
 Timings are measured, from a full run in `eu-west-1`. Most of `make tnf` is
@@ -78,9 +78,27 @@ of `make acm-site` is the same two waits for the ACM cluster.
 time if you are in a hurry; `make acm-site` waits for TNF's kubeconfig at the one
 point it needs it.
 
-There is also `make guests`, for guest clusters hosted by TNF's own MultiCluster
-Engine rather than by ACM. `make all` uses `guests-from-acm`, because keeping the
-hub off the cluster it manages is the point of the two-site layout.
+Two other guest targets exist and are not in `make all`:
+
+- **`make guests`** — the same hosted topology, but created by TNF's own
+  MultiCluster Engine instead of by ACM. `make all` uses the ACM one, because
+  keeping the hub off the cluster it manages is the point of the two-site layout.
+- **`make vcp-make-guests-from-acm`** — a *standalone* cluster whose every node
+  is a VM, control plane included. Different topology and different mechanism:
+  ACM installs it with the assisted installer rather than HyperShift, so the VMs
+  boot a discovery ISO and are installed the way bare metal would be, and
+  nothing of the cluster runs on the hub afterwards.
+
+The two are worth telling apart:
+
+| | control plane | workers | built by |
+|---|---|---|---|
+| `hcp-make-guests-from-acm` | pods on the ACM hub | KubeVirt VMs on TNF | HyperShift |
+| `vcp-make-guests-from-acm` | KubeVirt VMs on TNF | KubeVirt VMs on TNF | assisted installer |
+
+A hosted control plane is cheaper — it is pods, and it shares the hub's etcd
+machinery. A standalone one costs three more VMs before a single workload runs,
+and in exchange it survives the hub going away.
 
 **The ordering is deliberate.** `make iommu` is the only stage that reboots the
 cluster, and on two nodes each reboot takes it down to one. So it runs by
@@ -252,7 +270,7 @@ the infra cluster. That route has to be *admitted*, which needs
 `wildcardPolicy: WildcardsAllowed` on the infra cluster's IngressController;
 without it the guest console never comes up, its ClusterVersion never completes,
 and the NVIDIA GPU Operator inside the guest refuses to start. See
-[docs/vcp-guests.md](docs/vcp-guests.md).
+[docs/hcp-guests.md](docs/hcp-guests.md).
 
 ## Documentation
 
@@ -262,7 +280,7 @@ and the NVIDIA GPU Operator inside the guest refuses to start. See
   how to test a fence
 - [docs/gpu-allocation.md](docs/gpu-allocation.md) — why the split is per node,
   what both-nodes-passthrough costs, and how to change it
-- [docs/vcp-guests.md](docs/vcp-guests.md) — guest clusters, GPU passthrough,
+- [docs/hcp-guests.md](docs/hcp-guests.md) — guest clusters, GPU passthrough,
   and how their ingress is published
 - [tools/redfish-ec2/README.md](tools/redfish-ec2/README.md) — the shim in
   detail

@@ -64,6 +64,9 @@ CONTEXT = dict(
     # skips it -- it keeps only literals.
     lb_bind_address="10.0.0.5",
     lb_bootstrap_address="10.0.0.9",
+    # loop_var for the virtual machine template
+    vm={"name": "vcp-1-cp-1", "role": "control-plane",
+        "cores": 8, "memory": "20Gi", "gpus": 0},
     haproxy_stats_port=9000,
     ansible_user="ec2-user",
     include_bootstrap=True,
@@ -500,6 +503,46 @@ def test_play_path_fallbacks_keep_the_system_directories():
                   not missing, f"fallback '{fallback}' is missing {missing}")
 
 
+def test_vcp_virtual_machine():
+    """A cluster-on-VMs node, with and without a GPU attached.
+
+    The boot order is the load-bearing part. An assisted install writes the
+    image to disk and reboots; if the discovery ISO is still first in the boot
+    order the node comes back up into discovery and the cluster reinstalls
+    itself forever.
+    """
+    print("\nvcp virtual machines")
+    path = f"{ROOT}/deploy/openshift-clusters/roles/vcp-cluster/templates/virtualmachine.yaml.j2"
+
+    cp = yaml.safe_load(render(path, vm={
+        "name": "vcp-1-cp-1", "role": "control-plane",
+        "cores": 8, "memory": "20Gi", "gpus": 0}))
+    worker = yaml.safe_load(render(path, vm={
+        "name": "vcp-1-worker-1", "role": "worker",
+        "cores": 8, "memory": "24Gi", "gpus": 2}))
+
+    disks = {d["name"]: d for d in cp["spec"]["template"]["spec"]["domain"]["devices"]["disks"]}
+    check("the installed disk boots before the discovery ISO",
+          disks["root"]["bootOrder"] < disks["discovery"]["bootOrder"])
+    check("the discovery ISO is a read-only cdrom",
+          disks["discovery"].get("cdrom", {}).get("readonly") is True)
+
+    check("a control-plane VM is given no GPU",
+          "hostDevices" not in cp["spec"]["template"]["spec"]["domain"]["devices"])
+    devices = worker["spec"]["template"]["spec"]["domain"]["devices"]["hostDevices"]
+    check("a worker VM gets one hostDevice per GPU asked for", len(devices) == 2)
+    expected = role_defaults()["gpu_resource_name"]
+    check("the GPUs are requested by the configured resource name",
+          all(d["deviceName"] == expected for d in devices))
+
+    check("every node carries the cluster label the agent selector matches",
+          cp["metadata"]["labels"]["tnf-toolbox-gp/cluster"]
+          == worker["metadata"]["labels"]["tnf-toolbox-gp/cluster"])
+    check("roles are distinguishable, so the API service selects only the control plane",
+          cp["metadata"]["labels"]["tnf-toolbox-gp/role"] == "control-plane"
+          and worker["metadata"]["labels"]["tnf-toolbox-gp/role"] == "worker")
+
+
 def test_site_agnostic_roles_name_no_single_site():
     """Roles that run at either site must not name one site's variables.
 
@@ -519,14 +562,14 @@ def test_site_agnostic_roles_name_no_single_site():
     # probe. Any name run-playbook.sh supplies is therefore unusable here.
     banned = tuple(extra_vars_from_wrapper()) + (
         "cluster_domain", "cluster_name", "install_dir", "acm_install_dir")
-    # vcp-guest runs against whichever hub hosts the control planes, so the
+    # hcp-guest runs against whichever hub hosts the control planes, so the
     # names that differ between sites are off limits there too -- publishing the
     # guest API on TNF's wildcard while the control plane runs on the ACM hub
     # yields a route ACM's router never answers for.
     site_specific = ("cluster_domain", "cluster_name", "bastion_private_ip",
                      "bootstrap_private_ip", "install_dir", "kubeconfig",
                      "ignition_base_url", "fencing_base_url")
-    roles = {"loadbalancer": banned, "vcp-guest": site_specific}
+    roles = {"loadbalancer": banned, "hcp-guest": site_specific}
     for role_name, forbidden in roles.items():
         _check_role_names(role_name, forbidden)
 
@@ -585,6 +628,7 @@ def main():
     test_shell_commands_are_not_split_by_stray_newlines()
     test_nothing_reads_role_defaults_from_outside()
     test_play_path_fallbacks_keep_the_system_directories()
+    test_vcp_virtual_machine()
     test_site_agnostic_roles_name_no_single_site()
     test_fetched_credentials_are_gitignored()
 

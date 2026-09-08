@@ -70,7 +70,7 @@ export GUEST_NODEPOOL_REPLICAS=3     # workers each
 export GUEST_GPUS_PER_NODE=2         # GPUs per worker
 ```
 
-1 x 3 x 2 = 6 of the 16. `make guests-from-acm` checks that sum against what the
+1 x 3 x 2 = 6 of the 16. `make hcp-make-guests-from-acm` checks that sum against what the
 infra cluster actually advertises before it creates anything, because the
 alternative is a NodePool that sits Pending for its whole timeout with the real
 reason buried in a pod event.

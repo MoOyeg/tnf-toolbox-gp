@@ -22,6 +22,11 @@ ignition_port: 8080
 # ------------------------------------------------------------------ release
 ocp_version: "4.22.0"
 ocp_mirror: "https://mirror.openshift.com/pub/openshift-v4/x86_64/clients/ocp"
+# The release every guest cluster is built from, hosted or standalone. Read by
+# hcp-guest and vcp-cluster both, so it cannot live in either.
+guest_release_image: "quay.io/openshift-release-dev/ocp-release:{{ ocp_version }}-x86_64"
+# Where their kubeconfigs are collected on whichever bastion created them.
+guest_kubeconfig_dir: "{{ install_root }}/guests"
 # Empty for 4.22, where two-node fencing is GA. Setting TechPreviewNoUpgrade
 # there also enables ClusterAPIMachineManagement, which breaks the HyperShift
 # operator install on platform:none -- see config/instance.env.template.
@@ -55,11 +60,11 @@ acm_sno_node_name: sno-0
 # The namespace on TNF that VMs created by the ACM hub land in. Deliberately not
 # 'clusters', which TNF's own MCE uses for guests it hosts itself -- two
 # HyperShift operators reconciling one namespace would each believe they owned
-# it. Read by sno-cluster (which creates it) and vcp-guest (which targets it).
+# it. Read by sno-cluster (which creates it) and hcp-guest (which targets it).
 acm_infra_namespace: acm-hosted-vms
 
 # The namespace HostedClusters are created in, on whichever cluster is hosting
-# them. Read by vcp-guest, sno-cluster and clean-guests.yml.
+# them. Read by hcp-guest, sno-cluster and clean-guests.yml.
 hcp_namespace: clusters
 
 acm_control_plane_nodes:

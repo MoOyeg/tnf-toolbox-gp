@@ -1,0 +1,49 @@
+---
+# A whole OpenShift cluster on virtual machines: control-plane VMs as well as
+# worker VMs. Nothing of it runs on the hub.
+op_kubeconfig: ""
+
+# The cluster's name, and so its namespace on the hub, its VM names and its
+# domain. Singular rather than a count: a standalone cluster is a much bigger
+# object than a hosted one -- three control-plane VMs of its own before a single
+# workload -- so they are built one at a time and named deliberately.
+vcp_cluster_name: vcp-1
+
+# Where the VMs are created. The hub installs the cluster; the infra cluster
+# runs every node of it.
+vcp_infra_kubeconfig: ""
+vcp_vm_namespace: acm-vcp-vms
+
+# Central Infrastructure Management, the assisted-installer service ACM uses to
+# build standalone clusters. It is off by default in MultiCluster Engine.
+cim_namespace: multicluster-engine
+cim_database_storage: 20Gi
+cim_filesystem_storage: 20Gi
+cim_image_storage: 50Gi
+
+# Three control-plane nodes, because a standalone cluster carries its own etcd
+# quorum -- unlike a hosted cluster, whose etcd is pods on the hub.
+vcp_control_plane_replicas: 3
+vcp_worker_replicas: 2
+
+# Assisted installer minimums are 4 vCPU / 16 GiB for a control-plane node and
+# 2 / 8 for a worker. These sit above them: the installer validates against free
+# memory at discovery time, and a node exactly at the minimum fails that check.
+vcp_cp_cores: 8
+vcp_cp_memory: 20Gi
+vcp_worker_cores: 8
+vcp_worker_memory: 24Gi
+vcp_root_disk: 120Gi
+
+# GPUs go to the workers only. Control-plane VMs run nothing worth a T4, and
+# passing one through would take it out of the pool for nothing.
+vcp_gpus_per_worker: 1
+
+vcp_agent_timeout: 1800
+vcp_install_timeout: 5400
+
+# The guest's own internal ranges. Deliberately not the infra cluster's: its
+# nodes are pods on that cluster's network, and overlapping the two makes the
+# guest's service traffic indistinguishable from the host's.
+vcp_cluster_network_cidr: 10.132.0.0/14
+vcp_service_network_cidr: 172.31.0.0/16

@@ -1,0 +1,71 @@
+---
+# The InfraEnv: a discovery ISO, and the namespace the cluster's Agents land in.
+#
+# A VM that boots this ISO registers itself with the hub as an Agent. Nothing
+# else joins the two -- there is no inventory to fill in, and no BMC. The ISO is
+# the whole handshake, which is what makes virtual machines usable as hosts at
+# all.
+
+- name: "Create the namespace for {{ vcp_cluster_name }}"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ vcp_cluster_name }}"
+
+- name: Give the namespace the pull secret and the SSH key
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ vcp_cluster_name }}-pull-secret"
+        namespace: "{{ vcp_cluster_name }}"
+      type: kubernetes.io/dockerconfigjson
+      stringData:
+        .dockerconfigjson: "{{ pull_secret }}"
+
+- name: "Create the InfraEnv for {{ vcp_cluster_name }}"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: agent-install.openshift.io/v1beta1
+      kind: InfraEnv
+      metadata:
+        name: "{{ vcp_cluster_name }}"
+        namespace: "{{ vcp_cluster_name }}"
+      spec:
+        clusterRef:
+          name: "{{ vcp_cluster_name }}"
+          namespace: "{{ vcp_cluster_name }}"
+        pullSecretRef:
+          name: "{{ vcp_cluster_name }}-pull-secret"
+        sshAuthorizedKey: "{{ ssh_public_key }}"
+        # Full ISO rather than minimal: a minimal one fetches its root filesystem
+        # over the network mid-boot, and these VMs reach the hub across a VPC
+        # peering connection where that is one more thing to go wrong.
+        imageType: full-iso
+
+# The image service builds the ISO after the InfraEnv is accepted, so the URL
+# appears a little later than the object does.
+- name: Wait for the discovery ISO to be built
+  ansible.builtin.command: >-
+    oc get infraenv {{ vcp_cluster_name }} -n {{ vcp_cluster_name }}
+    -o jsonpath={.status.isoDownloadURL}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: iso_url
+  changed_when: false
+  retries: 40
+  delay: 15
+  until: iso_url.rc == 0 and iso_url.stdout | length > 0
+
+- name: Report the discovery ISO
+  ansible.builtin.debug:
+    msg: "{{ vcp_cluster_name }}: discovery ISO ready"

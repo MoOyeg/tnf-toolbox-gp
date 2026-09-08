@@ -1,0 +1,149 @@
+---
+# Bind the discovered Agents to a cluster and let the assisted installer run it.
+
+- name: "Create the ClusterDeployment for {{ vcp_cluster_name }}"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: hive.openshift.io/v1
+      kind: ClusterDeployment
+      metadata:
+        name: "{{ vcp_cluster_name }}"
+        namespace: "{{ vcp_cluster_name }}"
+      spec:
+        clusterName: "{{ vcp_cluster_name }}"
+        baseDomain: "{{ base_domain }}"
+        pullSecretRef:
+          name: "{{ vcp_cluster_name }}-pull-secret"
+        platform:
+          agentBareMetal:
+            agentSelector:
+              matchLabels:
+                tnf-toolbox-gp/cluster: "{{ vcp_cluster_name }}"
+        clusterInstallRef:
+          group: extensions.hive.openshift.io
+          version: v1beta1
+          kind: AgentClusterInstall
+          name: "{{ vcp_cluster_name }}"
+
+- name: "Create the AgentClusterInstall for {{ vcp_cluster_name }}"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: extensions.hive.openshift.io/v1beta1
+      kind: AgentClusterInstall
+      metadata:
+        name: "{{ vcp_cluster_name }}"
+        namespace: "{{ vcp_cluster_name }}"
+      spec:
+        clusterDeploymentRef:
+          name: "{{ vcp_cluster_name }}"
+        imageSetRef:
+          name: "openshift-{{ ocp_version }}"
+        sshPublicKey: "{{ ssh_public_key }}"
+        provisionRequirements:
+          controlPlaneAgents: "{{ vcp_control_plane_replicas | int }}"
+          workerAgents: "{{ vcp_worker_replicas | int }}"
+        # No VIPs, and no platform integration.
+        #
+        # A bare-metal assisted install would put the API and ingress on VIPs
+        # that keepalived claims by ARP on the machine network. These VMs are on
+        # the infra cluster's pod network, where OVN owns every address and an
+        # unallocated one cannot be claimed -- the same reason MetalLB does not
+        # work in a VPC, one layer further in.
+        #
+        # user-managed networking means the installer builds no VIPs and expects
+        # the API and ingress to be reachable by other means. expose.yml
+        # provides those: NodePort services on the infra cluster, which is also
+        # how the hosted variant publishes a guest API here.
+        platformType: None
+        userManagedNetworking: true
+        networking:
+          clusterNetwork:
+            - cidr: "{{ vcp_cluster_network_cidr }}"
+              hostPrefix: "{{ cluster_network_host_prefix | int }}"
+          serviceNetwork:
+            - "{{ vcp_service_network_cidr }}"
+
+# Agents appear as the VMs finish booting the ISO. They are not usable until
+# they have reported their inventory, which is what the installer validates
+# against.
+- name: Wait for every VM to register as an Agent
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get agents -n {{ vcp_cluster_name }} --no-headers 2>/dev/null | wc -l
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: agent_count
+  changed_when: false
+  failed_when: false
+  retries: "{{ (vcp_agent_timeout | int / 20) | int }}"
+  delay: 20
+  until: agent_count.stdout | trim | int >= vcp_nodes | length
+
+# Approval is manual by design in the assisted installer -- it is the step where
+# an operator confirms that the machine that showed up is one they meant to
+# install. Here the machines were created by this role a moment ago, so there is
+# nothing to confirm.
+- name: Approve the agents and give them their roles
+  ansible.builtin.shell: |
+    set -o pipefail
+    for a in $(oc get agents -n {{ vcp_cluster_name }} -o name); do
+      host=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.spec.hostname}{"\n"}')
+      role=worker
+      case "$host" in *-cp-*) role=master ;; esac
+      oc patch "$a" -n {{ vcp_cluster_name }} --type merge \
+        -p "{\"spec\":{\"approved\":true,\"role\":\"${role}\"}}"
+    done
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: agent_approval
+  changed_when: "'patched' in agent_approval.stdout"
+
+- name: Wait for the installation to finish
+  ansible.builtin.command: >-
+    oc get agentclusterinstall {{ vcp_cluster_name }} -n {{ vcp_cluster_name }}
+    -o jsonpath='{.status.conditions[?(@.type=="Completed")].status}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: install_done
+  changed_when: false
+  failed_when: false
+  retries: "{{ (vcp_install_timeout | int / 30) | int }}"
+  delay: 30
+  until: install_done.stdout == "True"
+
+- name: Fail if the install never completed
+  ansible.builtin.assert:
+    that: install_done.stdout == "True"
+    fail_msg: >-
+      {{ vcp_cluster_name }} did not finish installing within
+      {{ vcp_install_timeout }}s. 'oc get agentclusterinstall
+      {{ vcp_cluster_name }} -n {{ vcp_cluster_name }} -o yaml' carries the
+      validation that is blocking it; insufficient memory or disk on an agent is
+      the usual one.
+
+- name: Fetch the cluster's kubeconfig
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc extract secret/{{ vcp_cluster_name }}-admin-kubeconfig
+    -n {{ vcp_cluster_name }} --keys=kubeconfig --to=-
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: vcp_kubeconfig
+  changed_when: false
+
+- name: Save it next to the hosted clusters' kubeconfigs
+  ansible.builtin.copy:
+    content: "{{ vcp_kubeconfig.stdout }}"
+    dest: "{{ guest_kubeconfig_dir }}/{{ vcp_cluster_name }}.kubeconfig"
+    mode: '0600'
+
+- name: Report the cluster
+  ansible.builtin.debug:
+    msg:
+      - "{{ vcp_cluster_name }} installed: every node is a VM on the infra cluster."
+      - "Control plane: {{ vcp_control_plane_replicas }} VMs. Workers: {{ vcp_worker_replicas }} VMs."
+      - "kubeconfig: {{ guest_kubeconfig_dir }}/{{ vcp_cluster_name }}.kubeconfig"

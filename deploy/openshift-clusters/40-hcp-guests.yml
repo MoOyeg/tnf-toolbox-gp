@@ -52,6 +52,6 @@
 
     - name: Create the guest clusters
       ansible.builtin.include_role:
-        name: vcp-guest
+        name: hcp-guest
       vars:
         op_kubeconfig: "{{ kubeconfig }}"

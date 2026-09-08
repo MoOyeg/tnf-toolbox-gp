@@ -30,7 +30,7 @@ already decided.
 | `make tnf` | `10-tnf-install.yml` | 60–90 min |
 | `make gpu` | `20-base-gpu.yml` | 30–45 min |
 | `make virt-mce` | `30-virt-mce.yml` | 45–60 min |
-| `make guests` | `40-vcp-guests.yml` | 30–45 min |
+| `make guests` | `40-hcp-guests.yml` | 30–45 min |
 | `make guest-gpu` | `50-guest-gpu.yml` | 30 min |
 
 Each is re-runnable. `make tnf` skips the install if `auth/kubeconfig` already

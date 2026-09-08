@@ -1,12 +1,17 @@
 ---
-# Stage 4b: virtualized clusters created by the ACM hub, with their VMs and GPUs
-# on TNF.
+# Stage 4c: a whole OpenShift cluster on virtual machines, built by ACM.
 #
-# The same vcp-guest role as 40-vcp-guests.yml, with the separation made real:
-# this runs on the ACM bastion, the HostedCluster is created against the ACM
-# cluster, and hcp is handed a kubeconfig for TNF so the VMs land over there
-# instead of on the hub. The hub has no GPUs and no room for them.
-- name: Create guest clusters from the ACM hub
+# The counterpart to 40-hcp-guests-from-acm.yml, and the difference is where the
+# control plane lives:
+#
+#   hosted   control plane = pods on the ACM hub, workers = VMs on TNF
+#   this     control plane = VMs on TNF,          workers = VMs on TNF
+#
+# Which also changes the mechanism. A hosted cluster is HyperShift; this one is
+# the assisted installer, so the VMs boot a discovery ISO, register as Agents,
+# and are installed the way bare metal would be. ACM builds it and then holds
+# only a ManagedCluster for it -- nothing of the cluster runs on the hub.
+- name: Create a cluster whose nodes are all virtual machines
   hosts: acm_bastion
   gather_facts: true
   environment:
@@ -30,8 +35,7 @@
         that: acm_hub.stat.exists
         fail_msg: "No ACM kubeconfig. Run 'make acm-site' first -- it builds the hub."
 
-    # Written by 'make acm-site'. Without it hcp would create the VMs on the hub,
-    # which is the whole thing this layout exists to avoid.
+    # Written by 'make acm-site'. The VMs are created on TNF, not here.
     - name: Confirm the TNF infra credential is in place
       ansible.builtin.stat:
         path: "{{ acm_install_dir }}/infra-kubeconfig"
@@ -41,11 +45,11 @@
       ansible.builtin.assert:
         that: infra_cred.stat.exists
         fail_msg: >-
-          {{ acm_install_dir }}/infra-kubeconfig is missing. Re-run 'make acm-site';
-          its last stage writes the credential ACM uses to reach TNF.
+          {{ acm_install_dir }}/infra-kubeconfig is missing. Re-run
+          'make acm-site'; its last stage writes the credential ACM uses to
+          reach TNF.
 
-    # Read from TNF, where the GPUs physically are, not from the hub. The hub has
-    # none and would report none.
+    # Read from TNF, where the GPUs are. The hub has none.
     - name: Discover the passthrough GPU resource name on the infra cluster
       ansible.builtin.include_role:
         name: common
@@ -53,14 +57,10 @@
       vars:
         op_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
 
-    - name: Create the guest clusters
+    - name: Create the cluster
       ansible.builtin.include_role:
-        name: vcp-guest
+        name: vcp-cluster
       vars:
         op_kubeconfig: "{{ acm_kubeconfig }}"
-        guest_infra_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
-        guest_workdir: "{{ acm_install_dir }}"
-        # The control plane runs here, on the ACM hub, so its services are
-        # published on the hub's own node. The worker VMs are over on TNF and
-        # reach this address across the peering connection.
-        guest_api_address: "{{ acm_sno_private_ip }}"
+        vcp_infra_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
+        guest_kubeconfig_dir: "{{ acm_install_root }}/guests"

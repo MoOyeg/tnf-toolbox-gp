@@ -1,0 +1,71 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: {{ vm.name }}
+  namespace: {{ vcp_vm_namespace }}
+  labels:
+    tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+    tnf-toolbox-gp/role: {{ vm.role }}
+spec:
+  running: true
+  dataVolumeTemplates:
+    - metadata:
+        name: {{ vm.name }}-root
+      spec:
+        storage:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: {{ vcp_root_disk }}
+          storageClassName: {{ storage_class }}
+        source:
+          blank: {}
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: {{ vm.name }}
+    spec:
+      # A node that reboots into its installed disk must not be handed the
+      # discovery ISO again, so the disk is first in the boot order and the
+      # cdrom second. Ignoring this gets a cluster that installs and then
+      # rediscovers itself forever.
+      domain:
+        cpu:
+          cores: {{ vm.cores }}
+        memory:
+          guest: {{ vm.memory }}
+        devices:
+          disks:
+            - name: root
+              bootOrder: 1
+              disk:
+                bus: virtio
+            - name: discovery
+              bootOrder: 2
+              cdrom:
+                bus: sata
+                readonly: true
+          interfaces:
+            - name: default
+              masquerade: {}
+{% if vm.gpus | int > 0 %}
+          hostDevices:
+{% for i in range(vm.gpus | int) %}
+            - name: gpu{{ i + 1 }}
+              deviceName: {{ gpu_resource_name }}
+{% endfor %}
+{% endif %}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: root
+          dataVolume:
+            name: {{ vm.name }}-root
+        - name: discovery
+          dataVolume:
+            name: {{ vcp_cluster_name }}-discovery
+      # An assisted install reboots each node when it writes the image to disk;
+      # without this KubeVirt treats the reboot as a crash and restarts the VM
+      # from the ISO instead.
+      terminationGracePeriodSeconds: 180

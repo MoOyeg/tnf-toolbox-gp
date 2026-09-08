@@ -17,7 +17,7 @@ acm_install_timeout: 5400
 
 # Credential the ACM cluster uses to reach TNF's MultiCluster Engine across the
 # peering connection. The namespace it targets on TNF is acm_infra_namespace,
-# in group_vars, because vcp-guest needs it too.
+# in group_vars, because hcp-guest needs it too.
 infra_kubeconfig_secret: tnf-infra-kubeconfig
 
 # Pods per node on the hub. The default 250 is not enough for ACM plus MCE plus

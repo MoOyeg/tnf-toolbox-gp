@@ -4,7 +4,7 @@
 # Useful for reclaiming the passthrough GPUs, or for re-creating the guests with
 # a different GPU count without rebuilding two bare metal machines.
 #
-# Both bastions: guests created by 'make guests-from-acm' live on the ACM
+# Both bastions: guests created by 'make hcp-make-guests-from-acm' live on the ACM
 # cluster, guests created by 'make guests' on TNF. Looking at only one of them
 # reports "nothing to do" while the other site's guests keep running, holding
 # the passthrough GPUs this play exists to release.

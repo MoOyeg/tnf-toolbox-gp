@@ -6,7 +6,7 @@
 # PCI device on the VM, and there is no second level of passthrough to arrange.
 #
 # Both bastions, because the guest kubeconfigs live wherever the hub that created
-# them lives: 'make guests-from-acm' writes them on the ACM bastion, 'make
+# them lives: 'make hcp-make-guests-from-acm' writes them on the ACM bastion, 'make
 # guests' on TNF's. A bastion with no guests contributes an empty loop.
 - name: Enable GPUs inside the guest clusters
   hosts: bastion:acm_bastion
@@ -39,7 +39,7 @@
           - ansible_play_hosts | map('extract', hostvars, 'guest_kubeconfig_count') | map('int') | sum > 0
         fail_msg: >-
           No guest kubeconfigs under {{ install_root }}/guests on either bastion.
-          Run 'make guests-from-acm' first -- or 'make guests' for guests hosted
+          Run 'make hcp-make-guests-from-acm' first -- or 'make guests' for guests hosted
           by TNF's own MultiCluster Engine.
       run_once: true
 

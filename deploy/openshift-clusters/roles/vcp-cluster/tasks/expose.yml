@@ -1,0 +1,81 @@
+---
+# Make the cluster reachable.
+#
+# With user-managed networking the installer builds no VIPs, so something has to
+# publish the API and ingress. The VMs are pods on the infra cluster, so a
+# Service selecting them is the natural handle -- NodePort rather than
+# LoadBalancer, for the same reason everything else here is: nothing in a VPC
+# provisions a LoadBalancer on platform:none.
+#
+# This is the same shape the hosted variant uses for a guest API, and it has the
+# same consequence: the addresses answer from inside the VPC -- the bastions and
+# the peered ACM site -- rather than from a workstation.
+
+- name: Publish the control-plane API
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_infra_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ vcp_cluster_name }}-api"
+        namespace: "{{ vcp_vm_namespace }}"
+      spec:
+        type: NodePort
+        selector:
+          tnf-toolbox-gp/cluster: "{{ vcp_cluster_name }}"
+          tnf-toolbox-gp/role: control-plane
+        ports:
+          - name: api
+            port: 6443
+            targetPort: 6443
+            protocol: TCP
+
+- name: Publish the ingress
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_infra_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ vcp_cluster_name }}-ingress"
+        namespace: "{{ vcp_vm_namespace }}"
+      spec:
+        type: NodePort
+        # Ingress runs on the workers, so this selects them rather than every
+        # node of the cluster.
+        selector:
+          tnf-toolbox-gp/cluster: "{{ vcp_cluster_name }}"
+          tnf-toolbox-gp/role: worker
+        ports:
+          - name: https
+            port: 443
+            targetPort: 443
+            protocol: TCP
+          - name: http
+            port: 80
+            targetPort: 80
+            protocol: TCP
+
+- name: Read the ports they landed on
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get svc {{ vcp_cluster_name }}-api {{ vcp_cluster_name }}-ingress
+    -n {{ vcp_vm_namespace }} -o json
+    | jq -r '.items[] | "\(.metadata.name) \(.spec.ports[].nodePort)"'
+  environment:
+    KUBECONFIG: "{{ vcp_infra_kubeconfig }}"
+  register: vcp_nodeports
+  changed_when: false
+
+- name: Report how to reach it
+  ansible.builtin.debug:
+    msg:
+      - "{{ vcp_cluster_name }} is published on the infra cluster's node ports:"
+      - "{{ vcp_nodeports.stdout_lines }}"
+      - ""
+      - "Point api.{{ vcp_cluster_name }}.{{ base_domain }} and"
+      - "*.apps.{{ vcp_cluster_name }}.{{ base_domain }} at a node address on"
+      - "those ports. From the bastion the kubeconfig works as fetched."

@@ -1,7 +1,8 @@
 ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 
 .PHONY: all keypair infra acm-infra peering tnf kubeconfig iommu gpu virt-mce \
-        acm-site guests guests-from-acm guest-gpu doctor ssh acm-ssh status \
+        acm-site guests hcp-make-guests-from-acm vcp-make-guests-from-acm \
+        guest-gpu doctor ssh acm-ssh status \
         inventory clean clean-guests destroy destroy-acm help
 
 # ---------------------------------------------------------------- end to end
@@ -9,7 +10,7 @@ ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 # before anything reboots it, and its credentials must be on your workstation
 # before the one stage that can break it.
 all: keypair infra acm-infra peering tnf kubeconfig iommu gpu virt-mce acm-site \
-     guests-from-acm guest-gpu
+     hcp-make-guests-from-acm guest-gpu
 	@echo ""
 	@echo "Everything is up. 'make status' for a summary."
 
@@ -53,11 +54,19 @@ acm-site:
 
 # Guests hosted by TNF's own MultiCluster Engine.
 guests:
-	@$(ANSIBLE) 40-vcp-guests.yml $(EXTRA_ARGS)
+	@$(ANSIBLE) 40-hcp-guests.yml $(EXTRA_ARGS)
 
-# Guests created by ACM on the SNO, with their VMs and GPUs on TNF.
-guests-from-acm:
-	@$(ANSIBLE) 40-vcp-guests-from-acm.yml $(EXTRA_ARGS)
+# Hosted control planes: the guest's control plane runs as pods on the ACM hub
+# and only its workers are KubeVirt VMs on TNF. This is what 'make all' uses.
+hcp-make-guests-from-acm:
+	@$(ANSIBLE) 40-hcp-guests-from-acm.yml $(EXTRA_ARGS)
+
+# The whole cluster on virtual machines: control plane VMs as well as worker
+# VMs, all on TNF. Nothing of it runs on the hub -- ACM installs it with the
+# Assisted Installer rather than HyperShift, so it is a standalone cluster that
+# ACM happens to have created, not a hosted one.
+vcp-make-guests-from-acm:
+	@$(ANSIBLE) 41-vcp-clusters-from-acm.yml $(EXTRA_ARGS)
 
 guest-gpu:
 	@$(ANSIBLE) 50-guest-gpu.yml $(EXTRA_ARGS)
@@ -116,7 +125,8 @@ help:
 	@echo "                       at the ACM site, plus OCP-V, ACM, and the credential"
 	@echo "                       that lets it drive TNF as its infra cluster"
 	@echo "  make guests          - guests hosted by TNF's own MultiCluster Engine"
-	@echo "  make guests-from-acm - guests created by ACM on the SNO, VMs and GPUs on TNF"
+	@echo "  make hcp-make-guests-from-acm - hosted control planes: CP pods on the hub, worker VMs on TNF"
+	@echo "  make vcp-make-guests-from-acm - full clusters on VMs: control-plane VMs and worker VMs on TNF"
 	@echo "  make guest-gpu     - NFD + GPU Operator inside each guest cluster"
 	@echo ""
 	@echo "Utilities:"

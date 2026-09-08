@@ -1,0 +1,90 @@
+---
+# Turn on Central Infrastructure Management on the hub.
+#
+# This is the assisted-installer service. MultiCluster Engine ships it disabled,
+# and it stays disabled until an AgentServiceConfig exists -- creating one is
+# what deploys assisted-service and the image service that serves discovery
+# ISOs.
+
+- name: Enable the assisted-service components in MultiCluster Engine
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: patched
+    api_version: multicluster.openshift.io/v1
+    kind: MultiClusterEngine
+    name: multiclusterengine
+    definition:
+      spec:
+        overrides:
+          components:
+            - name: assisted-service
+              enabled: true
+  register: mce_assisted
+  retries: 20
+  delay: 15
+  until: mce_assisted is not failed
+
+- name: Wait for the AgentServiceConfig CRD to be established
+  ansible.builtin.command: oc get crd agentserviceconfigs.agent-install.openshift.io
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: asc_crd
+  changed_when: false
+  retries: 40
+  delay: 15
+  until: asc_crd.rc == 0
+
+# The three volumes are not interchangeable: imageStorage holds the RHCOS
+# images the discovery ISO is built from and is the one that actually needs
+# room.
+- name: Create the AgentServiceConfig
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: agent-install.openshift.io/v1beta1
+      kind: AgentServiceConfig
+      metadata:
+        name: agent
+      spec:
+        databaseStorage:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: "{{ cim_database_storage }}"
+        filesystemStorage:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: "{{ cim_filesystem_storage }}"
+        imageStorage:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: "{{ cim_image_storage }}"
+
+- name: Wait for assisted-service to come up
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get pods -n {{ cim_namespace }} -l app=assisted-service --no-headers
+    | grep -c Running
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: assisted_pods
+  changed_when: false
+  failed_when: false
+  retries: 60
+  delay: 20
+  until: assisted_pods.stdout | trim | int > 0
+
+- name: Create the ClusterImageSet for {{ ocp_version }}
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: hive.openshift.io/v1
+      kind: ClusterImageSet
+      metadata:
+        name: "openshift-{{ ocp_version }}"
+      spec:
+        releaseImage: "{{ guest_release_image }}"

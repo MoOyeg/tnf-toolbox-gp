@@ -17,7 +17,7 @@ every command runs there.
 | `10-tnf-install.yml` | `common`, `redfish-shim`, `loadbalancer`, `tnf-install` |
 | `20-base-gpu.yml` | `gpu-passthrough`, `nfd`, `gpu-operator` |
 | `30-virt-mce.yml` | `lvm-storage`, `cnv`, `acm` (MCE only) |
-| `40-vcp-guests.yml` | `vcp-guest` |
+| `40-hcp-guests.yml` | `hcp-guest` |
 | `50-guest-gpu.yml` | `nfd`, `gpu-operator` — against each guest kubeconfig |
 | `clean-guests.yml` | — |
 | `fetch-kubeconfig.yml` | — |
@@ -36,7 +36,7 @@ every command runs there.
 | `lvm-storage` | LVM Storage pinned to the EBS data volume |
 | `cnv` | OpenShift Virtualization and the permitted host device |
 | `acm` | MultiClusterHub and the HyperShift components |
-| `vcp-guest` | the `hcp` CLI, and one guest cluster per iteration |
+| `hcp-guest` | the `hcp` CLI, and one guest cluster per iteration |
 
 `nfd` and `gpu-operator` are deliberately cluster-agnostic: they act on whatever
 `op_kubeconfig` names, which is how the same two roles serve the base cluster
@@ -68,6 +68,6 @@ reason attached is worth the extra lines.
 
 **Assertions guard invariants, not just states.** `tnf-install` asserts that
 node names match the fencing credentials; `gpu-operator` asserts each node
-advertises the resource its workload mode implies; `vcp-guest` asserts the
+advertises the resource its workload mode implies; `hcp-guest` asserts the
 rendered manifests actually request a GPU. Each of these otherwise fails much
 later and much less obviously.
