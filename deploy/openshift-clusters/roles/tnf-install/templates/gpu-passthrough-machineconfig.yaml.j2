@@ -1,0 +1,26 @@
+# Enable the IOMMU at install time, not afterwards.
+#
+# Applying these kernel arguments to a running cluster means a MachineConfig
+# rollout, and a MachineConfig rollout on two nodes means rebooting each in turn
+# while the other carries the whole cluster. When the surviving node is alone it
+# rewrites corosync to a single-node cluster to keep quorum -- designed
+# behaviour -- and does not reliably re-add the peer when it comes back. The
+# returning node then has no quorum, Pacemaker starts nothing on it, and the
+# pair cannot re-form from either side. That has happened three times here;
+# docs/deploy-log.md defect 20 has the anatomy.
+#
+# Dropped into the install manifests instead, the arguments are part of the
+# first rendered MachineConfig, so both nodes boot with them and there is no
+# post-install reboot to survive. The reboots that do happen are during
+# installation, when there is no Pacemaker pair yet to split.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: {{ iommu_machine_config_name }}
+  labels:
+    machineconfiguration.openshift.io/role: {{ iommu_target_mcp }}
+spec:
+  kernelArguments:
+{% for arg in iommu_kernel_args %}
+    - {{ arg }}
+{% endfor %}

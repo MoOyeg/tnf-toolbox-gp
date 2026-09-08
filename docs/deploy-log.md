@@ -1037,3 +1037,44 @@ Three things from the attempt were kept, because they are unrelated to it and
 each caught something real: the rollout re-render wait (defect 36), the guest
 GPU budget check, and the per-node assertion that a passthrough node actually
 advertises GPUs.
+
+### 38. The IOMMU moves to day 1, so the split cannot happen from that cause
+
+Defect 20 has now happened three times in five runs: a MachineConfig rollout
+reboots the two nodes in turn, the surviving one rewrites corosync to a
+single-node cluster to keep quorum, and does not re-add the peer when it comes
+back. The returning node has no quorum, so Pacemaker starts nothing on it, so it
+never becomes a Ready node, so the etcd operator -- pods on the survivor -- never
+observes it and never repairs membership. Neither side can break the deadlock.
+
+The third occurrence gave the clearest timeline, from the nodes themselves:
+
+```
+16:01  master-1 reboots for the IOMMU config and comes back; the pair re-forms
+16:07  master-0 goes down for its turn
+16:11  master-1, now alone, rewrites corosync.conf to a single node
+16:22  master-0 boots, IOMMU applied, its own corosync.conf still two-node
+       ... master-1 never re-adds it
+```
+
+Worth noting the pair survived the *first* reboot and failed on the second. It
+is a race, not a certainty, which is why it took five runs to happen three
+times.
+
+The re-add is the product's to fix. The exposure is ours, and it was avoidable:
+nothing required those two kernel arguments to be applied to a running cluster.
+`tnf-install` now writes the MachineConfig into `<install_dir>/manifests/`
+before `create ignition-configs`, so it is part of the first rendered config and
+both nodes boot with the IOMMU. The reboots that do happen are during
+installation, when there is no Pacemaker pair to split.
+
+`make iommu` is kept for clusters built before this and is now a no-op on ones
+built after -- it checks `/proc/cmdline` and applies nothing when the arguments
+are already there. A check ties the two together: the day-1 manifest's name,
+pool label and kernel arguments must equal what the day-2 stage looks for, since
+the day-2 stage decides it has nothing to do by comparing exactly those.
+
+Also worth recording, because it wasted time here: `kubelet` being
+`systemd-disabled` on a TNF node is normal, not a symptom. Both nodes show it;
+kubelet is started as part of the Pacemaker-managed sequence rather than by
+systemd at boot. The signal that matters is quorum.

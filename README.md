@@ -61,9 +61,9 @@ rather than starting over.
 | `make infra` | TNF site: VPC, subnet, split-horizon DNS, bastion, fencing endpoint | 2 min |
 | `make acm-infra` | ACM site: its own VPC, subnet and bastion | 2 min |
 | `make peering` | the VPC peering connection, and the private zones each side needs | 1 min |
-| `make tnf` | install TNF 4.22 on two `g4dn.metal`, then verify it is healthy *as TNF* | 50 min |
+| `make tnf` | install TNF 4.22 on two `g4dn.metal` **with the IOMMU enabled from first boot**, then verify it is healthy *as TNF* | 50 min |
 | `make kubeconfig` | fetch every cluster's credentials and write `deploy/clusters/access.md` | seconds |
-| `make iommu` | the IOMMU MachineConfig — **reboots both nodes, one at a time** | 40 min |
+| `make iommu` | optional — checks the IOMMU and applies nothing on a cluster this repo built | seconds |
 | `make gpu` | NFD + NVIDIA GPU Operator on the base cluster | 10 min |
 | `make virt-mce` | LVM Storage, OpenShift Virtualization, MultiCluster Engine | 15 min |
 | `make acm-site` | single-node OpenShift at the ACM site, then ACM on it, then import TNF into the hub | 56 min |
@@ -100,14 +100,31 @@ A hosted control plane is cheaper — it is pods, and it shares the hub's etcd
 machinery. A standalone one costs three more VMs before a single workload runs,
 and in exchange it survives the hub going away.
 
-**The ordering is deliberate.** `make iommu` is the only stage that reboots the
-cluster, and on two nodes each reboot takes it down to one. So it runs by
-itself, after the cluster is confirmed healthy as TNF and after its credentials
-are safely on your workstation — and it re-checks TNF health afterwards, because
-a rollout that leaves the pair unable to re-form is a failure of *that* stage,
-not a mysterious GPU problem two stages later. See
-[docs/deploy-log.md](docs/deploy-log.md) for the run where that distinction was
-learned.
+**`make iommu` is optional now.** `make tnf` writes the IOMMU MachineConfig
+into the install manifests, so both nodes boot with `intel_iommu=on iommu=pt`
+and there is no rollout to survive. On a cluster built by this repo the stage
+finds the arguments already in place and applies nothing:
+
+```
+$ make iommu
+intel_iommu=on iommu=pt already on every node and
+100-master-gpu-passthrough is in place. Nothing to apply, and no reboot.
+```
+
+It is kept for a cluster built before that change, where it still does the day-2
+rollout. Which is worth avoiding: adding those arguments to a *running* two-node
+cluster reboots each node in turn, and a node that comes back is not reliably
+re-added to the Pacemaker pair. The survivor rewrites corosync to a single-node
+cluster to keep quorum — designed behaviour — and does not always undo it. The
+returning node has no quorum, Pacemaker starts nothing on it, and neither side
+can re-form the pair. That cost three clusters here before the arguments moved
+to day 1; [docs/deploy-log.md](docs/deploy-log.md) defect 20 has the anatomy and
+`make tnf-recover` is what to run when it happens.
+
+**The rest of the ordering is still deliberate.** Credentials are fetched before
+anything risky, and the stages that reboot or reconfigure re-check TNF health
+afterwards, because a cluster that cannot re-form a Pacemaker pair is a failure
+of *that* stage, not a mysterious GPU problem two stages later.
 
 ## When the cluster does not come back
 

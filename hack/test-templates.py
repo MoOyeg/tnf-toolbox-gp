@@ -503,6 +503,33 @@ def test_play_path_fallbacks_keep_the_system_directories():
                   not missing, f"fallback '{fallback}' is missing {missing}")
 
 
+def test_iommu_is_enabled_at_install_time():
+    """The IOMMU MachineConfig written into the install manifests.
+
+    It exists so the kernel arguments arrive on the first boot rather than
+    through a rollout against a live two-node cluster, which is what split the
+    Pacemaker pair three times. Its name and arguments have to match what the
+    day-2 stage looks for, or that stage decides there is work to do and reboots
+    both nodes for a change that is already in place.
+    """
+    print("\nIOMMU at install time")
+    path = f"{ROOT}/deploy/openshift-clusters/roles/tnf-install/templates/gpu-passthrough-machineconfig.yaml.j2"
+    mc = yaml.safe_load(render(path))
+    defaults = role_defaults()
+
+    check("it is a MachineConfig", mc["kind"] == "MachineConfig")
+    check("named the same thing the day-2 stage looks for",
+          mc["metadata"]["name"] == defaults["iommu_machine_config_name"])
+    check("labelled for the pool the day-2 stage waits on",
+          mc["metadata"]["labels"]["machineconfiguration.openshift.io/role"]
+          == defaults["iommu_target_mcp"])
+    check("carries exactly the arguments that stage checks for",
+          mc["spec"]["kernelArguments"] == defaults["iommu_kernel_args"],
+          f"{mc['spec']['kernelArguments']} != {defaults['iommu_kernel_args']}")
+    check("it sets nothing else, so it cannot trigger a rollout of its own",
+          set(mc["spec"]) == {"kernelArguments"})
+
+
 def test_vcp_virtual_machine():
     """A cluster-on-VMs node, with and without a GPU attached.
 
@@ -628,6 +655,7 @@ def main():
     test_shell_commands_are_not_split_by_stray_newlines()
     test_nothing_reads_role_defaults_from_outside()
     test_play_path_fallbacks_keep_the_system_directories()
+    test_iommu_is_enabled_at_install_time()
     test_vcp_virtual_machine()
     test_site_agnostic_roles_name_no_single_site()
     test_fetched_credentials_are_gitignored()

@@ -32,7 +32,7 @@ already decided.
 | `make peering` | *(CloudFormation, no playbook)* | 1 min |
 | `make tnf` | `10-tnf-install.yml` | 50 min |
 | `make kubeconfig` | `fetch-kubeconfig.yml` | seconds |
-| `make iommu` | `15-iommu.yml` | 40 min, **reboots both nodes** |
+| `make iommu` | `15-iommu.yml` | seconds — optional, see below |
 | `make gpu` | `20-base-gpu.yml` | 10 min |
 | `make virt-mce` | `30-virt-mce.yml` | 15 min |
 | `make acm-site` | `36-acm-site.yml` | 56 min |
@@ -50,8 +50,11 @@ Not in `make all`:
 Each is re-runnable. `make tnf` skips the install if `auth/kubeconfig` already
 exists on the bastion, but still reapplies the Pacemaker timeouts — which is
 what you want after the TNF controller has recreated a stonith device.
-`make iommu` checks whether the IOMMU is already on and applies nothing if it
-is, so re-running it does not cost a pair of reboots.
+`make tnf` writes the IOMMU MachineConfig into the install manifests, so the
+nodes boot with `intel_iommu=on iommu=pt` and `make iommu` has nothing to do on
+a cluster this repo built. It is kept for clusters built before that, where it
+still performs the day-2 rollout — two serial reboots, and the operation that
+has split the Pacemaker pair three times.
 
 `make tnf-recover` is the one to reach for when a stage stops with "the cluster
 is not healthy as a two-node fencing cluster". It works through the documented

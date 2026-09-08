@@ -68,6 +68,20 @@
     line: '  mastersSchedulable: true'
     backrefs: false
 
+# Day 1 rather than day 2, deliberately. Adding these kernel arguments to a
+# running two-node cluster reboots each node in turn, and a node that comes back
+# is not reliably re-added to the Pacemaker pair -- the split that has cost this
+# rig three clusters. Here they are part of the first rendered MachineConfig, so
+# both nodes boot with the IOMMU and there is no rollout to survive.
+#
+# 'make iommu' still exists for a cluster built before this, and now finds
+# nothing to do on one built after it.
+- name: Enable the IOMMU from the first boot
+  ansible.builtin.template:
+    src: gpu-passthrough-machineconfig.yaml.j2
+    dest: "{{ install_dir }}/manifests/99-{{ iommu_machine_config_name }}.yaml"
+    mode: '0644'
+
 - name: Create ignition configs
   ansible.builtin.command: "{{ bin_dir }}/openshift-install create ignition-configs --dir {{ install_dir }}"
   args:

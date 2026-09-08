@@ -116,6 +116,19 @@ gpu_device_label: "nvidia.com/gpu.workload.config"
 # Named here rather than in the role, because 20-base-gpu.yml asserts it exists
 # and must agree with the stage that creates it.
 iommu_machine_config_name: 100-master-gpu-passthrough
+# g4dn.metal is Intel (Cascade Lake), so intel_iommu is the right knob. iommu=pt
+# keeps the IOMMU out of the DMA path for devices that are not being passed
+# through, which matters on a node also running container workloads.
+#
+# Written into the install manifests so both nodes boot with it, and read again
+# by the day-2 stage for a cluster built before that was true. One definition,
+# because the two must not drift: the day-2 stage decides it has nothing to do
+# by comparing these against /proc/cmdline.
+iommu_kernel_args:
+  - intel_iommu=on
+  - iommu=pt
+# TNF has one pool and both nodes are in it.
+iommu_target_mcp: master
 storage_class: "lvms-vg1"
 
 # ------------------------------------------------------------------ timeouts

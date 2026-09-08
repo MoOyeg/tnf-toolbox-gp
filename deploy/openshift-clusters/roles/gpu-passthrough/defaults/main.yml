@@ -1,9 +1,6 @@
 ---
-# g4dn.metal is Intel (Cascade Lake), so intel_iommu is the right knob.
-# iommu=pt keeps the IOMMU out of the DMA path for devices that are not being
-# passed through, which matters on a node also running container workloads.
-iommu_kernel_args:
-  - intel_iommu=on
-  - iommu=pt
+# The kernel arguments and the pool live in group_vars: the install writes them
+# into the day-1 manifests, and this role reads the same values to decide
+# whether a cluster built before that already has them.
 machine_config_name: "{{ iommu_machine_config_name | default('100-master-gpu-passthrough') }}"
-target_mcp: master
+target_mcp: "{{ iommu_target_mcp | default('master') }}"
