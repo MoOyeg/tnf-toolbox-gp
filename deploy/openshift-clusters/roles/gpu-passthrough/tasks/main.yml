@@ -67,6 +67,74 @@
   loop_control:
     label: "{{ item.item.name }}"
 
+# Ask the nodes what they are actually booted with before touching anything.
+#
+# The apply below is idempotent, so an unchanged MachineConfig does not reboot
+# anything -- but "unchanged" is a property of the object, not of the nodes. Edit
+# the kernel argument list, or lose and recreate the MachineConfig, and the MCO
+# reboots both nodes serially even though /proc/cmdline already says what it is
+# about to say. On a two-node control plane that is half the cluster gone for
+# forty minutes, so it is worth being certain first.
+- name: Check whether the IOMMU kernel arguments are already in place
+  ansible.builtin.command: >-
+    oc debug node/{{ item.name }} --quiet --request-timeout=120s -- chroot /host bash -c 'for a in {{ iommu_kernel_args | join(" ") }}; do grep -qw -- $a /proc/cmdline || { echo missing; exit 0; }; done; echo present'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  loop: "{{ control_plane_nodes }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: iommu_state
+  changed_when: false
+  # A node that has just been uncordoned can refuse a debug pod for a few
+  # seconds, so an empty answer is retried. It is never *interpreted*: a node
+  # that has not answered is not evidence that its arguments are in place, and
+  # reading it as such would skip a reboot the cluster actually needs. If it
+  # still cannot be determined, the stage stops rather than guessing.
+  retries: 5
+  delay: 30
+  until: iommu_state.stdout | default('') | trim in ['present', 'missing']
+  failed_when: iommu_state.stdout | default('') | trim not in ['present', 'missing']
+
+# The MachineConfig has to exist as well as the arguments being live: without it
+# a rebuilt node comes back without them.
+- name: Look for the IOMMU MachineConfig
+  ansible.builtin.command: "oc get machineconfig {{ machine_config_name }} -o name"
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig | default(kubeconfig) }}"
+  register: iommu_mc_present
+  changed_when: false
+  failed_when: false
+
+- name: Record what is left to do
+  ansible.builtin.set_fact:
+    iommu_nodes_missing: >-
+      {{ iommu_state.results
+         | rejectattr('stdout', 'equalto', 'present')
+         | map(attribute='item.name') | list }}
+
+- name: Decide whether anything needs applying
+  ansible.builtin.set_fact:
+    # Either a node is missing the arguments, or the MachineConfig that keeps
+    # them across a rebuild is gone. Only the first causes a reboot.
+    iommu_work_needed: >-
+      {{ (iommu_nodes_missing | length > 0) or (iommu_mc_present.rc != 0) }}
+
+- name: Report that the IOMMU is already enabled
+  when: not iommu_work_needed | bool
+  ansible.builtin.debug:
+    msg: >-
+      {{ iommu_kernel_args | join(' ') }} already on every node and
+      {{ machine_config_name }} is in place. Nothing to apply, and no reboot.
+
+- name: Report what will be rebooted
+  when: iommu_work_needed | bool
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('nodes without the arguments: ' ~ (iommu_nodes_missing | join(', ')))
+         if iommu_nodes_missing | length > 0
+         else (machine_config_name ~ ' is missing, so it will be recreated') }}.
+      Applying it reboots the {{ target_mcp }} pool one node at a time.
+
 # Read before the apply, so the wait can tell a real re-render from the old
 # target still being reported.
 - name: Read the pool's rendered config before changing anything
@@ -79,6 +147,7 @@
   failed_when: false
 
 - name: Enable the IOMMU on the control-plane nodes
+  when: iommu_work_needed | bool
   kubernetes.core.k8s:
     kubeconfig: "{{ op_kubeconfig | default(kubeconfig) }}"
     state: present
@@ -97,12 +166,14 @@
 # running on a single control-plane node for part of it, so it is worth doing
 # before anything is deployed on top rather than after.
 - name: Wait for the MachineConfig rollout
+  when: iommu_work_needed | bool
   ansible.builtin.include_tasks: wait-mcp.yml
   vars:
     required_machine_config: "{{ machine_config_name }}"
     # Only when this run actually changed the MachineConfig. Passing it on an
     # unchanged re-run would wait for a re-render that will never happen.
-    previous_rendered_config: "{{ mcp_before.stdout | default('') if iommu_mc.changed else '' }}"
+    previous_rendered_config: >-
+      {{ mcp_before.stdout | default('') if iommu_mc.changed | default(false) else '' }}
 
 - name: Label each node with its GPU workload mode
   kubernetes.core.k8s:
