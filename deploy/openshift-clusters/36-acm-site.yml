@@ -63,6 +63,17 @@
       vars:
         op_kubeconfig: "{{ acm_kubeconfig }}"
 
+    # OpenShift Virtualization is installed on this hub above, which gives its
+    # own console a Virtualization section. The *fleet* view is a different
+    # thing and depends on Search, so that is made explicit rather than left to
+    # a default.
+    - name: Make sure the fleet virtualization view will work
+      ansible.builtin.include_role:
+        name: acm
+        tasks_from: virtualization
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+
     - name: Give ACM a credential for the TNF infra cluster across the peering
       ansible.builtin.include_role:
         name: sno-cluster

@@ -113,6 +113,28 @@
   delay: 20
   until: managed_available.stdout == "True"
 
+# The fleet virtualization view lists VirtualMachines that this addon reports
+# to the hub's Search. Without it the cluster is managed but its VMs are
+# invisible, which looks like a console fault rather than a missing addon.
+- name: "Wait for {{ import_cluster_name }}'s search collector to be available"
+  ansible.builtin.command: >-
+    oc get managedclusteraddon search-collector -n {{ import_cluster_name }}
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: search_addon
+  changed_when: false
+  failed_when: false
+  retries: 30
+  delay: 20
+  until: search_addon.stdout == "True"
+
 - name: "Report {{ import_cluster_name }}"
   ansible.builtin.debug:
-    msg: "{{ import_cluster_name }} is imported into the hub and reporting Available."
+    msg:
+      - "{{ import_cluster_name }} is imported into the hub and reporting Available."
+      - >-
+        search-collector {{ 'is available, so its VirtualMachines appear in the
+        fleet virtualization view' if search_addon.stdout == 'True'
+        else 'is not available yet; its VMs will not show in the fleet view
+        until it is' }}.

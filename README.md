@@ -78,7 +78,7 @@ rather than starting over.
 | `make iommu` | optional — checks the IOMMU and applies nothing on a cluster this repo built | seconds |
 | `make gpu` | NFD + NVIDIA GPU Operator on the base cluster | 10 min |
 | `make virt-mce` | LVM Storage, OpenShift Virtualization, MultiCluster Engine | 15 min |
-| `make acm-site` | single-node OpenShift at the ACM site, then ACM on it, then import TNF into the hub | 56 min |
+| `make acm-site` | single-node OpenShift at the ACM site, then OpenShift Virtualization and ACM on it, then import TNF into the hub | 56 min |
 | `make hcp-make-guests-from-acm` | guest clusters created by ACM: control plane as pods on the hub, worker VMs and GPUs on TNF | 40 min |
 | `make guest-gpu` | NFD + GPU Operator inside each guest | 33 min |
 

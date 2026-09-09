@@ -269,3 +269,28 @@ ISO. Without it, the ordinary flow emits `bootstrap.ign` and a 1.7 KiB
 ignition pointer in user-data. Both variants were checked against the 4.22.10
 installer before choosing; reusing the existing launch path was worth more than
 matching the canonical SNO recipe.
+
+## The fleet virtualization view
+
+The ACM console lists `VirtualMachine` resources across every managed cluster.
+It is worth knowing what that actually depends on, because none of it is the
+hub running virtual machines:
+
+| | |
+|---|---|
+| OpenShift Virtualization | on the clusters being **managed** — TNF, where the VMs run |
+| Search, on the hub | what lists the VMs it finds there |
+| `search-collector` addon | on each managed cluster, reporting to that Search |
+| the cluster imported | a cluster ACM does not manage contributes nothing |
+
+`make acm-site` sets all four up and checks the last three, because the symptom
+of any of them missing is the same empty page.
+
+OpenShift Virtualization is installed on the hub as well, which is what puts a
+Virtualization section in the hub's own console. The hub runs no VMs — it is one
+node, and the GPUs and the guest workers are all on TNF — so that section shows
+its own empty inventory. The fleet view is the one with the VMs in it.
+
+Actions on those VMs — start, stop, restart, snapshot — used to need enabling.
+That toggle was deprecated in ACM 2.14 in favour of fine-grained RBAC, so there
+is nothing to switch on for them in 2.17.
