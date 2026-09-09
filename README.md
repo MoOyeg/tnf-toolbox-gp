@@ -43,13 +43,25 @@ so a GPU travels exactly one hop — host PCI device → guest worker VM.
 
 ```bash
 cp config/instance.env.template config/instance.env
-$EDITOR config/instance.env                       # AZ, key pair name, BMC password
-cp ~/Downloads/pull-secret.json config/
+$EDITOR config/instance.env
+cp ~/Downloads/pull-secret.json config/           # must be config/pull-secret.json
 
 cd deploy/
 make doctor        # read-only preflight -- run this first, it is cheap
-make all           # about three hours, mostly waiting
+make all           # about three and a half hours, mostly waiting
 ```
+
+Four things in `instance.env` need attention; the rest have working defaults:
+
+| | |
+|---|---|
+| `REGION` / `AVAILABILITY_ZONE` | must agree, and `g4dn.metal` has to be offered there — `make doctor` checks both |
+| `SSH_KEY_NAME` | the EC2 key pair. It does not have to exist: `make keypair` creates it, and the local key alongside it |
+| `BMC_PASSWORD` | ships as `CHANGE-ME`, which `make doctor` rejects. It is the password Pacemaker fences with |
+| `ALLOWED_SSH_CIDR` | ships as `0.0.0.0/0`. Narrow it to your own address |
+
+`BASE_DOMAIN` is left blank on purpose — it is filled from the account's public
+Route53 zone, so a sandbox that hands you a new domain needs no edit.
 
 `make all` runs the stages below in order. Each is independently re-runnable and
 idempotent, so a failure part-way through is resumed by re-running that stage

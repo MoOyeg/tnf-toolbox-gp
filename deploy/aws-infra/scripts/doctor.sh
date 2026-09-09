@@ -28,8 +28,11 @@ fi
 
 [ -f "${PULL_SECRET_PATH}" ] && ok "pull secret at ${PULL_SECRET_PATH}" \
   || bad "pull secret missing at ${PULL_SECRET_PATH}"
+# A warning rather than a failure: 'make keypair' creates this, and it runs
+# first in 'make all'. Failing here would mean doctor -- the thing the README
+# tells you to run before anything else -- rejects every fresh checkout.
 [ -f "${SSH_PRIVATE_KEY}" ] && ok "ssh private key ${SSH_PRIVATE_KEY}" \
-  || bad "ssh private key missing at ${SSH_PRIVATE_KEY}"
+  || warn "no ssh private key at ${SSH_PRIVATE_KEY} yet; 'make keypair' creates it"
 [ "${BMC_PASSWORD}" = "CHANGE-ME" ] && bad "BMC_PASSWORD is still the placeholder" \
   || ok "BMC_PASSWORD set"
 [ "${ALLOWED_SSH_CIDR}" = "0.0.0.0/0" ] && warn "ALLOWED_SSH_CIDR is 0.0.0.0/0" \
