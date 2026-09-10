@@ -133,7 +133,7 @@ NODE:.metadata.name,T4:.status.allocatable.'nvidia\.com/TU104GL_TESLA_T4'
 The real test is inside a guest cluster, where the T4 is an ordinary PCI device:
 
 ```bash
-export KUBECONFIG=deploy/clusters/acm/vcp-1.kubeconfig
+export KUBECONFIG=deploy/clusters/acm/hcp-1.kubeconfig
 oc run cuda-check --rm -it --restart=Never \
   --image=nvcr.io/nvidia/cuda:12.4.1-base-ubi9 \
   --overrides='{"spec":{"containers":[{"name":"cuda-check",

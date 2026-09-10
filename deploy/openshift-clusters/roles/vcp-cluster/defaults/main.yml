@@ -33,7 +33,12 @@ vcp_cp_cores: 8
 vcp_cp_memory: 20Gi
 vcp_worker_cores: 8
 vcp_worker_memory: 24Gi
-vcp_root_disk: 120Gi
+# 64Gi was too small and evicted builds: a worker carries ~25GiB of platform
+# images before the app arrives, and the app adds a 6.6GiB analyzer, a 12.2GiB
+# vLLM and roughly 20GiB of transient space while the analyzer image is built.
+# The volumes are thin-provisioned (lvms thin-pool-1, overprovision 10), so the
+# ceiling costs nothing until it is written into.
+vcp_root_disk: 200Gi
 
 # GPUs go to the workers only. Control-plane VMs run nothing worth a T4, and
 # passing one through would take it out of the pool for nothing.

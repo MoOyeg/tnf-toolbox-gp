@@ -24,7 +24,7 @@ to the operator that will reconcile them.
 
 ```bash
 hcp create cluster kubevirt \
-  --name vcp-1 --namespace clusters \
+  --name hcp-1 --namespace clusters \
   --release-image quay.io/openshift-release-dev/ocp-release:4.22.0-x86_64 \
   --pull-secret ~/clusters/tnf-gp/pull-secret.json \
   --node-pool-replicas 1 \
@@ -60,7 +60,7 @@ GUEST_CLUSTER_COUNT x GUEST_NODEPOOL_REPLICAS x GUEST_GPUS_PER_NODE
 After each cluster, it proves the GPU actually arrived, from inside the guest:
 
 ```bash
-oc --kubeconfig ~/clusters/tnf-gp/guests/vcp-1.kubeconfig \
+oc --kubeconfig ~/clusters/tnf-gp/guests/hcp-1.kubeconfig \
   debug node/<worker> -- chroot /host lspci -d 10de: -nn
 ```
 
@@ -156,9 +156,9 @@ To resize, change `GUEST_*` in `config/instance.env`, then
 ```bash
 oc get hostedcluster -n clusters
 oc get nodepool -n clusters
-oc get vmi -n clusters-vcp-1                 # the worker VMs
-oc get pods -n clusters-vcp-1                # the guest's control plane
-oc get vmi -n clusters-vcp-1 -o yaml | grep -A5 hostDevices
+oc get vmi -n clusters-hcp-1                 # the worker VMs
+oc get pods -n clusters-hcp-1                # the guest's control plane
+oc get vmi -n clusters-hcp-1 -o yaml | grep -A5 hostDevices
 ```
 
 The last one is the direct answer to "did this guest really get a GPU".

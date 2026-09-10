@@ -6,6 +6,18 @@ op_kubeconfig: ""
 guest_workdir: "{{ install_dir }}"
 nodepool_timeout: 3600
 
+# Each worker VM's root disk, and so the whole filesystem of a guest node.
+# GUEST_VM_ROOT_DISK in config/instance.env is passed as an extra var and wins
+# over this; the default is here so a direct ansible-playbook run still gets a
+# workable size rather than failing on an undefined variable.
+#
+# 64Gi was too small and evicted builds: a worker carries ~25GiB of platform
+# images before the app arrives, and the app adds a 6.6GiB analyzer, a 12.2GiB
+# vLLM and roughly 20GiB of transient space while the analyzer image is built.
+# The volumes are thin-provisioned (lvms thin-pool-1, overprovision 10), so the
+# ceiling costs nothing until it is written into.
+guest_vm_root_disk: 200Gi
+
 # The node address the guest's control-plane services are published on. It must
 # be a node of the cluster hosting the control plane, reachable from the guest's
 # worker VMs -- which run on TNF while the control plane runs on the ACM hub, so
