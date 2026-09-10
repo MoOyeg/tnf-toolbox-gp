@@ -12,6 +12,14 @@ spec:
   # independently -- it marks itself ProgressDeadlineExceeded and every
   # 'oc rollout status' fails, however generous its own --timeout was.
   progressDeadlineSeconds: 3600
+  # Recreate, not the default RollingUpdate. The model volume is
+  # ReadWriteOnce, so a replacement pod scheduled to a different node cannot
+  # attach it while the outgoing pod still holds it -- and RollingUpdate will
+  # not release the outgoing pod until the replacement is Ready. The two wait
+  # on each other until the progress deadline expires. Recreate takes the old
+  # pod down first, which costs a few seconds of downtime and is the only
+  # arrangement that can actually complete.
+  strategy: {type: Recreate}
   selector:
     matchLabels: {app.kubernetes.io/name: analyzer}
   template:
