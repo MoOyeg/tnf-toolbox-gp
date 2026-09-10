@@ -12,6 +12,17 @@ enough to be a separate repository: upstream runs the cluster as VMs on a
 hypervisor instance, and this runs it on the metal so the GPUs are real PCI
 devices on the OpenShift nodes.
 
+## Architecture
+
+![Architecture](docs/architecture.drawio.svg)
+
+Two peered AWS sites and one guest cluster that straddles them: its control
+plane runs as pods on the ACM hub, its worker VMs run on TNF with real T4s
+passed into them, and the inspection app runs inside the guest on those GPUs.
+The file is an editable draw.io diagram as well as an image — open
+[docs/architecture.drawio.svg](docs/architecture.drawio.svg) in
+[diagrams.net](https://app.diagrams.net) or the VS Code draw.io extension.
+
 ## What it builds
 
 ```
@@ -112,6 +123,26 @@ A hosted control plane is cheaper — it is pods, and it shares the hub's etcd
 machinery. A standalone one costs three more VMs before a single workload runs,
 and in exchange it survives the hub going away.
 
+## The application
+
+[`app/`](app/) is what the stack is for: a GPU visual inspection pipeline that
+scores every frame of simulated production-line cameras on one T4 and asks a
+vision-language model on a second what is wrong with the frames it flags.
+[`app/README.md`](app/README.md) covers the design and the T4 constraints that
+shaped it.
+
+```bash
+cd deploy/ && make app
+```
+
+Not in `make all`, because it is the payload rather than the platform. It goes
+into every guest cluster, which is the only place it can run: TNF's own T4s are
+bound to `vfio-pci` for passthrough and advertise no `nvidia.com/gpu` at all, so
+its pods would sit Pending there. Inside a guest the passed-through T4 is an
+ordinary PCI device, which is what `make guest-gpu` arranges -- so run that
+first. The images are built by the guest cluster itself from `app/`, straight
+into its own internal registry.
+
 **`make iommu` is optional now.** `make tnf` writes the IOMMU MachineConfig
 into the install manifests, so both nodes boot with `intel_iommu=on iommu=pt`
 and there is no rollout to survive. On a cluster built by this repo the stage
@@ -204,8 +235,8 @@ deploy/clusters/
 ├── access.md                     <- start here
 ├── tnf-gp/{kubeconfig,kubeadmin-password}
 └── acm/{kubeconfig,kubeadmin-password}
-    ├── vcp-1.kubeconfig, vcp-1-kubeadmin-password
-    └── vcp-2.kubeconfig, vcp-2-kubeadmin-password
+    ├── hcp-1.kubeconfig, hcp-1-kubeadmin-password
+    └── hcp-2.kubeconfig, hcp-2-kubeadmin-password
 ```
 
 Guest credentials live under the hub that created them, because that is where
@@ -303,6 +334,8 @@ your AZ at all.
 ## Repository layout
 
 ```
+app/                     the visual inspection app: camera-sim, analyzer,
+                         dashboard, manifests, and the curated VisA frames
 config/                  instance.env + pull secret (both gitignored)
 deploy/
   aws-infra/             CloudFormation and the stack lifecycle scripts
@@ -311,7 +344,8 @@ deploy/
     scripts/             create, destroy, doctor, status, inventory, ssh
   openshift-clusters/    Ansible: the numbered stages, plus teardown
     roles/               one role per layer, reused across sites and guests
-docs/                    architecture, fencing, GPU allocation, guest clusters
+docs/                    architecture, fencing, GPU allocation, guest clusters,
+                         the app redesign, and the editable diagram
 hack/                    lint and static template checks
 tools/redfish-ec2/       the Redfish → EC2 fencing shim, with unit tests
 ```
@@ -319,6 +353,44 @@ tools/redfish-ec2/       the Redfish → EC2 fencing shim, with unit tests
 Ansible targets exactly one host, the bastion. It is inside the VPC and so the
 only host that can resolve `api-int` through the private hosted zone, which
 means it is the only host that can drive an install.
+
+## Current status
+
+Built and running against real hardware. What exists today, and what is known
+to be unfinished:
+
+| | State |
+|---|---|
+| TNF two-node cluster, fencing, GPU passthrough | working |
+| ACM hub (2.17) on its own site, TNF imported | working |
+| Guest cluster `hcp-1` — hosted control plane, 3 worker VMs, 2 T4 each | working |
+| Visual inspection app — real VisA imagery, EfficientAD, per-camera GPU accounting | **working, mis-calibrated** |
+| MultiCluster Observability, right-sizing, Perses, custom dashboard | **written, not deployed** |
+
+**The app runs and the GPU is genuinely loaded** — four cameras at ~20.6 ms a
+frame, each holding roughly a quarter of one T4, the device at ~75-88%. That is
+the throughput the detector was chosen for, and it also says four cameras is
+about the ceiling for one analyzer on one card.
+
+**Its verdicts are not yet trustworthy.** Every camera currently reads FAIL,
+scoring 0.37-0.46 against a threshold fitted at 0.28. The detector is
+under-fitted rather than the parts being defective, so the threshold derived
+from its own view of "normal" sits below where normal actually lands. The
+plan and the open questions are in
+[docs/visual-inspection-redesign.md](docs/visual-inspection-redesign.md).
+
+**Observability is written but has never run.** `make observability-bucket`
+plus the `observability` role add MultiCluster Observability on S3, both
+right-sizing capabilities, the Perses UI and a GPU/application dashboard. Two
+things are known to be missing before the dashboard can have data: the guest
+cluster has no user-workload monitoring and no `ServiceMonitor`, so nothing
+scrapes the analyzer yet.
+
+Two deliberate departures from the documented path, both recorded where the
+code is: the hub backs Thanos with **real AWS S3** rather than ODF/Noobaa
+(there is no ODF on a single-node hub already carrying ACM, MCE and CNV), and
+it uses a **local-volume storage class** for Thanos' own PVCs, which the ACM
+docs advise against — on a single node there is nowhere else to reschedule to.
 
 ## What is verified, and what is not
 
@@ -371,3 +443,8 @@ and the NVIDIA GPU Operator inside the guest refuses to start. See
   detail
 - [docs/deploy-log.md](docs/deploy-log.md) — what actually broke on real
   hardware, and what fixed it
+- [docs/visual-inspection-redesign.md](docs/visual-inspection-redesign.md) —
+  the app's design: VisA imagery, EfficientAD, per-camera GPU accounting, and
+  the open questions
+- [docs/architecture.drawio.svg](docs/architecture.drawio.svg) — the diagram
+  above, editable in draw.io

@@ -3,7 +3,7 @@ ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 .PHONY: all keypair infra acm-infra peering tnf kubeconfig iommu gpu virt-mce \
         tnf-recover \
         acm-site guests hcp-make-guests-from-acm vcp-make-guests-from-acm \
-        guest-gpu doctor ssh acm-ssh status \
+        guest-gpu app observability-bucket doctor ssh acm-ssh status \
         inventory clean clean-guests destroy destroy-acm help
 
 # ---------------------------------------------------------------- end to end
@@ -59,7 +59,13 @@ peering:
 	@./aws-infra/scripts/create-peering.sh
 
 # The ACM cluster itself: single-node OpenShift on bare metal at the ACM site.
-acm-site:
+# The S3 bucket and scoped IAM user that MultiClusterObservability keeps its
+# Thanos blocks in. Separate from acm-site because it is AWS, not Ansible, and
+# because losing the bucket would lose the metric history.
+observability-bucket:
+	@./aws-infra/scripts/create-observability-bucket.sh
+
+acm-site: observability-bucket
 	@$(ANSIBLE) 36-acm-site.yml $(EXTRA_ARGS)
 
 # Guests hosted by TNF's own MultiCluster Engine.
@@ -80,6 +86,9 @@ vcp-make-guests-from-acm:
 
 guest-gpu:
 	@$(ANSIBLE) 50-guest-gpu.yml $(EXTRA_ARGS)
+
+app:
+	@$(ANSIBLE) 60-app.yml $(EXTRA_ARGS)
 
 # ---------------------------------------------------------------- utilities
 doctor:
@@ -132,6 +141,7 @@ help:
 	@echo "  make acm-infra     - the ACM site: its own VPC, subnet, DNS and bastion"
 	@echo "  make peering       - VPC peering between the two sites, plus routes and"
 	@echo "                       cross-VPC DNS so each resolves the other privately"
+	@echo "  make observability-bucket - S3 + scoped IAM user for the hub's Thanos"
 	@echo "  make acm-site      - the ACM cluster: single-node OpenShift on bare metal"
 	@echo "                       at the ACM site, plus OCP-V, ACM, and the credential"
 	@echo "                       that lets it drive TNF as its infra cluster"
@@ -139,6 +149,8 @@ help:
 	@echo "  make hcp-make-guests-from-acm - hosted control planes: CP pods on the hub, worker VMs on TNF"
 	@echo "  make vcp-make-guests-from-acm - full clusters on VMs: control-plane VMs and worker VMs on TNF"
 	@echo "  make guest-gpu     - NFD + GPU Operator inside each guest cluster"
+	@echo "  make app           - build and deploy the visual inspection app in"
+	@echo "                       each guest cluster (needs 2 GPUs per guest)"
 	@echo ""
 	@echo "Utilities:"
 	@echo "  make doctor        - read-only preflight (run this first)"
