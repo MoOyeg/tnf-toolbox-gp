@@ -1,0 +1,67 @@
+---
+# Stage 6: the predictive visual inspection app, inside every guest cluster.
+#
+# The guest is the only place it can run. TNF's own T4s are bound to vfio-pci so
+# they can be passed into VMs, and a node in that mode advertises no
+# nvidia.com/gpu at all -- the analyzer and vLLM pods would sit Pending there
+# forever. Inside the guest the passed-through T4 is an ordinary PCI device that
+# the GPU Operator advertises normally, which is what stage 5 arranged. See
+# docs/gpu-allocation.md.
+#
+# Both bastions, for the same reason 50-guest-gpu uses both: guest kubeconfigs
+# live wherever the hub that created them lives. A bastion with no guests
+# contributes an empty loop.
+- name: Deploy the visual inspection app into the guest clusters
+  hosts: bastion:acm_bastion
+  gather_facts: true
+  environment:
+    # The fallback must list the system sbin directories. A play's
+    # environment: applies to the implicit fact gathering too, so on that first
+    # task ansible_env is still undefined and the default is what PATH becomes
+    # -- and the setup module then reports *that* as ansible_env.PATH for every
+    # task after it. A short fallback silently loses /usr/sbin for the whole
+    # play, and tools like haproxy stop being found.
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+
+  tasks:
+    - name: Find the guest kubeconfigs
+      ansible.builtin.find:
+        paths: "{{ guest_kubeconfig_dir }}"
+        patterns: "*.kubeconfig"
+      register: guest_kubeconfigs
+
+    - name: Record how many guest kubeconfigs this bastion holds
+      ansible.builtin.set_fact:
+        guest_kubeconfig_count: "{{ guest_kubeconfigs.files | length }}"
+
+    # Checked across both bastions rather than per host: finding none on TNF is
+    # the normal case when ACM created the guests, and vice versa.
+    - name: Fail if no guest clusters exist at either site
+      ansible.builtin.assert:
+        that:
+          - ansible_play_hosts | map('extract', hostvars, 'guest_kubeconfig_count') | map('int') | sum > 0
+        fail_msg: >-
+          No guest kubeconfigs under {{ guest_kubeconfig_dir }} on either bastion.
+          Run 'make hcp-make-guests-from-acm' and then 'make guest-gpu' -- the app
+          needs nvidia.com/gpu inside the guest, which is what that stage
+          arranges.
+      run_once: true
+
+    # After the assert, so a run with no guests anywhere fails before it copies
+    # anything; and only where there are guests, because the other site's
+    # bastion has no use for the source.
+    - name: Stage the application source on the bastion
+      when: guest_kubeconfig_count | int > 0
+      ansible.builtin.include_role:
+        name: app
+        tasks_from: source
+
+    - name: Deploy the app into each guest cluster
+      ansible.builtin.include_role:
+        name: app
+      vars:
+        op_kubeconfig: "{{ guest_kubeconfig }}"
+      loop: "{{ guest_kubeconfigs.files | map(attribute='path') | list }}"
+      loop_control:
+        loop_var: guest_kubeconfig
+        label: "{{ guest_kubeconfig | basename }}"

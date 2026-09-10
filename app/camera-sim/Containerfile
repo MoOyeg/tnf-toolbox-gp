@@ -1,0 +1,59 @@
+# The simulated cameras: real photographs of real parts, published over RTSP.
+#
+# Multi-stage on purpose. The still images are only needed to encode the line
+# video, and they are the bulk of the build context -- copying them into the
+# runtime image would carry tens of megabytes that nothing ever opens again.
+# The builder keeps the photographs; the runtime image keeps the video.
+
+FROM registry.access.redhat.com/ubi9/ubi-minimal:latest AS base
+
+# ffmpeg is not in the UBI repos; the static build is the usual source.
+#
+# The releases are named amd64/arm64, not the spellings uname -m uses, so
+# $(uname -m) interpolated straight into the URL is a 404 on every
+# architecture -- hence the mapping rather than the obvious one-liner.
+RUN microdnf install -y --nodocs tar xz procps-ng \
+ && microdnf clean all \
+ && case "$(uname -m)" in \
+      x86_64)  ARCH=amd64 ;; \
+      aarch64) ARCH=arm64 ;; \
+      *) echo "no ffmpeg static build for $(uname -m)" >&2; exit 1 ;; \
+    esac \
+ && curl -fsSL "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-${ARCH}-static.tar.xz" \
+      -o /tmp/ffmpeg.tar.xz \
+ && tar -xJf /tmp/ffmpeg.tar.xz -C /tmp \
+ && mv /tmp/ffmpeg-*-static/ffmpeg /usr/local/bin/ffmpeg \
+ && mv /tmp/ffmpeg-*-static/ffprobe /usr/local/bin/ffprobe \
+ && rm -rf /tmp/ffmpeg*
+
+# ---------------------------------------------------------------- encode
+FROM base AS builder
+
+COPY camera-sim/frames /opt/frames
+COPY camera-sim/build-line-video.sh /usr/local/bin/build-line-video.sh
+RUN chmod 0755 /usr/local/bin/build-line-video.sh
+
+# One video per category present. Failing loudly on an empty frames/ is
+# deliberate: an image that builds but publishes nothing is a worse outcome
+# than a build that stops and says the subset is missing.
+RUN set -eu; \
+    found=0; \
+    for d in /opt/frames/*/; do \
+      [ -d "${d}" ] || continue; \
+      c="$(basename "${d}")"; \
+      FRAMES_DIR=/opt/frames /usr/local/bin/build-line-video.sh "${c}" "/opt/line-${c}.mp4"; \
+      found=$((found + 1)); \
+    done; \
+    [ "${found}" -gt 0 ] || { echo "no categories under frames/ -- run curate-visa.sh first" >&2; exit 1; }
+
+# ---------------------------------------------------------------- runtime
+FROM base
+
+COPY --from=builder /opt/line-*.mp4 /opt/
+COPY --from=builder /opt/line-*.cues /opt/
+COPY camera-sim/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
+
+# OpenShift assigns an arbitrary uid; nothing here needs a real user.
+USER 1001
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

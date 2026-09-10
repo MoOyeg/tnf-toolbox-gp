@@ -1,0 +1,23 @@
+# torch and torchvision come from the CUDA base image. anomalib 2.6.1 requires
+# torch>=2.6.0, which is why the base moved off pytorch 2.5.1.
+anomalib==2.6.1
+
+# NVML, for the device's own view of itself. DCGM is not an option here: on the
+# TNF nodes the GPUs are bound to vfio-pci for passthrough, so the GPU
+# Operator's dcgm-exporter has no pods on them at all.
+nvidia-ml-py==13.610.43
+
+# numpy 2, not the 1.26 this file used to pin: anomalib declares no numpy
+# constraint but resolves to 2.x, and pinning 1.26 underneath it downgrades a
+# dependency the rest of the stack was built against.
+#
+# A range rather than an exact pin, deliberately. This was first pinned to the
+# 2.5.3 that validation resolved to -- on a Python 3.12 workstation. The CUDA
+# base image is Python 3.11, numpy 2.5 is 3.12-only, and the build failed with
+# "No matching distribution". Pinning what a different interpreter resolved to
+# is how that happens; the constraint that actually matters here is major 2.
+numpy>=2,<3
+opencv-python-headless==4.10.0.84
+requests==2.32.3
+prometheus-client==0.21.0
+flask==3.0.3

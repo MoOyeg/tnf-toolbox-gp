@@ -1,0 +1,37 @@
+# CUDA runtime base: the fast path scores frames on the GPU, and this is the
+# smallest image that gives torch a working CUDA runtime. Overridable, because
+# a cluster without egress to docker.io will want a mirror.
+#
+# 2.6.0 rather than the 2.5.1 this used to be: anomalib 2.6.1 requires
+# torch>=2.6.0. It is deliberately the *lowest* version that satisfies that,
+# not the newest available -- the cards here are T4s, and every step forward is
+# another chance that a build has dropped Turing (sm_75) from its kernels.
+ARG BASE=docker.io/pytorch/pytorch:2.6.0-cuda12.4-cudnn9-runtime
+FROM ${BASE}
+
+# opencv needs these even in the headless build.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY analyzer/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY analyzer/analyzer.py analyzer/detector.py analyzer/gpu.py ./
+
+# The good parts the model is fitted on. Only the normal frames: EfficientAD
+# learns from good examples alone, so the defective ones would be dead weight
+# here -- they arrive over RTSP like anything else.
+#
+# Both categories ship, so switching CATEGORY is a redeploy rather than a
+# rebuild. The build context is the whole app/ tree, which is what lets this
+# reach the frames the cameras also use -- one copy, not two.
+COPY camera-sim/frames/pcb1/normal      /train/pcb1/normal
+COPY camera-sim/frames/capsules/normal  /train/capsules/normal
+
+# OpenShift runs this with an arbitrary uid in the root group, so anything it
+# writes has to be group-writable.
+RUN chgrp -R 0 /app /train && chmod -R g=u /app /train
+USER 1001
+EXPOSE 8080
+CMD ["python", "analyzer.py"]

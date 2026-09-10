@@ -11,3 +11,22 @@ workflow, and Ansible role conventions were modelled on:
 No source is vendored from that project; the structure was reimplemented for a
 different target (AWS g4dn.metal bare metal, GPU passthrough, ACM + virtualized
 control planes). Credit for the original design belongs to its authors.
+
+--------------------------------------------------------------------------
+
+app/camera-sim/frames/ contains a curated, resized subset of the VisA dataset:
+
+    VisA (Visual Anomaly)
+    Amazon Science -- https://github.com/amazon-science/spot-diff
+    Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0)
+    https://creativecommons.org/licenses/by/4.0/
+
+    Y. Zou, J. Jeong, L. Pemula, D. Zhang, O. Dabeer,
+    "SPot-the-Difference Self-Supervised Pre-training for Anomaly Detection
+    and Segmentation", ECCV 2022.
+
+The frames carried here are 220 images from the pcb1 and capsules categories,
+resized to fit 1280x720 and re-encoded as JPEG. They are otherwise unmodified.
+The selection is reproducible with app/camera-sim/curate-visa.py; the full
+dataset is not vendored. CC BY 4.0 permits this use, including commercially,
+provided attribution is given -- which is the purpose of this notice.

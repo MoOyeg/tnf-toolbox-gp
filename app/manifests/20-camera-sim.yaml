@@ -1,0 +1,36 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: camera-sim
+  labels: {app.kubernetes.io/name: camera-sim, app.kubernetes.io/part-of: inspection}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: camera-sim}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: camera-sim}
+    spec:
+      containers:
+        - name: camera-sim
+          image: REPLACED_BY_KUSTOMIZE/camera-sim:latest
+          env:
+            - {name: RTSP_HOST, value: rtsp-server}
+            - {name: CAMERAS, value: "4"}
+            # Which line is running. Both categories are encoded into the image
+            # at build time, so switching is a redeploy rather than a rebuild.
+            # VIDEO is deliberately unset: the entrypoint derives it from
+            # CATEGORY, and pinning a path here is how it ends up pointing at a
+            # file the image does not contain.
+            - {name: CATEGORY, value: pcb1}
+          resources:
+            requests: {cpu: 200m, memory: 256Mi}
+            limits: {cpu: "4", memory: 2Gi}
+          volumeMounts:
+            - {name: videos, mountPath: /videos}
+      volumes:
+        # Drop an mp4 in here to inspect real footage instead of the synthetic
+        # line; the entrypoint prefers it when present.
+        - name: videos
+          emptyDir: {}

@@ -1,0 +1,78 @@
+---
+# Put app/ on the bastion, once per bastion.
+#
+# Everything downstream works from app_workdir rather than from the repository
+# path, so where the application is kept is this file's business alone.
+
+- name: Check the application source is where the configuration says
+  ansible.builtin.stat:
+    path: "{{ app_source_dir }}/manifests"
+  delegate_to: localhost
+  run_once: true
+  register: app_source_stat
+
+# Named separately from the stat so the failure message can show the path that
+# was actually looked at, which is the only thing worth knowing here.
+- name: Fail if the application source is missing
+  ansible.builtin.assert:
+    that: app_source_stat.stat.exists
+    fail_msg: >-
+      No application source at {{ app_source_dir }} -- expected a manifests/
+      directory under it. app/ is part of this repository, so a missing one
+      means an incomplete checkout rather than something to configure.
+  run_once: true
+
+- name: Make a place to stage the source
+  ansible.builtin.tempfile:
+    suffix: .tar.gz
+  delegate_to: localhost
+  run_once: true
+  register: app_tarball
+
+# tar rather than synchronize: rsync would have to be told about the inventory's
+# ssh arguments, and tar needs nothing that is not on both ends already. The
+# excludes matter -- .git is most of the checkout, and a generated line.mp4 is
+# tens of megabytes that the container builds for itself anyway.
+- name: Pack the application source
+  ansible.builtin.command:
+    cmd: >-
+      tar czf {{ app_tarball.path }}
+      --exclude=.git --exclude=*.mp4 --exclude=__pycache__
+      -C {{ app_source_dir | dirname }} {{ app_source_dir | basename }}
+  delegate_to: localhost
+  run_once: true
+  changed_when: true
+
+- name: Create the application directory on the bastion
+  ansible.builtin.file:
+    path: "{{ app_workdir }}"
+    state: directory
+    mode: '0700'
+
+- name: Copy the source archive to the bastion
+  ansible.builtin.copy:
+    src: "{{ app_tarball.path }}"
+    dest: "{{ app_workdir }}/source.tar.gz"
+    mode: '0600'
+
+- name: Unpack it
+  ansible.builtin.unarchive:
+    src: "{{ app_workdir }}/source.tar.gz"
+    dest: "{{ app_workdir }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]
+
+- name: Remove the local archive
+  ansible.builtin.file:
+    path: "{{ app_tarball.path }}"
+    state: absent
+  delegate_to: localhost
+  run_once: true
+
+# deploy.yml runs the app's own Makefile rather than reimplementing it, and the
+# bastion image does not ship make.
+- name: Make sure make is installed
+  ansible.builtin.package:
+    name: make
+    state: present
+  become: true

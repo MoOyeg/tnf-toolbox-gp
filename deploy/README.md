@@ -46,6 +46,7 @@ Not in `make all`:
 | `make guests` | `40-hcp-guests.yml` | guests hosted by TNF's own MCE instead of ACM |
 | `make vcp-make-guests-from-acm` | `41-vcp-clusters-from-acm.yml` | a whole cluster on VMs, control plane included |
 | `make tnf-recover` | `16-tnf-recover.yml` | a TNF pair that did not re-form after a reboot |
+| `make app` | `60-app.yml` | the visual inspection app, in every guest cluster |
 
 Each is re-runnable. `make tnf` skips the install if `auth/kubeconfig` already
 exists on the bastion, but still reapplies the Pacemaker timeouts — which is

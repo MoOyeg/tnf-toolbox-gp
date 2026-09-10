@@ -1,0 +1,115 @@
+---
+# Build camera-sim, analyzer and dashboard inside the guest cluster.
+#
+# A binary build rather than podman on the bastion. The images have to end up in
+# the cluster's own registry, and pushing there from outside means exposing the
+# registry route, trusting its certificate and holding a token -- three things
+# that can rot independently. new-build pushes to the internal registry as
+# <registry>/<namespace>/<name>:latest, which is exactly what REGISTRY resolves
+# to in the app's manifests, so the two agree without either being told about
+# the other. It also needs nothing on the bastion but oc.
+
+- name: "{{ app_label }}: create a build for each image"
+  ansible.builtin.command: >-
+    oc -n {{ app_namespace }} new-build --binary --strategy=docker --name={{ item }}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  loop: "{{ app_images }}"
+  register: app_new_build
+  changed_when: app_new_build.rc == 0
+  # new-build has no --dry-run worth using and no way to say "if absent", so a
+  # second run is expected to collide. Anything else is a real failure.
+  failed_when:
+    - app_new_build.rc != 0
+    - '"already exists" not in app_new_build.stderr'
+
+# The app names its build files Containerfile. The docker strategy looks for a
+# Dockerfile and fails the build on "no Dockerfile" otherwise -- after uploading
+# the context, so it looks like a build failure rather than a naming one.
+- name: "{{ app_label }}: give each build a Containerfile path and room to run"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: patched
+    api_version: build.openshift.io/v1
+    kind: BuildConfig
+    name: "{{ item }}"
+    namespace: "{{ app_namespace }}"
+    definition:
+      spec:
+        strategy:
+          dockerStrategy:
+            # Relative to the build context, which is the whole app/ tree --
+            # see the start-build below.
+            dockerfilePath: "{{ item }}/Containerfile"
+        resources:
+          requests:
+            ephemeral-storage: "{{ app_build_ephemeral_storage }}"
+            memory: "{{ app_build_memory }}"
+  loop: "{{ app_images }}"
+
+# --wait makes a failed build a failed task; without it start-build returns as
+# soon as the build is queued and the first thing to notice is a Deployment
+# waiting for an image that never arrived.
+# The context is app/ itself, not app/<component>/. The analyzer is fitted on
+# the same frames the cameras publish, and one shared context is what lets both
+# images COPY them without the repository carrying two copies. It costs a larger
+# upload per build, which is cheaper than the duplication would be.
+- name: "{{ app_label }}: run the builds"
+  block:
+    - name: "{{ app_label }}: start each build and wait for it"
+      ansible.builtin.command: >-
+        oc -n {{ app_namespace }} start-build {{ item }}
+        --from-dir={{ app_workdir }} --wait
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      loop: "{{ app_images }}"
+      register: app_build
+      changed_when: true
+      async: "{{ app_build_timeout }}"
+      poll: 30
+  rescue:
+    # start-build reports only 'status is "Failed"'. The reason lives on the
+    # Build, and for an evicted pod it is the only place it lives at all -- the
+    # container is gone, so 'oc logs build/...' answers "unable to retrieve
+    # container logs" and the trail ends there.
+    - name: "{{ app_label }}: collect build failure reasons"
+      ansible.builtin.shell: |
+        echo "--- builds ---"
+        oc get builds -n {{ app_namespace }} 2>&1 | tail -12
+        echo "--- why each failure failed ---"
+        for b in $(oc get builds -n {{ app_namespace }}                      -o jsonpath='{range .items[?(@.status.phase=="Failed")]}{.metadata.name}{"\n"}{end}' 2>/dev/null); do
+          echo "$b: $(oc get build "$b" -n {{ app_namespace }}                         -o jsonpath='{.status.reason}: {.status.message}' 2>&1)"
+        done
+        echo "--- node pressure ---"
+        oc get nodes -o custom-columns='NODE:.metadata.name,DISK:.status.conditions[?(@.type=="DiskPressure")].status,MEM:.status.conditions[?(@.type=="MemoryPressure")].status' 2>&1
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: app_build_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: "{{ app_label }}: report and fail"
+      ansible.builtin.fail:
+        msg: |
+          A build failed in {{ app_label }}. The reason is under "why each
+          failure failed" below -- read that first. These are the two that
+          recur, and neither is the build being wrong:
+
+            BuildPodEvicted        the node ran out of disk. Check the pressure
+                                   table below; if DiskPressure is True, reclaim
+                                   with 'oc delete builds --all -n
+                                   {{ app_namespace }}', and if it keeps
+                                   happening raise GUEST_VM_ROOT_DISK (currently
+                                   {{ guest_vm_root_disk | default('64Gi') }})
+                                   -- which means rebuilding the guests, because
+                                   it is the VMs' root disk.
+
+            PushImageToRegistryFailed
+                                   the build worked and had nowhere to put the
+                                   image. Check 'oc get co image-registry' in
+                                   the guest -- after a node restart the
+                                   registry can take several minutes to become
+                                   Available, and a build that races it fails
+                                   here through no fault of its own.
+
+          {{ app_build_diagnostics.stdout }}

@@ -1,0 +1,72 @@
+---
+# The predictive visual inspection app, deployed into a guest cluster.
+#
+# It needs nodes that advertise nvidia.com/gpu, which on this layout only the
+# guest clusters do -- TNF's own T4s are bound to vfio-pci for passthrough and
+# advertise nothing a pod can request. See docs/gpu-allocation.md.
+
+op_kubeconfig: ""
+
+# Names the guest in every task title, so a run against four guests is readable.
+app_label: "{{ op_kubeconfig | basename }}"
+
+# The application lives in this repository, under app/. Its own Makefile and
+# manifests are the source of truth for how it deploys; this role stages that
+# directory on a bastion and drives it there, because the bastion is the only
+# host that can reach a guest cluster's API.
+app_source_dir: "{{ repo_root }}/app"
+
+# Where that directory is unpacked on the bastion, and built from.
+app_workdir: "/home/{{ ansible_user }}/apps/visual-inspection"
+
+app_namespace: visual-inspection
+
+# One binary build per image. new-build pushes each to the cluster's internal
+# registry as <registry>/<namespace>/<name>:latest, which is exactly what the
+# app's own REGISTRY resolves to -- so the two agree without either being told
+# about the other.
+app_images:
+  - camera-sim
+  - analyzer
+  - dashboard
+
+app_registry: "image-registry.openshift-image-registry.svc:5000/{{ app_namespace }}"
+
+# Every workload the manifests create, in the order they become useful. Used
+# only for the rollout wait.
+app_deployments:
+  - rtsp-server
+  - camera-sim
+  - vllm
+  - analyzer
+  - dashboard
+
+# Red Hat AI Inference Server -- vLLM packaged by Red Hat, and what the app's
+# manifests default to. It lives on registry.redhat.io, so the namespace needs
+# credentials; the cluster pull secret already carries them.
+app_pull_secret: redhat-registry
+app_vllm_image: registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.1
+app_model: Qwen/Qwen2.5-VL-3B-Instruct
+
+# One camera leaves a T4 mostly idle. Raise this to load the GPU; each camera is
+# another ffmpeg loop and another analyzer stream.
+app_cameras: 4
+
+# new-build gives a BuildConfig no resource requests at all, which makes the
+# build pod BestEffort -- and BestEffort is the first thing the kubelet evicts
+# when a node crosses its DiskPressure threshold. That is not hypothetical here:
+# a guest worker is a 64Gi VM already carrying ~25GiB of images, and the
+# analyzer pulls a CUDA torch base and writes a 6.6GiB result on top. Asking for
+# the room means the scheduler places the build somewhere that has it, and the
+# build is no longer first in the eviction queue. It does not create disk that
+# is not there -- see GUEST_VM_ROOT_DISK if builds still get evicted.
+app_build_ephemeral_storage: 20Gi
+app_build_memory: 4Gi
+
+# The analyzer builds on a CUDA torch base, which is a large pull before a layer
+# is written.
+app_build_timeout: 2400
+
+# vLLM downloads the model on first start -- several GB before the readiness
+# probe can pass, and the probe itself allows an hour.
+app_rollout_timeout: 2400

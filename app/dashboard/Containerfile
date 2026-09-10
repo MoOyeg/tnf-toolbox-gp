@@ -1,0 +1,6 @@
+FROM registry.access.redhat.com/ubi9/python-311:latest
+WORKDIR /opt/app-root/src
+COPY dashboard/app.py .
+RUN pip install --no-cache-dir flask==3.0.3 requests==2.32.3
+EXPOSE 8080
+CMD ["python", "app.py"]

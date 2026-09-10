@@ -1,0 +1,101 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: analyzer
+  labels: {app.kubernetes.io/name: analyzer, app.kubernetes.io/part-of: inspection}
+spec:
+  replicas: 1
+  # The default is 600s, and a first fit on a fresh volume takes longer than
+  # that: EfficientAD trains and anomalib downloads ImageNette on the way. The
+  # readiness probe already allows for it, but the Deployment gives up
+  # independently -- it marks itself ProgressDeadlineExceeded and every
+  # 'oc rollout status' fails, however generous its own --timeout was.
+  progressDeadlineSeconds: 3600
+  selector:
+    matchLabels: {app.kubernetes.io/name: analyzer}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: analyzer}
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
+        prometheus.io/path: /metrics
+    spec:
+      containers:
+        - name: analyzer
+          image: REPLACED_BY_KUSTOMIZE/analyzer:latest
+          env:
+            - {name: RTSP_HOST, value: rtsp-server}
+            - {name: CAMERAS, value: "4"}
+            - {name: VLLM_URL, value: "http://vllm:8000/v1/chat/completions"}
+            - {name: VLLM_MODEL, value: Qwen/Qwen2.5-VL-3B-Instruct}
+            # Which line is running. The analyzer fits a model per category
+            # and both are baked in, so this matches camera-sim's CATEGORY.
+            - {name: CATEGORY, value: pcb1}
+            - {name: MODEL_DIR, value: /models}
+            # Matplotlib comes in with anomalib and wants a config dir. The
+            # arbitrary uid OpenShift assigns cannot write to /, so without
+            # this it warns on every start and imports slower for it.
+            - {name: MPLCONFIGDIR, value: /tmp/matplotlib}
+            # OpenShift runs this as an arbitrary uid with no home directory,
+            # so anything resolving ~ lands on / and fails to write. anomalib
+            # pulls in platformdirs, which does exactly that and killed the fit
+            # with "Permission denied: '/.cache'". Point the caches at the
+            # volume instead: writable, and the downloaded teacher weights then
+            # survive a restart rather than being fetched again.
+            - {name: HOME, value: /tmp}
+            - {name: XDG_CACHE_HOME, value: /models/cache}
+            - {name: TORCH_HOME, value: /models/torch}
+            # Which node the pod landed on decides which physical T4 it got.
+            # The downward API is the only way the process can know either.
+            - name: NODE_NAME
+              valueFrom: {fieldRef: {fieldPath: spec.nodeName}}
+            - name: POD_NAME
+              valueFrom: {fieldRef: {fieldPath: metadata.name}}
+            # ANOMALY_THRESHOLD is deliberately absent. The threshold is fitted
+            # from the model's own scores on good parts; setting it here
+            # overrides that with a number somebody guessed.
+          ports:
+            - {name: http, containerPort: 8080}
+          volumeMounts:
+            - {name: models, mountPath: /models}
+          resources:
+            # One GPU for the fast path. Raise CAMERAS rather than this: the
+            # per-frame work is small and the point is to fill the GPU with
+            # streams, not with a bigger model.
+            limits: {nvidia.com/gpu: "1", memory: 8Gi, cpu: "8"}
+            requests: {nvidia.com/gpu: "1", memory: 2Gi, cpu: "2"}
+          readinessProbe:
+            httpGet: {path: /healthz, port: 8080}
+            # A fresh volume means fitting EfficientAD before anything can be
+            # scored, which is minutes and downloads ImageNette once. /healthz
+            # answers 503 throughout, so this has to allow for it or the pod is
+            # killed and restarted into the same fit, forever.
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 80
+      volumes:
+        # The fitted model, its threshold, and the ImageNette copy the fit
+        # needs. Persisted so the fit happens once for the life of the volume
+        # rather than once per pod.
+        - name: models
+          persistentVolumeClaim: {claimName: analyzer-models}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: analyzer-models
+spec:
+  accessModes: [ReadWriteOnce]
+  resources: {requests: {storage: 20Gi}}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: analyzer
+  labels: {app.kubernetes.io/name: analyzer}
+spec:
+  selector: {app.kubernetes.io/name: analyzer}
+  ports:
+    - {name: http, port: 8080, targetPort: 8080}
