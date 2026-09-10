@@ -26,6 +26,12 @@ load_config() {
   PULL_SECRET_PATH="${PULL_SECRET_PATH:-${REPO_ROOT}/config/pull-secret.json}"
   export PULL_SECRET_PATH
 
+  # Pinned NodePorts for a guest's control plane, so the load balancer in front
+  # of them can be built before the guest exists.
+  GUEST_API_NODEPORT="${GUEST_API_NODEPORT:-30443}"
+  GUEST_OAUTH_NODEPORT="${GUEST_OAUTH_NODEPORT:-30444}"
+  export GUEST_API_NODEPORT GUEST_OAUTH_NODEPORT
+
   export AWS_DEFAULT_REGION="${REGION}"
   NETWORK_STACK="${CLUSTER_NAME}-network"
   SERVICES_STACK="${CLUSTER_NAME}-services"

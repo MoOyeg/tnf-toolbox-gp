@@ -3,7 +3,7 @@ ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 .PHONY: all keypair infra acm-infra peering tnf kubeconfig iommu gpu virt-mce \
         tnf-recover \
         acm-site guests hcp-make-guests-from-acm vcp-make-guests-from-acm \
-        guest-gpu app observability-bucket doctor ssh acm-ssh status \
+        guest-gpu app observability-bucket guest-lb doctor ssh acm-ssh status \
         inventory clean clean-guests destroy destroy-acm help
 
 # ---------------------------------------------------------------- end to end
@@ -64,6 +64,14 @@ peering:
 # because losing the bucket would lose the metric history.
 observability-bucket:
 	@./aws-infra/scripts/create-observability-bucket.sh
+
+# A public entry point for one guest's control plane. Build it before the guest:
+# the NodePorts are pinned so it can be, and spec.services cannot be changed once
+# the HostedCluster exists. Set GUEST_PUBLIC_CONTROL_PLANE=true for the guest
+# stage to actually publish against it.
+guest-lb:
+	@test -n "$(GUEST)" || { echo "usage: make guest-lb GUEST=hcp-1"; exit 1; }
+	@./aws-infra/scripts/create-guest-lb.sh "$(GUEST)"
 
 acm-site: observability-bucket
 	@$(ANSIBLE) 36-acm-site.yml $(EXTRA_ARGS)
@@ -142,6 +150,7 @@ help:
 	@echo "  make peering       - VPC peering between the two sites, plus routes and"
 	@echo "                       cross-VPC DNS so each resolves the other privately"
 	@echo "  make observability-bucket - S3 + scoped IAM user for the hub's Thanos"
+	@echo "  make guest-lb GUEST=hcp-1 - public NLB for a guest's API and console login"
 	@echo "  make acm-site      - the ACM cluster: single-node OpenShift on bare metal"
 	@echo "                       at the ACM site, plus OCP-V, ACM, and the credential"
 	@echo "                       that lets it drive TNF as its infra cluster"

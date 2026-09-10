@@ -120,28 +120,68 @@
 #
 # spec.services cannot be changed after the HostedCluster exists, which is why
 # this rewrites the manifest rather than patching the object.
+# Only when the public entry point is enabled; with it off nothing below
+# changes and the manifest is rewritten exactly as it always was.
+- name: "{{ guest_name }}: read the control-plane load balancer name"
+  ansible.builtin.slurp:
+    src: "{{ repo_root }}/deploy/aws-infra/instance-data/{{ acm_cluster_name }}/{{ guest_name }}_lb_dns"
+  delegate_to: localhost
+  register: guest_lb_state
+  when: guest_public_control_plane | bool
+  failed_when: false
+
+- name: "{{ guest_name }}: fail if the load balancer has not been built"
+  ansible.builtin.assert:
+    that: guest_lb_state.content is defined
+    fail_msg: >-
+      guest_public_control_plane is on but no load balancer is recorded for
+      {{ guest_name }}. Run 'make guest-lb GUEST={{ guest_name }}' first: the
+      NodePorts are pinned so the stack can be built before the guest, and
+      spec.services cannot be changed once the HostedCluster exists.
+  when: guest_public_control_plane | bool
+
+# What each service publishes. Konnectivity and Ignition are spoken only by the
+# worker VMs and stay on the hub's private address; the two a human touches move
+# to the load balancer, which is the whole point of the exercise.
+- name: "{{ guest_name }}: decide where each service is published"
+  vars:
+    guest_lb_dns: "{{ guest_lb_state.content | default('') | b64decode | trim }}"
+  ansible.builtin.set_fact:
+    guest_service_addresses: >-
+      {{ {
+           'APIServer':   {'address': guest_lb_dns, 'port': guest_api_nodeport | int},
+           'OAuthServer': {'address': guest_lb_dns, 'port': guest_oauth_nodeport | int},
+         } if guest_public_control_plane | bool else {} }}
+
 - name: "{{ guest_name }}: publish the guest services on NodePorts, not LoadBalancers"
   ansible.builtin.command:
     argv:
       - python3
       - -c
       - |
-        import sys, yaml
-        path, address = sys.argv[1], sys.argv[2]
+        import json, sys, yaml
+        path, address, overrides = sys.argv[1], sys.argv[2], json.loads(sys.argv[3])
         docs = [d for d in yaml.safe_load_all(open(path)) if d]
         changed = False
         for doc in docs:
             if doc.get("kind") != "HostedCluster":
                 continue
             for svc in doc.get("spec", {}).get("services", []):
+                # Services a human reaches can be given a public address and a
+                # pinned port; the rest keep the hub's private address, which is
+                # what the worker VMs use.
+                want = overrides.get(svc.get("service"), {"address": address})
                 strategy = svc.setdefault("servicePublishingStrategy", {})
                 node_port = strategy.get("nodePort") or {}
                 if (strategy.get("type") != "NodePort"
-                        or node_port.get("address") != address):
+                        or node_port.get("address") != want["address"]
+                        or ("port" in want and node_port.get("port") != want["port"])):
                     strategy["type"] = "NodePort"
                     strategy.pop("loadBalancer", None)
                     strategy.pop("route", None)
-                    node_port["address"] = address
+                    node_port["address"] = want["address"]
+                    if "port" in want:
+                        node_port["port"] = want["port"]
                     strategy["nodePort"] = node_port
                     changed = True
         if changed:
@@ -150,6 +190,7 @@
         print("rewritten" if changed else "already NodePort")
       - "{{ guest_workdir }}/guest-manifests/{{ guest_name }}.yaml"
       - "{{ guest_api_address }}"
+      - "{{ guest_service_addresses | to_json }}"
   register: apiserver_strategy
   changed_when: apiserver_strategy.stdout == "rewritten"
   when: guest_exists.rc != 0

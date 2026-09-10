@@ -1,0 +1,114 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  A public entry point for a hosted guest cluster's control plane.
+
+  The guest's API and OAuth servers are published as NodePorts on the hub's
+  private address, which is right for the worker VMs and useless for a browser:
+  the console redirects to OAuth, the redirect names a 10.x address, and login
+  fails from anywhere outside the VPC.
+
+  MetalLB is not an option here -- its own documentation lists AWS as
+  unsupported, because cloud fabrics resolve only addresses the platform has
+  assigned to an ENI, so L2's ARP announcements go nowhere. The platform's own
+  load balancer is what it points you at instead, and this is that.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Guest cluster name, used to name the resources.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: A subnet with a route to an internet gateway.
+  TargetInstanceId:
+    Type: String
+    Description: The hub instance carrying the hosted control plane.
+  ApiNodePort:
+    Type: Number
+    Description: Pinned NodePort for the guest's kube-apiserver.
+    MinValue: 30000
+    MaxValue: 32767
+  OAuthNodePort:
+    Type: Number
+    Description: Pinned NodePort for the guest's OAuth server.
+    MinValue: 30000
+    MaxValue: 32767
+
+Resources:
+  # An NLB rather than an ALB: both services speak TLS end to end and the guest
+  # presents its own certificates. An ALB would have to terminate TLS, which
+  # would mean giving it the guest's serving certs and re-issuing them on every
+  # rebuild. NLB passes TCP through untouched.
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${ClusterName}-cp'
+      Type: network
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets: [!Ref SubnetId]
+
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ClusterName}-api'
+      VpcId: !Ref VpcId
+      Protocol: TCP
+      Port: !Ref ApiNodePort
+      TargetType: instance
+      # TCP, not HTTPS: the API server requires a client certificate, so an
+      # HTTPS probe is answered with 401 and the target is marked unhealthy
+      # while being perfectly well.
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Targets:
+        - Id: !Ref TargetInstanceId
+          Port: !Ref ApiNodePort
+
+  OAuthTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ClusterName}-oauth'
+      VpcId: !Ref VpcId
+      Protocol: TCP
+      Port: !Ref OAuthNodePort
+      TargetType: instance
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Targets:
+        - Id: !Ref TargetInstanceId
+          Port: !Ref OAuthNodePort
+
+  # The ports the clients use are the same as the NodePorts behind them. The
+  # address HyperShift publishes carries a port, so keeping them equal means the
+  # published address is the load balancer's name and port with nothing to
+  # translate.
+  ApiListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: TCP
+      Port: !Ref ApiNodePort
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+
+  OAuthListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: TCP
+      Port: !Ref OAuthNodePort
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref OAuthTargetGroup
+
+Outputs:
+  LoadBalancerDns:
+    Description: Public name for the guest's API and OAuth servers.
+    Value: !GetAtt LoadBalancer.DNSName

@@ -419,14 +419,30 @@ and its fix is written up in [docs/deploy-log.md](docs/deploy-log.md), which is
 worth reading before a first run.
 
 Guest cluster ingress **works**, and was the last thing to. The KubeVirt
-provider expects a `LoadBalancer` for it, which needs MetalLB, whose L2 mode
-does not work in a VPC — so the guest's control-plane services are published on
-`NodePort` instead, and its `*.apps` wildcard is served by a passthrough route on
+provider expects a `LoadBalancer` for it, and there is no provisioner for one
+here: both clusters run without a cloud provider. MetalLB is not the way out —
+[its own documentation](https://metallb.universe.tf/installation/clouds/) lists
+AWS as unsupported, because a cloud fabric resolves only addresses the platform
+has assigned to an ENI, so L2's ARP announcements reach nothing. So the guest's
+control-plane services are published on `NodePort` instead, and its `*.apps` wildcard is served by a passthrough route on
 the infra cluster. That route has to be *admitted*, which needs
 `wildcardPolicy: WildcardsAllowed` on the infra cluster's IngressController;
 without it the guest console never comes up, its ClusterVersion never completes,
 and the NVIDIA GPU Operator inside the guest refuses to start. See
 [docs/hcp-guests.md](docs/hcp-guests.md).
+
+That leaves one thing broken from outside the VPC. The console *page* is served
+through the passthrough route and loads, but it immediately redirects to the
+OAuth server to log in — and OAuth is a NodePort on the hub's private address,
+so the redirect names something a browser cannot reach. `make guest-lb
+GUEST=<name>` builds an AWS network load balancer in front of the API and OAuth
+NodePorts, and `GUEST_PUBLIC_CONTROL_PLANE=true` publishes the guest against it,
+which is what MetalLB's documentation means by "use the platform's load
+balancer". It is **written but not yet run end to end**: the cluster was not
+recoverable when it was added, so what is verified is the manifest rewrite, not
+the login it is meant to fix. It also moves the worker VMs' route to the API
+server out through the internet gateway rather than across the peering, which is
+the part most likely to need revisiting.
 
 ## Documentation
 
