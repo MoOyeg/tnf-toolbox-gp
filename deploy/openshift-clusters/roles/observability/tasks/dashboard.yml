@@ -1,0 +1,41 @@
+---
+# Publish the custom dashboard.
+#
+# ACM's Grafana picks up any ConfigMap in the observability namespace labelled
+# grafana-custom-dashboard=true and loads the JSON inside it -- no Grafana API
+# call, no operator, and it survives the Grafana pod being replaced. The
+# dashboard is a file rather than a template because it is JSON: rendering it
+# through Jinja is how a stray comma becomes a dashboard that silently fails to
+# load.
+
+- name: Publish the GPU and inspection dashboard
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: grafana-dashboard-gpu-inspection
+        namespace: "{{ obs_namespace }}"
+        labels:
+          grafana-custom-dashboard: "true"
+      data:
+        gpu-app-dashboard.json: "{{ lookup('file', 'gpu-app-dashboard.json') }}"
+
+- name: Read the Grafana route
+  ansible.builtin.command: >-
+    oc get route grafana -n {{ obs_namespace }} -o jsonpath={.spec.host}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: obs_grafana_route
+  changed_when: false
+  failed_when: false
+
+- name: Report the dashboard
+  ansible.builtin.debug:
+    msg:
+      - "Dashboard 'GPU and visual inspection' published to ACM Grafana."
+      - "{{ ('https://' ~ obs_grafana_route.stdout) if obs_grafana_route.stdout else 'Grafana route not up yet.' }}"
+      - "It stays empty until the managed clusters ship the allowlisted metrics --
+         allow a few minutes after the observability addon reaches Available."

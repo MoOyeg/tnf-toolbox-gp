@@ -1,0 +1,194 @@
+---
+# MultiCluster Observability on the ACM hub.
+#
+# The order matters: the object-storage secret has to exist before the MCO CR,
+# because MCO reads it at reconcile and a missing secret leaves the stack in a
+# state that looks like a slow install rather than a misconfiguration.
+
+- name: Read the observability bucket recorded by create-observability-bucket.sh
+  ansible.builtin.slurp:
+    src: "{{ repo_root }}/deploy/aws-infra/instance-data/{{ acm_cluster_name }}/{{ item }}"
+  delegate_to: localhost
+  loop:
+    - observability_bucket
+    - observability_endpoint
+    - observability_key_id
+    - observability_key_secret
+  register: obs_state
+  failed_when: false
+
+- name: Fail if the bucket has not been created
+  ansible.builtin.assert:
+    that: obs_state.results | rejectattr('content', 'defined') | list | length == 0
+    fail_msg: >-
+      No observability bucket recorded. Run 'make observability-bucket' first --
+      MultiClusterObservability needs S3-compatible storage for Thanos, and this
+      hub has no ODF to provide it.
+
+- name: Use the recorded bucket
+  ansible.builtin.set_fact:
+    obs_bucket: "{{ obs_state.results[0].content | b64decode | trim }}"
+    obs_endpoint: "{{ obs_state.results[1].content | b64decode | trim }}"
+    obs_key_id: "{{ obs_state.results[2].content | b64decode | trim }}"
+    obs_key_secret: "{{ obs_state.results[3].content | b64decode | trim }}"
+
+- name: Create the observability namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ obs_namespace }}"
+
+# MCO pulls Red Hat-registered images and will not start without credentials in
+# its own namespace, whatever the cluster pull secret says elsewhere.
+- name: Give the observability namespace the pull secret
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: multiclusterhub-operator-pull-secret
+        namespace: "{{ obs_namespace }}"
+      type: kubernetes.io/dockerconfigjson
+      data:
+        .dockerconfigjson: "{{ pull_secret | b64encode }}"
+
+# The key inside this secret must be exactly thanos.yaml; MCO looks for that
+# name and nothing else.
+#
+# Real S3, so none of the insecure_skip_verify contortions that Noobaa's
+# service-signed certificate needs: AWS presents a publicly trusted chain and
+# the Thanos components verify it normally.
+- name: Store the Thanos object-storage configuration
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: thanos-object-storage
+        namespace: "{{ obs_namespace }}"
+      type: Opaque
+      stringData:
+        thanos.yaml: |
+          type: s3
+          config:
+            bucket: {{ obs_bucket }}
+            endpoint: {{ obs_endpoint }}
+            region: {{ region }}
+            access_key: {{ obs_key_id }}
+            secret_key: {{ obs_key_secret }}
+  no_log: true
+
+- name: Install the Cluster Observability Operator for the Perses console plugin
+  when: obs_enable_ui | bool
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: install-operator
+  vars:
+    op_package: cluster-observability-operator
+    op_namespace: "{{ coo_namespace }}"
+    op_channel: "{{ coo_channel }}"
+    op_source: redhat-operators
+    op_operator_group_scope: all
+    op_csv_timeout: "{{ operator_csv_timeout }}"
+
+- name: Create the MultiClusterObservability
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: observability.open-cluster-management.io/v1beta2
+      kind: MultiClusterObservability
+      metadata:
+        name: observability
+      spec:
+        observabilityAddonSpec:
+          enableMetrics: true
+          interval: "{{ obs_metrics_interval }}"
+        capabilities:
+          platform:
+            analytics:
+              # Recommendations for how much CPU and memory workloads actually
+              # need. Technology Preview, and it backfills nothing -- the first
+              # useful numbers are a day out, the weekly aggregates a week.
+              namespaceRightSizingRecommendation:
+                enabled: true
+                namespaceBinding: "{{ obs_binding_namespace }}"
+              virtualizationRightSizingRecommendation:
+                enabled: true
+                namespaceBinding: "{{ obs_binding_namespace }}"
+            metrics:
+              ui:
+                enabled: "{{ obs_enable_ui | bool }}"
+        storageConfig:
+          metricObjectStorage:
+            name: thanos-object-storage
+            key: thanos.yaml
+          storageClass: "{{ obs_storage_class }}"
+          alertmanagerStorageSize: "{{ obs_alertmanager_storage }}"
+          compactStorageSize: "{{ obs_compact_storage }}"
+          receiveStorageSize: "{{ obs_receive_storage }}"
+          ruleStorageSize: "{{ obs_rule_storage }}"
+          storeStorageSize: "{{ obs_store_storage }}"
+
+- name: Wait for observability to report Ready
+  block:
+    - name: Poll the MultiClusterObservability status
+      ansible.builtin.command: >-
+        oc get multiclusterobservability observability
+        -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: obs_ready
+      changed_when: false
+      failed_when: false
+      retries: "{{ (obs_ready_timeout | int / 20) | int }}"
+      delay: 20
+      until: obs_ready.stdout == "True"
+  rescue:
+    - name: Collect observability diagnostics
+      ansible.builtin.shell: |
+        echo "--- mco status ---"
+        oc get multiclusterobservability observability -o jsonpath='{range .status.conditions[*]}{.type}={.status} {.reason}: {.message}{"\n"}{end}' 2>&1
+        echo "--- pods not running ---"
+        oc get pods -n {{ obs_namespace }} --no-headers 2>&1 | grep -v 'Running\|Completed' || true
+        echo "--- pvcs ---"
+        oc get pvc -n {{ obs_namespace }} --no-headers 2>&1 | head -10
+      environment:
+        KUBECONFIG: "{{ op_kubeconfig }}"
+      register: obs_diagnostics
+      changed_when: false
+      failed_when: false
+
+    - name: Report and fail
+      ansible.builtin.fail:
+        msg: |
+          MultiClusterObservability did not become Ready within {{ obs_ready_timeout }}s.
+
+          Unbound PVCs mean the storage class could not satisfy a request --
+          {{ obs_storage_class }} is local to this node, so the whole stack has
+          to fit on it. Thanos pods crashlooping on the object store usually
+          means the bucket credentials are wrong: check the thanos-object-storage
+          secret against the bucket create-observability-bucket.sh made.
+
+          {{ obs_diagnostics.stdout }}
+
+- name: Add GPU and application metrics to the collected set
+  ansible.builtin.include_tasks: allowlist.yml
+
+- name: Publish the GPU and application dashboard
+  ansible.builtin.include_tasks: dashboard.yml
+
+- name: Report
+  ansible.builtin.debug:
+    msg:
+      - "Observability is up: metrics from every managed cluster land in {{ obs_bucket }}."
+      - "Right-sizing is on; recommendations need ~24h of data before they mean anything."
+      - "Perses dashboards: OpenShift console -> Observe (Technology Preview, alongside Grafana)."

@@ -1,0 +1,66 @@
+---
+# MultiCluster Observability on the ACM hub: Thanos for long-term metrics,
+# right-sizing recommendations, and the Perses UI in the console.
+op_kubeconfig: ""
+
+obs_namespace: open-cluster-management-observability
+# Where the right-sizing policies bind. Must already belong to a
+# ManagedClusterSet or the generated policies bind to nothing and silently
+# produce no recommendations.
+obs_binding_namespace: open-cluster-management-global-set
+
+# Thanos keeps its long-term blocks in S3 and its working state on a PVC.
+#
+# The storage class is the hub's LVM one, which the ACM documentation warns
+# against ("do not use ... a storage class that uses local volumes"). That
+# warning is about a pod being rescheduled away from its data. The hub is a
+# single node: there is nowhere else to reschedule to, and no second class to
+# choose. Worth knowing rather than worth blocking on -- but it is the reason
+# this hub is not a template for a multi-node one.
+obs_storage_class: lvms-vg1
+obs_alertmanager_storage: 1Gi
+obs_compact_storage: 20Gi
+obs_receive_storage: 20Gi
+obs_rule_storage: 5Gi
+obs_store_storage: 10Gi
+
+# How often managed clusters ship metrics to the hub.
+obs_metrics_interval: 30
+
+obs_ready_timeout: 1800
+
+# Perses dashboards in the OpenShift console, rendered by the Cluster
+# Observability Operator's plugin. Technology Preview in ACM 2.17, and
+# alongside Grafana rather than instead of it.
+obs_enable_ui: true
+coo_namespace: openshift-cluster-observability-operator
+coo_channel: stable
+
+# MCO forwards a curated allowlist from each managed cluster, not everything a
+# cluster scrapes. GPU and application metrics are not on the default list, so
+# without these they never reach the hub and any dashboard built on them stays
+# empty -- which looks like a broken dashboard rather than a missing allowlist.
+obs_custom_metrics:
+  # The inspection app's own series.
+  - inspection_anomaly_score
+  - inspection_defects_total
+  - inspection_vlm_reports_total
+  - inspection_seconds_to_threshold
+  - inspection_pass_total
+  - inspection_fail_total
+  - inspection_gpu_seconds_total
+  - inspection_gpu_share
+  - inspection_frames_per_second
+  - inspection_gpu_utilization
+  - inspection_gpu_memory_used_bytes
+  - inspection_gpu_memory_total_bytes
+  - inspection_gpu_power_watts
+  - inspection_gpu_temperature_celsius
+  - inspection_placement_info
+  # DCGM, from the GPU Operator inside each guest cluster.
+  - DCGM_FI_DEV_GPU_UTIL
+  - DCGM_FI_DEV_FB_USED
+  - DCGM_FI_DEV_FB_FREE
+  - DCGM_FI_DEV_GPU_TEMP
+  - DCGM_FI_DEV_POWER_USAGE
+  - DCGM_FI_DEV_SM_CLOCK

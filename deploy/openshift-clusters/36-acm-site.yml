@@ -74,6 +74,16 @@
       vars:
         op_kubeconfig: "{{ acm_kubeconfig }}"
 
+    # After ACM itself, because MultiClusterObservability is an ACM capability
+    # and its CRD does not exist until the hub is up. Before the import below,
+    # so that when TNF joins the fleet the observability addon is already
+    # waiting for it rather than being pushed out afterwards.
+    - name: Install MultiCluster Observability, right-sizing and the Perses UI
+      ansible.builtin.include_role:
+        name: observability
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+
     - name: Give ACM a credential for the TNF infra cluster across the peering
       ansible.builtin.include_role:
         name: sno-cluster

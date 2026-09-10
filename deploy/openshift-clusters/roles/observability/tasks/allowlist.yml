@@ -1,0 +1,38 @@
+---
+# Tell MCO which extra series to collect from managed clusters.
+#
+# MCO ships a curated default list -- cluster health, capacity, the things a
+# fleet view needs. Anything else is dropped at the managed cluster before it
+# is ever sent, which is the right default for a fleet of unknown size but
+# means a custom dashboard built on custom metrics renders empty with no error
+# anywhere to say why.
+
+- name: Collect the GPU and application metrics as well
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: observability-metrics-custom-allowlist
+        namespace: "{{ obs_namespace }}"
+      data:
+        metrics_list.yaml: |
+          names:
+          {% for metric in obs_custom_metrics %}
+            - {{ metric }}
+          {% endfor %}
+          recording_rules:
+            # Pre-aggregated on the managed cluster, so the hub stores one
+            # series per cluster instead of one per camera per cluster. The
+            # fleet view wants "how loaded is that GPU", not every stream.
+            - record: inspection:gpu_share:sum
+              expr: sum(inspection_gpu_share)
+            - record: inspection:frames_per_second:sum
+              expr: sum(inspection_frames_per_second)
+            - record: inspection:fail_ratio:rate5m
+              expr: >-
+                sum(rate(inspection_fail_total[5m]))
+                / clamp_min(sum(rate(inspection_fail_total[5m]))
+                            + sum(rate(inspection_pass_total[5m])), 0.001)

@@ -1,0 +1,494 @@
+{
+  "title": "GPU and visual inspection",
+  "uid": "tnf-gpu-inspection",
+  "tags": [
+    "gpu",
+    "inspection",
+    "tnf"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "editable": true,
+  "templating": {
+    "list": [
+      {
+        "name": "cluster",
+        "type": "query",
+        "label": "cluster",
+        "datasource": null,
+        "query": "label_values(inspection_gpu_utilization, cluster)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        }
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "title": "GPU busy",
+      "type": "stat",
+      "description": "The analyzer's card, as the device reports it. Bursty by design: the slow path only runs on flagged frames.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "inspection_gpu_utilization{cluster=\"$cluster\"}",
+          "legendFormat": "{{cluster}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Frames per second",
+      "type": "stat",
+      "description": "Summed across every camera on that cluster.",
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "inspection:frames_per_second:sum{cluster=\"$cluster\"}",
+          "legendFormat": "{{cluster}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "none"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 3,
+      "title": "GPU claimed by cameras",
+      "type": "stat",
+      "description": "Device time the cameras account for. Approaches 1.0 as the card saturates -- that is the ceiling on how far CAMERAS can be raised.",
+      "gridPos": {
+        "x": 9,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "inspection:gpu_share:sum{cluster=\"$cluster\"}",
+          "legendFormat": "{{cluster}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Fail ratio",
+      "type": "stat",
+      "description": "Fraction of scored frames judged defective over 5m. Near 1.0 usually means the detector threshold is miscalibrated, not that the line is broken.",
+      "gridPos": {
+        "x": 14,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "inspection:fail_ratio:rate5m{cluster=\"$cluster\"}",
+          "legendFormat": "{{cluster}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 5,
+      "title": "GPU power",
+      "type": "stat",
+      "description": "",
+      "gridPos": {
+        "x": 19,
+        "y": 0,
+        "w": 5,
+        "h": 4
+      },
+      "targets": [
+        {
+          "expr": "inspection_gpu_power_watts{cluster=\"$cluster\"}",
+          "legendFormat": "{{cluster}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "watt"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 10,
+      "title": "GPU utilisation",
+      "type": "timeseries",
+      "description": "Two sources on purpose: the analyzer's in-process NVML reading, and DCGM from the GPU Operator. DCGM covers every card on the cluster; the analyzer only knows about its own.",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "inspection_gpu_utilization{cluster=\"$cluster\"}",
+          "legendFormat": "analyzer {{cluster}}",
+          "refId": "A",
+          "interval": ""
+        },
+        {
+          "expr": "DCGM_FI_DEV_GPU_UTIL{cluster=\"$cluster\"}",
+          "legendFormat": "dcgm {{gpu}} {{Hostname}}",
+          "refId": "B",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percent"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 11,
+      "title": "GPU memory",
+      "type": "timeseries",
+      "description": "Not split per camera: one model is loaded once and shared, so per-camera memory is not a real number.",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "inspection_gpu_memory_used_bytes{cluster=\"$cluster\"}",
+          "legendFormat": "used {{cluster}}",
+          "refId": "A",
+          "interval": ""
+        },
+        {
+          "expr": "inspection_gpu_memory_total_bytes{cluster=\"$cluster\"}",
+          "legendFormat": "total {{cluster}}",
+          "refId": "B",
+          "interval": ""
+        },
+        {
+          "expr": "DCGM_FI_DEV_FB_USED{cluster=\"$cluster\"} * 1024 * 1024",
+          "legendFormat": "dcgm used {{gpu}}",
+          "refId": "C",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 20,
+      "title": "GPU share per camera",
+      "type": "timeseries",
+      "description": "Device time attributed to each camera via CUDA events. Summed, this is the headline 'claimed' figure above.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "inspection_gpu_share{cluster=\"$cluster\"}",
+          "legendFormat": "{{camera}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "percentunit"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 21,
+      "title": "Frames per second per camera",
+      "type": "timeseries",
+      "description": "Falls as the card saturates -- the first visible symptom of too many cameras for one GPU.",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "inspection_frames_per_second{cluster=\"$cluster\"}",
+          "legendFormat": "{{camera}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "none"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 30,
+      "title": "Anomaly score per camera",
+      "type": "timeseries",
+      "description": "Scored by EfficientAD against parts it learned as good.",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "inspection_anomaly_score{cluster=\"$cluster\"}",
+          "legendFormat": "{{camera}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "none"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 31,
+      "title": "Verdicts per second",
+      "type": "timeseries",
+      "description": "",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (camera) (rate(inspection_pass_total{cluster=\"$cluster\"}[5m]))",
+          "legendFormat": "pass {{camera}}",
+          "refId": "A",
+          "interval": ""
+        },
+        {
+          "expr": "sum by (camera) (rate(inspection_fail_total{cluster=\"$cluster\"}[5m]))",
+          "legendFormat": "fail {{camera}}",
+          "refId": "B",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "none"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 40,
+      "title": "VLM reports written",
+      "type": "timeseries",
+      "description": "The slow path only runs on flagged frames, so this is deliberately a small number next to the frame rate.",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "sum by (camera) (rate(inspection_vlm_reports_total{cluster=\"$cluster\"}[15m]) * 900)",
+          "legendFormat": "{{camera}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "none"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 41,
+      "title": "Forecast time to threshold",
+      "type": "timeseries",
+      "description": "Where the trend is heading if it continues. Absent when the trend is flat.",
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "expr": "inspection_seconds_to_threshold{cluster=\"$cluster\"}",
+          "legendFormat": "{{camera}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 50,
+      "title": "Where each analyzer is running",
+      "type": "table",
+      "description": "Which node and which physical card served this run. The pod is gone after a restart; the series is not.",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 24,
+        "h": 6
+      },
+      "targets": [
+        {
+          "expr": "inspection_placement_info{cluster=\"$cluster\"}",
+          "legendFormat": "{{cluster}} {{node}} {{gpu}} {{gpu_uuid}}",
+          "refId": "A",
+          "interval": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {}
+        },
+        "overrides": []
+      }
+    }
+  ]
+}
