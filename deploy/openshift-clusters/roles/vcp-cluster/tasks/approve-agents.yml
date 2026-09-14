@@ -1,0 +1,56 @@
+---
+# Approve the machines that registered themselves, and tell each one its role.
+#
+# Approval is manual by design in the assisted installer: it is the step where a
+# person confirms that the machine which turned up is one they meant to install.
+# That question is already answered here, twice over -- the agents are scoped to
+# the ones born from this cluster's own discovery ISO, and the machines that
+# booted it are the ones described in this cluster's own site definition. There
+# is nobody else to ask.
+#
+# Shared by the stage that builds an all-VM cluster directly and the one that
+# builds it from Git, because an unapproved agent is the same dead end in both:
+# the AgentClusterInstall waits for a count of approved agents that never
+# arrives, and says only "insufficient agents" while the machines sit idle.
+
+- name: "{{ vcp_cluster_name }}: see which machines have registered"
+  ansible.builtin.command: >-
+    oc get agent -n {{ vcp_cluster_name }}
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.hostname}{" "}{.spec.approved}{"\n"}{end}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: vcp_agents
+  changed_when: false
+  failed_when: false
+
+- name: "{{ vcp_cluster_name }}: approve them and give each its role"
+  ansible.builtin.shell: |
+    set -o pipefail
+    changed=0
+    for a in $(oc get agent -n {{ vcp_cluster_name }} -o name); do
+      approved=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.spec.approved}')
+      [ "$approved" = "true" ] && continue
+      host=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.spec.hostname}')
+      # The name carries the role, which is why the VMs are named for it.
+      role=worker
+      case "$host" in *-cp-*) role=master ;; esac
+      oc patch "$a" -n {{ vcp_cluster_name }} --type merge \
+        -p "{\"spec\":{\"approved\":true,\"role\":\"${role}\"}}" >/dev/null
+      changed=1
+    done
+    echo "$changed"
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: vcp_approval
+  changed_when: vcp_approval.stdout | trim == "1"
+  when: vcp_agents.stdout_lines | default([]) | length > 0
+
+- name: "{{ vcp_cluster_name }}: say how much of the inventory is accounted for"
+  ansible.builtin.debug:
+    msg: >-
+      {{ vcp_agents.stdout_lines | default([]) | length }} of
+      {{ vcp_nodes | length }} machines have registered as agents
+      {{ '-- none yet, so nothing to approve. They register a few minutes after
+          the virtual machines boot the discovery ISO; run this stage again then'
+         if (vcp_agents.stdout_lines | default([]) | length) == 0
+         else 'and are approved' }}.

@@ -795,6 +795,32 @@ def test_agent_cluster_install_networking_is_nested():
           "userManagedNetworking" not in aci["spec"])
 
 
+def test_both_vcp_paths_approve_their_agents():
+    """An agent nobody approves is a cluster that never installs.
+
+    Approval is manual by design in the assisted installer, and both ways of
+    building an all-VM cluster have to do it: the machines register themselves
+    and then wait. The GitOps path had no approval at all, so its
+    AgentClusterInstall would sit waiting for a count of approved agents that
+    never arrived, reporting only "insufficient agents".
+    """
+    print("\nagent approval")
+    tasks = f"{ROOT}/deploy/openshift-clusters/roles/vcp-cluster/tasks"
+    shared = "approve-agents.yml"
+    check("there is one definition of what approval means",
+          os.path.exists(f"{tasks}/{shared}"))
+    for path, name in ((f"{tasks}/install.yml", "the direct path"),
+                       (f"{tasks}/siteconfig-site.yml", "the GitOps path")):
+        body = open(path, encoding="utf-8").read()
+        check(f"{name} approves its agents", shared in body,
+              f"{os.path.basename(path)} never includes {shared}")
+    body = open(f"{tasks}/{shared}", encoding="utf-8").read()
+    check("approval is scoped to this cluster's own namespace",
+          "-n {{ vcp_cluster_name }}" in body)
+    check("and it assigns a role rather than approving blind",
+          '\\"role\\"' in body or '"role"' in body)
+
+
 def test_site_definitions():
     """One ClusterInstance per cluster, and what has to be true of every one.
 
@@ -893,6 +919,7 @@ def main():
     test_vcp_virtual_machine()
     test_siteconfig_install_templates()
     test_agent_cluster_install_networking_is_nested()
+    test_both_vcp_paths_approve_their_agents()
     test_site_definitions()
     test_infra_half_of_a_site_carries_no_credential()
     test_site_agnostic_roles_name_no_single_site()

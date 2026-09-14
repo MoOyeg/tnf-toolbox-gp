@@ -93,24 +93,8 @@
   delay: 20
   until: agent_count.stdout | trim | int >= vcp_nodes | length
 
-# Approval is manual by design in the assisted installer -- it is the step where
-# an operator confirms that the machine that showed up is one they meant to
-# install. Here the machines were created by this role a moment ago, so there is
-# nothing to confirm.
 - name: Approve the agents and give them their roles
-  ansible.builtin.shell: |
-    set -o pipefail
-    for a in $(oc get agents -n {{ vcp_cluster_name }} -o name); do
-      host=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.spec.hostname}{"\n"}')
-      role=worker
-      case "$host" in *-cp-*) role=master ;; esac
-      oc patch "$a" -n {{ vcp_cluster_name }} --type merge \
-        -p "{\"spec\":{\"approved\":true,\"role\":\"${role}\"}}"
-    done
-  environment:
-    KUBECONFIG: "{{ op_kubeconfig }}"
-  register: agent_approval
-  changed_when: "'patched' in agent_approval.stdout"
+  ansible.builtin.include_tasks: approve-agents.yml
 
 - name: Wait for the installation to finish
   ansible.builtin.command: >-

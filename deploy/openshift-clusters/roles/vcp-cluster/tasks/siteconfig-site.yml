@@ -168,6 +168,15 @@
           else vcp_cluster_name ~ ' has no InfraEnv yet -- run this stage again once
                Argo CD has synced its ClusterInstance, or the VMs will have nothing to boot') }}
 
+# The machines are created by Argo CD from the manifests written above, boot the
+# discovery ISO, and register themselves -- and then wait to be approved, which
+# nothing in this path did until now. Tolerant of there being none yet: on the
+# run that first writes a site there is not even a ClusterInstance, let alone a
+# booted machine. Running the stage again once they have registered approves
+# them, in the same way it harvests a kubeconfig that did not exist before.
+- name: Approve any machines that have registered for this cluster
+  ansible.builtin.include_tasks: approve-agents.yml
+
 - name: Report what to commit
   ansible.builtin.debug:
     msg:
