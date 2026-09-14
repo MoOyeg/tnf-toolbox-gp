@@ -1,0 +1,41 @@
+#
+# Ansible managed -- roles/vcp-cluster/templates/clusterinstance.yaml.j2
+#
+# Site definition for vcp-1: a whole OpenShift cluster whose
+# every node is a virtual machine on the infra cluster.
+#
+# This file is the *what* -- name, domain, networks. The *how* is
+# vcp-cluster-templates-v1, which renders the ClusterDeployment,
+# AgentClusterInstall, InfraEnv, ManagedCluster and KlusterletAddonConfig this
+# cluster is installed from.
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: vcp-1
+  namespace: vcp-1
+spec:
+  clusterName: vcp-1
+  baseDomain: sandbox2677.opentlc.com
+  # Three control-plane VMs carrying their own etcd quorum. Not SNO, and not a
+  # hosted control plane: nothing of this cluster runs on the hub.
+  clusterType: HighlyAvailable
+  clusterImageSetNameRef: openshift-4.22.10
+  networkType: OVNKubernetes
+  pullSecretRef:
+    name: vcp-1-pull-secret
+  sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIORhGG3z4xX8OG24jQ4laRaKmsowH5wwZ6aYQYN8Ix4J tnf-toolbox-gp e2e test"
+  clusterNetwork:
+    - cidr: 10.132.0.0/14
+      hostPrefix: 23
+  serviceNetwork:
+    - cidr: 172.31.0.0/16
+  templateRefs:
+    - name: vcp-cluster-templates-v1
+      namespace: open-cluster-management
+  # Empty on purpose. These nodes are KubeVirt VMs with no BMC, and a NodeSpec
+  # requires a BMC address, a boot MAC and a credentials Secret the operator
+  # validates before it renders anything. There is no hardware to claim here --
+  # the VMs are created separately and register themselves as Agents from the
+  # one discovery ISO the InfraEnv builds. How many of them to expect is in the
+  # template, since the installer needs the count and this list cannot carry it.
+  nodes: []
