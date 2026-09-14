@@ -74,6 +74,7 @@ jq -n \
   --argjson guest_vm_cores          "${GUEST_VM_CORES}" \
   --arg guest_vm_memory      "${GUEST_VM_MEMORY}" \
   --arg guest_vm_root_disk   "${GUEST_VM_ROOT_DISK}" \
+  --argjson guest_public_control_plane "${GUEST_PUBLIC_CONTROL_PLANE:-false}" \
   --arg site_repo_url        "${SITE_REPO_URL:-}" \
   --arg site_repo_revision   "${SITE_REPO_REVISION:-main}" \
   '$ARGS.named' > "${VARS_FILE}"
