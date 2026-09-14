@@ -16,7 +16,7 @@ metadata:
   namespace: hcp-1
 spec:
   clusterName: hcp-1
-  baseDomain: sandbox2677.opentlc.com
+  baseDomain: sandbox2765.opentlc.com
   clusterType: HostedControlPlane
   clusterImageSetNameRef: openshift-4.22.10
   networkType: OVNKubernetes

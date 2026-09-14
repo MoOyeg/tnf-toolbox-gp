@@ -15,7 +15,7 @@ metadata:
   namespace: vcp-1
 spec:
   clusterName: vcp-1
-  baseDomain: sandbox2677.opentlc.com
+  baseDomain: sandbox2765.opentlc.com
   # Three control-plane VMs carrying their own etcd quorum. Not SNO, and not a
   # hosted control plane: nothing of this cluster runs on the hub.
   clusterType: HighlyAvailable
