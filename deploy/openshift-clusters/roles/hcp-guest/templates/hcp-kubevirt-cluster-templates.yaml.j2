@@ -157,6 +157,17 @@ data:
       namespace: "{{ .Spec.ClusterName }}"
       annotations:
         siteconfig.open-cluster-management.io/sync-wave: "2"
+        # HyperShift spreads a NodePool's VMs across the infra cluster either
+        # way: without this it uses preferred pod anti-affinity, which only says
+        # "somewhere else if you can" and will happily put two of three on one
+        # node. With it, topology spread constraints with maxSkew 1, which asks
+        # for as even a distribution as the node count allows.
+        #
+        # The annotation exists because switching an existing NodePool between
+        # the two replaces every VM, so the controller will not do it unasked.
+        # These NodePools are created with it from the start, so there is
+        # nothing to replace.
+        hypershift.openshift.io/nodepool-supports-kubevirt-topology-spread-constraints: "true"
     spec:
       clusterName: "{{ .Spec.ClusterName }}"
       arch: amd64

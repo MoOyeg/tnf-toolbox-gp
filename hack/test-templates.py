@@ -860,6 +860,42 @@ def test_app_instances_are_independent():
           int(defaults["app_instances"]) == 1)
 
 
+def test_guest_vms_are_spread_across_the_infra_cluster():
+    """Both kinds of guest ask to be spread over the infra cluster's nodes.
+
+    Left alone they pile onto whichever node has room first, which on a two-node
+    infra cluster means one node can end up carrying a whole guest -- and losing
+    that node then takes the guest with it rather than half of it.
+
+    ScheduleAnyway rather than DoNotSchedule on purpose: an unbalanced VM is
+    better than a Pending one, which is the trade that matters when a node is
+    down and the remaining one is the only place anything can run.
+    """
+    print("\nspreading guest VMs")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+
+    vms = [d for d in yaml.safe_load_all(render(
+        f"{roles}/vcp-cluster/templates/sites-infra-virtualmachines.yaml.j2")) if d]
+    for vm in vms:
+        tsc = vm["spec"]["template"]["spec"].get("topologySpreadConstraints", [])
+        check(f"{vm['metadata']['name']}: asks to be spread by hostname",
+              any(c["topologyKey"] == "kubernetes.io/hostname" for c in tsc))
+        check(f"{vm['metadata']['name']}: as evenly as the nodes allow",
+              any(c.get("maxSkew") == 1 for c in tsc))
+        check(f"{vm['metadata']['name']}: but is still schedulable when it cannot be",
+              all(c.get("whenUnsatisfiable") == "ScheduleAnyway" for c in tsc))
+
+    # HyperShift owns the NodePool's VM template, so the only lever is the
+    # annotation that opts it into spread constraints instead of the weaker
+    # preferred anti-affinity it uses by default.
+    cm = yaml.safe_load(render(
+        f"{roles}/hcp-guest/templates/hcp-kubevirt-cluster-templates.yaml.j2"))
+    pool = yaml.safe_load(strip_go(cm["data"]["NodePool"]))
+    check("a hosted guest's node pool opts into topology spread constraints",
+          "hypershift.openshift.io/nodepool-supports-kubevirt-topology-spread-constraints"
+          in pool["metadata"]["annotations"])
+
+
 def test_site_definitions():
     """One ClusterInstance per cluster, and what has to be true of every one.
 
@@ -960,6 +996,7 @@ def main():
     test_agent_cluster_install_networking_is_nested()
     test_both_vcp_paths_approve_their_agents()
     test_app_instances_are_independent()
+    test_guest_vms_are_spread_across_the_infra_cluster()
     test_site_definitions()
     test_infra_half_of_a_site_carries_no_credential()
     test_site_agnostic_roles_name_no_single_site()
