@@ -46,7 +46,8 @@ Not in `make all`:
 |---|---|---|
 | `make guests` | `40-hcp-guests.yml` | guests hosted by TNF's own MCE instead of ACM |
 | `make vcp-make-guests-from-acm` | `41-vcp-clusters-from-acm.yml` | a whole cluster on VMs, control plane included |
-| `make sites` | `42-sites.yml` | write the fleet's site definitions for Argo CD to build |
+| `make siteconfig` | `37-siteconfig.yml` | SiteConfig operator, install templates, OpenShift GitOps |
+| `make sites` | `42-sites.yml` | write the fleet's site definitions, harvest what exists |
 | `make tnf-recover` | `16-tnf-recover.yml` | a TNF pair that did not re-form after a reboot |
 | `make app` | `60-app.yml` | the visual inspection app, in every guest cluster |
 
@@ -88,12 +89,25 @@ clusters:
 | a whole cluster on VMs | `make vcp-make-guests-from-acm` | `make siteconfig` then `make sites` |
 
 `make siteconfig` is the one-time setup: it enables the SiteConfig operator on
-the hub, creates the install template each profile is rendered from, and
-installs OpenShift GitOps with an ApplicationSet watching `SITE_REPO_URL`.
-`make sites` then writes one folder per cluster under `sites/` and puts the
-secrets each one references on the hub. **Committing and pushing that folder is
+the hub, enables Central Infrastructure Management and the release
+`ClusterImageSet` every site definition names, creates the install template each
+profile is rendered from, and installs OpenShift GitOps with two ApplicationSets
+— one watching `sites/` for the hub, one watching `sites-infra/` for the infra
+cluster.
+
+`make sites` then writes one folder per cluster under each, and puts on the
+clusters the things that must not be committed: each site's secrets, and the
+DataVolume holding the discovery ISO. **Committing and pushing those folders is
 the last step and it is yours** — the hub reconciles against Git, not against
 the run that generated the files.
+
+`make sites` is re-runnable and expects to be re-run. On the first pass a
+cluster does not exist yet, so there is no kubeconfig to harvest, no agents to
+approve and no InfraEnv to import an ISO from; it does what it can and says what
+it skipped. Run it again once Argo CD has caught up and it picks up the rest —
+harvesting each guest's kubeconfig into `clusters/guests/` so `make guest-gpu`
+and `make app` can find it, approving the machines that registered themselves,
+and finishing the import that makes a cluster show as Ready in ACM.
 
 TNF is deliberately not in this table. It is installed by
 `openshift-baremetal-install` onto EC2 metal, and the assisted installer cannot

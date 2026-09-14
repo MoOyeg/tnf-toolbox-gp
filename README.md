@@ -132,8 +132,8 @@ resources directly:
 
 ```bash
 make siteconfig    # SiteConfig operator + the install templates + OpenShift GitOps
-make sites         # one folder per cluster, written under sites/
-git add sites && git commit -m "the fleet" && git push
+make sites         # one folder per cluster, written under sites/ and sites-infra/
+git add sites sites-infra && git commit -m "the fleet" && git push
 ```
 
 Ansible generates; Git is what the hub reconciles against. An ApplicationSet
@@ -142,8 +142,32 @@ and a `ClusterInstance` edited by hand on the hub is put back.
 
 **Secrets never go to Git.** Each site's pull secret — and for a hosted cluster
 the infra-cluster kubeconfig and its etcd encryption key — are written straight
-to the hub by `make sites`. A `Secret` in a repository is readable by everyone
-who can read the repository.
+to the hub by `make sites`. Nor does the discovery ISO's URL: it carries a
+signed token that does not expire, and the image it fetches contains the
+cluster's pull secret and SSH key, so in a public repository it would be a
+permanent credential to both.
+
+`make sites` is re-runnable and is meant to be re-run. A cluster that does not
+exist yet has no kubeconfig to harvest, no agents to approve and no InfraEnv to
+import an ISO from, so the stage does what it can and says what it skipped.
+Running it again once Argo CD has caught up picks up the rest.
+
+### Two directories, because the pieces live on two clusters
+
+An Argo CD Application has exactly one destination, and a guest's pieces do not
+all belong in one place:
+
+| | Synced to | Holds |
+|---|---|---|
+| `sites/<cluster>/` | the ACM hub | the namespace and the `ClusterInstance` |
+| `sites-infra/<cluster>/` | the infra cluster (TNF) | the `VirtualMachine`s an all-VM cluster's nodes run on |
+
+Argo CD reaches the infra cluster through ACM's own integration — a `Placement`
+selects it and a `GitOpsCluster` hands it over, so ACM owns and rotates the
+cluster secret rather than a kubeconfig being minted into one by hand.
+
+A hosted cluster has no folder under `sites-infra/`: HyperShift creates its
+worker VMs itself from the NodePool's replica count.
 
 ### What is the *what* and what is the *how*
 
@@ -164,22 +188,50 @@ shipped hosted set renders `platform: type: Agent` with one `NodePool` of
 `replicas: 1` per node; ours are OpenShift Virtualization VMs that HyperShift
 creates itself from a replica count.
 
-### Two consequences worth knowing before you use it
+### Four things worth knowing before you use it
 
-**`spec.nodes` is empty in every site definition.** A `NodeSpec` requires
-`bmcAddress`, `bootMACAddress` *and* a BMC credentials `Secret` that the
-operator's validator checks for before it renders anything. None of those exist
-for a KubeVirt VM — there is no BMC, and the boot MAC is assigned at creation.
-Filling them in would mean three fabrications per node plus a dummy Secret on
-the hub, for fields no rendered manifest would ever read.
+**`spec.nodes` runs opposite ways for the two profiles**, and the CRD will not
+tell you. It accepts an empty list either way; the operator then rejects it at
+reconcile, so the Argo CD Application syncs green and no cluster appears:
 
-**Worker sizing and node counts live in the template, not the site
-definition.** The `ClusterInstance` API has nowhere to put cores, memory or
-GPUs: `NodeSpec` describes hardware to be *claimed*, not hardware to be
-*created*. This matches how the toolbox already works — `GUEST_VM_CORES` and
-friends in `config/instance.env` are fleet-wide rather than per guest. A
-differently shaped cluster is a second template set, which is the separation the
-operator is built around.
+```
+controlPlaneCount < 1 && clusterType != HostedControlPlane
+  -> "at least 1 control-plane agent is required"
+controlPlaneCount > 0 && clusterType == HostedControlPlane
+  -> "hosted control plane clusters must not have control-plane agents"
+```
+
+So an all-VM cluster lists every node and a hosted one lists none. Three of each
+listed node's required fields are fictions — a `NodeSpec` describes hardware to
+be *claimed*, and these VMs do not exist until the infra cluster creates them —
+so `bmcAddress` points into TEST-NET-1, the boot MAC is locally administered,
+and the credentials `Secret` exists only because the validator checks that it
+does. Nothing reads them: the node template set renders no `BareMetalHost`.
+
+**A site definition committed wrong cannot be fixed by committing it right.** A
+`ClusterInstance` spec is immutable once created, so Argo CD retries forever and
+reports `OutOfSync` at the correct revision:
+
+```
+admission webhook denied the request:
+spec update not allowed during provisioning or cluster reinstalls
+```
+
+The object has to be deleted so Argo CD recreates it. Deleting a
+`ClusterInstance` normally deprovisions its cluster, so check what it has
+actually rendered first — one that failed validation has rendered nothing and
+can be deleted freely.
+
+**Sizing and counts live in the template, not the site definition.** The
+`ClusterInstance` API has nowhere to put cores, memory or GPUs. This matches how
+the toolbox already works: `GUEST_VM_CORES` and friends in `config/instance.env`
+are fleet-wide rather than per guest. A differently shaped cluster is a second
+template set, which is the separation the operator is built around.
+
+**`oc get application` answers about the wrong thing on the hub.** ACM ships
+`applications.app.k8s.io` and it shadows Argo CD's, so a bare `oc get
+application` reports "No resources found" while the Applications exist. Ask for
+`oc get applications.argoproj.io -n openshift-gitops`.
 
 One thing the conversion fixes outright: `hcp create` mints a fresh random
 `infraID` on every invocation, and `infraID` is immutable once the
@@ -216,10 +268,19 @@ ordinary PCI device, which is what `make guest-gpu` arranges -- so run that
 first. The images are built by the guest cluster itself from `app/`, straight
 into its own internal registry.
 
-**`make iommu` is optional now.** `make tnf` writes the IOMMU MachineConfig
-into the install manifests, so both nodes boot with `intel_iommu=on iommu=pt`
-and there is no rollout to survive. On a cluster built by this repo the stage
-finds the arguments already in place and applies nothing:
+**One instance takes two GPUs** — one for the analyzer's fast path, one for
+vLLM. `APP_INSTANCES` in `config/instance.env` runs more than one copy per
+guest, each a complete pipeline in its own namespace with its own cameras,
+analyzer, vLLM and dashboard, so two are two independent production lines rather
+than one line scaled up. A guest with three workers at two T4s each has room for
+three. The images are built once by the first instance and shared; the rest are
+granted `system:image-puller` on its namespace rather than rebuilding a
+byte-identical 6.6GiB analyzer layer.
+
+**`make iommu` reboots nothing now, but it is not optional.** `make tnf` writes
+the IOMMU MachineConfig into the install manifests, so both nodes boot with
+`intel_iommu=on iommu=pt` and there is no rollout to survive. On a cluster built
+by this repo the stage finds the arguments already in place and applies nothing:
 
 ```
 $ make iommu
@@ -227,8 +288,17 @@ intel_iommu=on iommu=pt already on every node and
 100-master-gpu-passthrough is in place. Nothing to apply, and no reboot.
 ```
 
-It is kept for a cluster built before that change, where it still does the day-2
-rollout. Which is worth avoiding: adding those arguments to a *running* two-node
+It still has to run, because it is also the only thing that labels the nodes
+`nvidia.com/gpu.workload.config=vm-passthrough`. Without that label the GPU
+Operator leaves them on `sandboxWorkloads.defaultWorkload` — container mode —
+the T4s stay bound to the NVIDIA driver instead of `vfio-pci`, no passthrough
+resource is ever advertised, and `make virt-mce` fails minutes later at
+`discover-gpu-resource` with an error that points at GPUs rather than at a
+missing label. `make all` includes it; skipping stages by hand is where this
+bites.
+
+It also still performs the day-2 rollout on a cluster built before the
+MachineConfig moved into the install manifests. Which is worth avoiding: adding those arguments to a *running* two-node
 cluster reboots each node in turn, and a node that comes back is not reliably
 re-added to the Pacemaker pair. The survivor rewrites corosync to a single-node
 cluster to keep quorum — designed behaviour — and does not always undo it. The
@@ -419,6 +489,8 @@ deploy/
     roles/               one role per layer, reused across sites and guests
 sites/                   generated: one ClusterInstance per cluster, synced to
                          the hub by Argo CD (commit these)
+sites-infra/             generated: the VirtualMachines an all-VM cluster's
+                         nodes run on, synced to TNF (commit these too)
 docs/                    architecture, fencing, GPU allocation, guest clusters,
                          the app redesign, and the editable diagram
 hack/                    lint and static template checks
@@ -474,7 +546,7 @@ docs advise against — on a single node there is nowhere else to reschedule to.
 - **19 unit tests** for the Redfish shim — routing, both auth modes, the
   power-state mapping including every transitional EC2 state, and reset-type
   translation. The EC2 layer is stubbed.
-- **126 static checks** over the templates — every Jinja template renders under
+- **165 static checks** over the templates — every Jinja template renders under
   `StrictUndefined`, the rendered `install-config.yaml` has the fencing shape
   TNF requires, the ignition pointers are valid JSON inside the CloudFormation
   parameter limit, haproxy drops bootstrap from the ingress backends, every
@@ -514,11 +586,28 @@ so the redirect names something a browser cannot reach. `make guest-lb
 GUEST=<name>` builds an AWS network load balancer in front of the API and OAuth
 NodePorts, and `GUEST_PUBLIC_CONTROL_PLANE=true` publishes the guest against it,
 which is what MetalLB's documentation means by "use the platform's load
-balancer". It is **written but not yet run end to end**: the cluster was not
-recoverable when it was added, so what is verified is the manifest rewrite, not
-the login it is meant to fix. It also moves the worker VMs' route to the API
-server out through the internet gateway rather than across the peering, which is
-the part most likely to need revisiting.
+balancer".
+
+Only the two services a human touches move there. Ignition and Konnectivity stay
+on the hub's private address, because those are spoken only by the worker VMs
+and that is the address they can reach across the peering. The API server is the
+exception that has to move: the VMs speak it too, so publishing it sends their
+traffic out through the internet gateway and back rather than across the
+peering. They have egress, so it works; it is the part most likely to need
+revisiting.
+
+Set it in `config/instance.env`. Until recently the Makefile documented the
+variable and the playbook wrapper never passed it, so setting it did nothing at
+all and the guest came up private whatever the config said.
+
+Still **written but not run end to end**. The pieces are verified — the load
+balancer builds, the wrapper carries the setting, and the install template
+publishes API and OAuth on the balancer's name with the pinned ports while the
+other two stay private — but the environment was shut down before a guest was
+rebuilt against it, so the login it exists to fix has not been seen to work.
+Note also that `spec.services` is immutable once a `HostedCluster` exists, so
+switching an existing guest means deleting its `ClusterInstance` and letting
+Argo CD rebuild it.
 
 ## Documentation
 
