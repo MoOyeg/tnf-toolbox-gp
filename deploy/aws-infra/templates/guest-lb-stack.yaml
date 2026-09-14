@@ -34,6 +34,20 @@ Parameters:
     Description: Pinned NodePort for the guest's OAuth server.
     MinValue: 30000
     MaxValue: 32767
+  ClusterSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: >-
+      The hub node's own security group. The NodePorts live behind it, and it
+      otherwise admits only the bastion, the nodes themselves and the peered
+      VPC -- so without the rules below every probe and every client is dropped.
+  AllowedApiCidr:
+    Type: String
+    Description: >-
+      CIDR permitted to reach the guest's API and OAuth ports, the same knob
+      that governs the cluster's own API.
+  VpcCidr:
+    Type: String
+    Description: This VPC's CIDR, which is where the load balancer's ENIs live.
 
 Resources:
   # An NLB rather than an ALB: both services speak TLS end to end and the guest
@@ -107,6 +121,52 @@ Resources:
       DefaultActions:
         - Type: forward
           TargetGroupArn: !Ref OAuthTargetGroup
+
+  # Two rules per port, and both are needed, because an NLB with instance
+  # targets preserves the client IP by default. Health checks come from the load
+  # balancer's own ENIs and so arrive from inside the VPC; forwarded traffic
+  # keeps the caller's real address and arrives from wherever the caller is.
+  # Opening only the VPC CIDR turns the targets healthy and still refuses every
+  # actual client -- which looks like a working load balancer that times out.
+  ApiIngressFromClients:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ClusterSecurityGroupId
+      Description: !Sub 'Guest ${ClusterName} API via its public load balancer'
+      IpProtocol: tcp
+      FromPort: !Ref ApiNodePort
+      ToPort: !Ref ApiNodePort
+      CidrIp: !Ref AllowedApiCidr
+
+  ApiIngressFromHealthChecks:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ClusterSecurityGroupId
+      Description: !Sub 'Guest ${ClusterName} API health checks from the load balancer'
+      IpProtocol: tcp
+      FromPort: !Ref ApiNodePort
+      ToPort: !Ref ApiNodePort
+      CidrIp: !Ref VpcCidr
+
+  OAuthIngressFromClients:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ClusterSecurityGroupId
+      Description: !Sub 'Guest ${ClusterName} OAuth via its public load balancer'
+      IpProtocol: tcp
+      FromPort: !Ref OAuthNodePort
+      ToPort: !Ref OAuthNodePort
+      CidrIp: !Ref AllowedApiCidr
+
+  OAuthIngressFromHealthChecks:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ClusterSecurityGroupId
+      Description: !Sub 'Guest ${ClusterName} OAuth health checks from the load balancer'
+      IpProtocol: tcp
+      FromPort: !Ref OAuthNodePort
+      ToPort: !Ref OAuthNodePort
+      CidrIp: !Ref VpcCidr
 
 Outputs:
   LoadBalancerDns:

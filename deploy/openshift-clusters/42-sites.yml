@@ -121,10 +121,15 @@
         label: "{{ item.item }}"
       when: item.rc | default(1) == 0
 
+    # find, not ls. A glob that matches nothing makes ls exit 2, and
+    # 2>/dev/null hides the message but not the status -- with pipefail set the
+    # pipeline then fails even though wc counted correctly. That is exactly the
+    # fresh-fleet case this report exists to describe: no guest built yet, zero
+    # kubeconfigs, and the stage would die one task before saying so.
     - name: Report which guests are reachable
       ansible.builtin.shell: >-
         set -o pipefail;
-        ls {{ guest_kubeconfig_dir }}/*.kubeconfig 2>/dev/null | wc -l
+        find {{ guest_kubeconfig_dir }} -maxdepth 1 -name '*.kubeconfig' | wc -l
       register: guest_count
       changed_when: false
 

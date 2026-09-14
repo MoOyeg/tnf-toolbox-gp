@@ -27,7 +27,10 @@ create_or_update_stack "${STACK}" "${TEMPLATE_DIR}/guest-lb-stack.yaml" \
   "SubnetId=$(read_acm_state subnet_id)" \
   "TargetInstanceId=${INSTANCE}" \
   "ApiNodePort=${GUEST_API_NODEPORT}" \
-  "OAuthNodePort=${GUEST_OAUTH_NODEPORT}"
+  "OAuthNodePort=${GUEST_OAUTH_NODEPORT}" \
+  "ClusterSecurityGroupId=$(read_acm_state cluster_sg_id)" \
+  "AllowedApiCidr=${ALLOWED_API_CIDR:-0.0.0.0/0}" \
+  "VpcCidr=$(read_acm_state vpc_cidr)"
 
 DNS="$(stack_output "${STACK}" LoadBalancerDns)"
 [ -n "${DNS}" ] || die "stack ${STACK} produced no DNS name"
