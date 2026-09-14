@@ -54,6 +54,7 @@
         tasks_from: siteconfig-site
       vars:
         op_kubeconfig: "{{ acm_kubeconfig }}"
+        vcp_infra_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
 
     # The seam between "SiteConfig built a cluster" and everything downstream.
     #

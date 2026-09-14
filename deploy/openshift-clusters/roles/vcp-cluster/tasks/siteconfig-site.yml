@@ -8,6 +8,19 @@
 # everyone who can read the repository, and this one carries registry
 # credentials. So Ansible puts it straight on the hub and Git never sees it.
 
+# An empty kubeconfig is not an error to the k8s module -- it falls back to the
+# environment, which in this play is the hub. That is how the discovery ISO for
+# a cluster whose VMs run on the infra cluster was imported onto the hub
+# instead: no failure, no warning, just a DataVolume on the wrong cluster and
+# three VMs waiting for a PVC that would never appear.
+- name: Refuse to guess which cluster the virtual machines belong on
+  ansible.builtin.assert:
+    that: vcp_infra_kubeconfig | default('') | length > 0
+    fail_msg: >-
+      vcp_infra_kubeconfig is empty. The virtual machines and their discovery
+      ISO belong on the infra cluster, and without this the module would put
+      them wherever KUBECONFIG happens to point -- which is the hub.
+
 - name: Plan the cluster's virtual machines
   ansible.builtin.include_tasks: plan-nodes.yml
 
