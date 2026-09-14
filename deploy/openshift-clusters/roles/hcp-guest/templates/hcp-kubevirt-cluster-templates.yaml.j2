@@ -113,21 +113,30 @@ data:
       # spec.services is immutable once the HostedCluster exists, which is why
       # it is set correctly here rather than patched afterwards.
       services:
+        # The two a human touches move to the load balancer's public name when
+        # the public entry point is on; the two only the worker VMs speak stay
+        # on the hub's private address, which is what those VMs can reach.
+        # Publishing all four publicly would send the VMs' own traffic out
+        # through the internet and back rather than across the peering.
         - service: APIServer
           servicePublishingStrategy:
             type: NodePort
             nodePort:
-              address: {{ guest_api_address }}
 {% if guest_public_control_plane %}
+              address: {{ guest_public_address }}
               port: {{ guest_api_nodeport }}
+{% else %}
+              address: {{ guest_api_address }}
 {% endif %}
         - service: OAuthServer
           servicePublishingStrategy:
             type: NodePort
             nodePort:
-              address: {{ guest_api_address }}
 {% if guest_public_control_plane %}
+              address: {{ guest_public_address }}
               port: {{ guest_oauth_nodeport }}
+{% else %}
+              address: {{ guest_api_address }}
 {% endif %}
         - service: Ignition
           servicePublishingStrategy:

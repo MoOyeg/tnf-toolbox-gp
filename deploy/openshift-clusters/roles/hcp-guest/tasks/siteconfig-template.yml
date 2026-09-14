@@ -21,6 +21,31 @@
       storage class baked in. Run the discover-gpu-resource task against the
       infra cluster and resolve storage_class before including this.
 
+# spec.services is immutable once a HostedCluster exists, so the address has to
+# be right in the template before the cluster is ever rendered from it -- there
+# is no patching it afterwards.
+- name: Read the load balancer's public name
+  ansible.builtin.slurp:
+    src: "{{ repo_root }}/deploy/aws-infra/instance-data/{{ acm_cluster_name }}/{{ guest_cluster_prefix }}-1_lb_dns"
+  delegate_to: localhost
+  register: guest_lb_state
+  when: guest_public_control_plane | bool
+  failed_when: false
+
+- name: Fail if the public entry point was asked for but never built
+  ansible.builtin.assert:
+    that: guest_lb_state.content is defined
+    fail_msg: >-
+      guest_public_control_plane is on but no load balancer is recorded. Run
+      'make guest-lb GUEST={{ guest_cluster_prefix }}-1' first: the NodePorts are
+      pinned so the stack can be built before the guest, and spec.services cannot
+      be changed once the HostedCluster exists.
+  when: guest_public_control_plane | bool
+
+- name: Note where the guest's API and console will answer
+  ansible.builtin.set_fact:
+    guest_public_address: "{{ (guest_lb_state.content | default('') | b64decode | trim) if guest_public_control_plane | bool else '' }}"
+
 - name: Create the hosted-control-plane-on-KubeVirt install template
   kubernetes.core.k8s:
     kubeconfig: "{{ op_kubeconfig }}"

@@ -742,6 +742,27 @@ def test_siteconfig_install_templates():
     check("the workers are KubeVirt, not Agent",
           hosted["spec"]["platform"]["type"] == "KubeVirt")
 
+    # With the public entry point on, only the two services a human touches move
+    # to the load balancer. Publishing the other two there as well would send the
+    # worker VMs' own traffic out through the internet and back rather than
+    # across the peering, and spec.services is immutable once the cluster exists
+    # so there is no correcting it afterwards.
+    public = yaml.safe_load(strip_go(yaml.safe_load(render(
+        f"{roles}/hcp-guest/templates/hcp-kubevirt-cluster-templates.yaml.j2",
+        guest_public_control_plane=True,
+        guest_public_address="lb.example.com"))["data"]["HostedCluster"]))
+    published = {s["service"]: s["servicePublishingStrategy"]["nodePort"]
+                 for s in public["spec"]["services"]}
+    check("a public guest puts its API and OAuth on the load balancer",
+          published["APIServer"]["address"] == "lb.example.com"
+          and published["OAuthServer"]["address"] == "lb.example.com")
+    check("and pins the ports the load balancer was built for",
+          published["APIServer"]["port"] == defaults["guest_api_nodeport"]
+          and published["OAuthServer"]["port"] == defaults["guest_oauth_nodeport"])
+    check("while the services only the worker VMs speak stay private",
+          published["Ignition"]["address"] == CONTEXT["guest_api_address"]
+          and published["Konnectivity"]["address"] == CONTEXT["guest_api_address"])
+
     pool = yaml.safe_load(strip_go(hcp["data"]["NodePool"]))
     check("the node pool is KubeVirt too",
           pool["spec"]["platform"]["type"] == "KubeVirt")

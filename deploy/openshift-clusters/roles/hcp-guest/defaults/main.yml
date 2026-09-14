@@ -20,6 +20,13 @@ nodepool_timeout: 3600
 # The VMs have egress, so it should work; it has not been run end to end.
 guest_public_control_plane: false
 
+# The load balancer's public name, read from the stack 'make guest-lb' builds.
+# Only meaningful when guest_public_control_plane is on, and baked into the
+# install template rather than the site definition for the same reason the VM
+# sizing is: one template serves the fleet. A second guest with its own load
+# balancer is a second template set.
+guest_public_address: ""
+
 # Pinned so the load balancer can be built before the guest exists. Left to
 # HyperShift these are allocated at creation, and the stack would have to be
 # built afterwards from whatever it happened to choose.
