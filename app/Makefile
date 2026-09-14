@@ -39,8 +39,13 @@ push:
 	$(ENGINE) push $(REGISTRY)/dashboard:latest
 
 # sed rather than kustomize so this needs nothing but oc.
+#
+# The namespace manifest goes through sed as well. Applied verbatim it always
+# created "visual-inspection" whatever NAMESPACE said, so deploying a second
+# instance put its components in a namespace nothing had created and left a
+# stray one behind.
 deploy:
-	@oc apply -f manifests/00-namespace.yaml
+	@sed -e "s|name: visual-inspection|name: $(NAMESPACE)|" manifests/00-namespace.yaml | oc apply -f -
 	@for f in manifests/[1-5]*.yaml; do \
 	   sed -e "s|REPLACED_BY_KUSTOMIZE|$(REGISTRY)|g" \
 	       -e "s|registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.1|$(VLLM_IMAGE)|g" \

@@ -1,0 +1,76 @@
+---
+# One complete instance of the application, in its own namespace.
+#
+# Two instances are two independent pipelines -- separate cameras, analyzer,
+# vLLM and dashboard -- rather than one pipeline scaled up, which is what makes
+# them worth having: each is a production line that can be looked at, restarted
+# or broken on its own.
+#
+# app_instance is the 1-based number of the instance being deployed.
+
+- name: "{{ app_label }}: name instance {{ app_instance }}"
+  ansible.builtin.set_fact:
+    app_namespace: "{{ app_namespace_base }}-{{ app_instance }}"
+
+- name: "{{ app_label }}/{{ app_namespace }}: create the application namespace"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ app_namespace }}"
+        labels:
+          app.kubernetes.io/part-of: inspection
+
+# The default vLLM image is Red Hat AI Inference Server, on registry.redhat.io.
+# The cluster pull secret already carries those credentials, so this copies them
+# in rather than asking for a second secret nobody would remember to supply.
+- name: "{{ app_label }}/{{ app_namespace }}: give the namespace registry credentials"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ app_pull_secret }}"
+        namespace: "{{ app_namespace }}"
+      type: kubernetes.io/dockerconfigjson
+      data:
+        .dockerconfigjson: "{{ pull_secret | b64encode }}"
+
+# The manifests name no imagePullSecrets, so the credential has to reach the
+# pods through the service account they do use.
+- name: "{{ app_label }}/{{ app_namespace }}: link the credentials to the default service account"
+  ansible.builtin.command: >-
+    oc -n {{ app_namespace }} secrets link default {{ app_pull_secret }} --for=pull
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: app_secret_link
+  changed_when: app_secret_link.rc == 0
+
+# Built once, in the first instance's namespace, and shared. The three images
+# are identical for every instance, and rebuilding them per namespace would pull
+# a CUDA torch base and write a 6.6GiB analyzer layer again for the same result.
+- name: "{{ app_label }}: build the images in the cluster"
+  ansible.builtin.include_tasks: build.yml
+  when: app_instance | int == 1
+
+# And the instances that did not build them need to be allowed to pull them.
+# Without this their pods fail with ImagePullBackOff against an internal
+# registry path that plainly exists, which is a confusing way to find out.
+- name: "{{ app_label }}/{{ app_namespace }}: let this instance pull the shared images"
+  ansible.builtin.command: >-
+    oc policy add-role-to-user system:image-puller
+    system:serviceaccount:{{ app_namespace }}:default
+    -n {{ app_images_namespace }}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: app_puller
+  changed_when: "'added' in app_puller.stdout"
+  when: app_instance | int != 1
+
+- name: "{{ app_label }}/{{ app_namespace }}: apply the manifests"
+  ansible.builtin.include_tasks: deploy.yml

@@ -19,7 +19,28 @@ app_source_dir: "{{ repo_root }}/app"
 # Where that directory is unpacked on the bastion, and built from.
 app_workdir: "/home/{{ ansible_user }}/apps/visual-inspection"
 
-app_namespace: visual-inspection
+# How many copies of the whole application to run in each guest. Each is a
+# complete pipeline in its own namespace -- its own cameras, analyzer, vLLM and
+# dashboard -- so two of them are two independent production lines rather than
+# one line scaled up.
+#
+# Each instance takes two GPUs, one for the analyzer's fast path and one for
+# vLLM, so this is bounded by what the guest advertises: a guest with three
+# workers at two T4s each has room for three.
+app_instances: 1
+
+app_namespace_base: visual-inspection
+
+# The namespace of the instance currently being deployed. Overridden per
+# instance by the loop in main.yml; the default keeps a direct role invocation
+# working.
+app_namespace: "{{ app_namespace_base }}-1"
+
+# Images are built once and shared. Every instance runs the same three images,
+# and building them per namespace would mean pulling a CUDA torch base and
+# writing a 6.6GiB analyzer layer again for a byte-identical result. The
+# instances after the first are granted image-puller on this namespace instead.
+app_images_namespace: "{{ app_namespace_base }}-1"
 
 # One binary build per image. new-build pushes each to the cluster's internal
 # registry as <registry>/<namespace>/<name>:latest, which is exactly what the
@@ -30,7 +51,7 @@ app_images:
   - analyzer
   - dashboard
 
-app_registry: "image-registry.openshift-image-registry.svc:5000/{{ app_namespace }}"
+app_registry: "image-registry.openshift-image-registry.svc:5000/{{ app_images_namespace }}"
 
 # Every workload the manifests create, in the order they become useful. Used
 # only for the rollout wait.

@@ -8,7 +8,7 @@
 # Makefile takes is passed explicitly, so nothing depends on its defaults
 # happening to match this role's.
 
-- name: "{{ app_label }}: apply the manifests"
+- name: "{{ app_label }}/{{ app_namespace }}: apply the manifests"
   ansible.builtin.command:
     cmd: >-
       make -C {{ app_workdir }} deploy
@@ -31,7 +31,7 @@
 #
 # Only those three: rtsp-server and vllm run upstream images this stage never
 # rebuilds, and restarting vllm would re-load several GiB of weights for nothing.
-- name: "{{ app_label }}: restart the deployments whose images were rebuilt"
+- name: "{{ app_label }}/{{ app_namespace }}: restart the deployments whose images were rebuilt"
   ansible.builtin.command: >-
     oc -n {{ app_namespace }} rollout restart deployment/{{ item }}
   environment:
@@ -40,13 +40,13 @@
   register: app_restart
   changed_when: app_restart.rc == 0
 
-- name: "{{ app_label }}: wait for every component to roll out"
+- name: "{{ app_label }}/{{ app_namespace }}: wait for every component to roll out"
   block:
     # Serially, in dependency order, so a failure names the component that
     # actually broke rather than whichever one lost the race.
     # loop_control.label rather than {{ item }} in the name: the name is
     # templated once, before the loop binds item, so it would print raw.
-    - name: "{{ app_label }}: roll out each component"
+    - name: "{{ app_label }}/{{ app_namespace }}: roll out each component"
       ansible.builtin.command: >-
         oc -n {{ app_namespace }} rollout status deployment/{{ item }}
         --timeout={{ app_rollout_timeout }}s
@@ -60,7 +60,7 @@
       loop_control:
         label: "{{ item }}"
   rescue:
-    - name: "{{ app_label }}: collect deployment diagnostics"
+    - name: "{{ app_label }}/{{ app_namespace }}: collect deployment diagnostics"
       ansible.builtin.shell: |
         echo "--- pods ---"
         oc get pods -n {{ app_namespace }} -o wide 2>&1
@@ -96,7 +96,7 @@
 
           {{ app_diagnostics.stdout }}
 
-- name: "{{ app_label }}: read the dashboard route"
+- name: "{{ app_label }}/{{ app_namespace }}: read the dashboard route"
   ansible.builtin.command: >-
     oc -n {{ app_namespace }} get route dashboard -o jsonpath={.spec.host}
   environment:
@@ -104,8 +104,8 @@
   register: app_route
   changed_when: false
 
-- name: "{{ app_label }}: report the dashboard"
+- name: "{{ app_label }}/{{ app_namespace }}: report the dashboard"
   ansible.builtin.debug:
     msg:
-      - "{{ app_label }}: https://{{ app_route.stdout }}"
-      - "{{ app_cameras }} cameras, {{ app_model }} on the slow path."
+      - "{{ app_label }} {{ app_namespace }}: https://{{ app_route.stdout }}"
+      - "{{ app_cameras }} cameras, {{ app_model }} on the slow path, 2 GPUs."

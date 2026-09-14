@@ -20,56 +20,22 @@
 # slow one. Without both, the pods sit Pending with a message about insufficient
 # nvidia.com/gpu, which reads as a capacity problem rather than as "the GPU
 # stage has not run in this guest yet".
-- name: "{{ app_label }}: fail early if there are not two GPUs to schedule on"
+- name: "{{ app_label }}: fail early if there are not enough GPUs to schedule on"
   ansible.builtin.assert:
-    that: app_gpu_total.stdout | int >= 2
+    that: app_gpu_total.stdout | int >= (2 * app_instances | int)
     fail_msg: >-
       {{ app_label }} advertises {{ app_gpu_total.stdout }} nvidia.com/gpu, and
-      the app needs two -- one for the analyzer's fast path and one for vLLM.
-      Run 'make guest-gpu' first; if it has already run, the GPU Operator inside
-      the guest has not finished advertising the passed-through T4s.
+      {{ app_instances }} instance(s) need {{ 2 * app_instances | int }} -- each
+      takes one for the analyzer's fast path and one for vLLM. Run
+      'make guest-gpu' first; if it has already run, the GPU Operator inside the
+      guest has not finished advertising the passed-through T4s. Otherwise lower
+      app_instances, or give the guest's workers more GPUs.
 
-- name: "{{ app_label }}: create the application namespace"
-  kubernetes.core.k8s:
-    kubeconfig: "{{ op_kubeconfig }}"
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ app_namespace }}"
-        labels:
-          app.kubernetes.io/part-of: inspection
-
-# The default vLLM image is Red Hat AI Inference Server, on registry.redhat.io.
-# The cluster pull secret already carries those credentials, so this copies them
-# in rather than asking for a second secret nobody would remember to supply.
-- name: "{{ app_label }}: give the namespace registry credentials"
-  kubernetes.core.k8s:
-    kubeconfig: "{{ op_kubeconfig }}"
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: "{{ app_pull_secret }}"
-        namespace: "{{ app_namespace }}"
-      type: kubernetes.io/dockerconfigjson
-      data:
-        .dockerconfigjson: "{{ pull_secret | b64encode }}"
-
-# The manifests name no imagePullSecrets, so the credential has to reach the
-# pods through the service account they do use.
-- name: "{{ app_label }}: link the credentials to the default service account"
-  ansible.builtin.command: >-
-    oc -n {{ app_namespace }} secrets link default {{ app_pull_secret }} --for=pull
-  environment:
-    KUBECONFIG: "{{ op_kubeconfig }}"
-  register: app_secret_link
-  changed_when: app_secret_link.rc == 0
-
-- name: "{{ app_label }}: build the images in the cluster"
-  ansible.builtin.include_tasks: build.yml
-
-- name: "{{ app_label }}: apply the manifests"
-  ansible.builtin.include_tasks: deploy.yml
+# Each instance is complete and independent, so they are deployed one after
+# another rather than all at once: a failure then names the instance that broke.
+- name: "{{ app_label }}: deploy {{ app_instances }} instance(s) of the application"
+  ansible.builtin.include_tasks: instance.yml
+  loop: "{{ range(1, app_instances | int + 1) | list }}"
+  loop_control:
+    loop_var: app_instance
+    label: "{{ app_namespace_base }}-{{ app_instance }}"

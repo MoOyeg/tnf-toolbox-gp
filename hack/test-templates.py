@@ -821,6 +821,45 @@ def test_both_vcp_paths_approve_their_agents():
           '\\"role\\"' in body or '"role"' in body)
 
 
+def test_app_instances_are_independent():
+    """Two instances of the app, not one scaled up.
+
+    Each is a whole pipeline in its own namespace and takes two GPUs, so the
+    GPU precondition has to scale with the count -- otherwise a second instance
+    is admitted onto a guest that cannot schedule it and its pods sit Pending on
+    nvidia.com/gpu, which reads as a broken GPU stage rather than as arithmetic.
+    """
+    print("\napp instances")
+    tasks = f"{ROOT}/deploy/openshift-clusters/roles/app/tasks"
+    defaults = role_defaults()
+    main = open(f"{tasks}/main.yml", encoding="utf-8").read()
+    instance = open(f"{tasks}/instance.yml", encoding="utf-8").read()
+
+    # The assertion itself, not the message beside it -- the message mentions
+    # the same arithmetic, so matching the file would pass on a hardcoded check.
+    assertion = [l for l in main.splitlines() if l.strip().startswith("that:")
+                 and "app_gpu_total" in l]
+    check("the GPU check scales with the number of instances",
+          any("app_instances" in l for l in assertion),
+          f"assertion is {assertion or 'missing'} -- a second instance would be "
+          "admitted onto a guest that cannot schedule it")
+    check("each instance gets its own namespace",
+          "app_namespace_base }}-{{ app_instance }}" in instance)
+    check("the images are built once, by the first instance",
+          "app_instance | int == 1" in instance)
+    check("and the others are allowed to pull them",
+          "system:image-puller" in instance)
+    # The app's own Makefile applied a hardcoded namespace whatever NAMESPACE
+    # said, which put a second instance's components in a namespace nothing had
+    # created.
+    makefile = open(f"{ROOT}/app/Makefile", encoding="utf-8").read()
+    check("the app Makefile creates the namespace it was asked for",
+          "name: visual-inspection|name: $(NAMESPACE)" in makefile,
+          "00-namespace.yaml is applied verbatim, so NAMESPACE is ignored")
+    check("one instance is still the default",
+          int(defaults["app_instances"]) == 1)
+
+
 def test_site_definitions():
     """One ClusterInstance per cluster, and what has to be true of every one.
 
@@ -920,6 +959,7 @@ def main():
     test_siteconfig_install_templates()
     test_agent_cluster_install_networking_is_nested()
     test_both_vcp_paths_approve_their_agents()
+    test_app_instances_are_independent()
     test_site_definitions()
     test_infra_half_of_a_site_carries_no_credential()
     test_site_agnostic_roles_name_no_single_site()
