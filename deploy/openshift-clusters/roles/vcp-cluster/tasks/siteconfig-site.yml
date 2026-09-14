@@ -42,6 +42,27 @@
       stringData: "{{ {'.dockerconfigjson': pull_secret} }}"
   no_log: true
 
+# Required only because the operator's validator walks spec.nodes and refuses to
+# render anything while a node's bmcCredentialsName names a Secret that is not
+# there. Nothing reads it: the node template set renders no BareMetalHost, so
+# there is no Ironic to hand it to. It carries no real credential for the same
+# reason -- inventing one that worked would be worse than one that plainly does
+# not.
+- name: Satisfy the validator's check for BMC credentials
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ vcp_cluster_name }}-bmc-placeholder"
+        namespace: "{{ vcp_cluster_name }}"
+      type: Opaque
+      stringData:
+        username: unused
+        password: unused
+
 - name: Create the site folder
   ansible.builtin.file:
     path: "{{ site_repo_dir }}/{{ vcp_cluster_name }}"

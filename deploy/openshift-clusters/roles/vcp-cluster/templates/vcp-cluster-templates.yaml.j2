@@ -109,16 +109,12 @@ data:
     {{ end }}
     {{ $serviceNetworks | toYaml | indent 6 }}
     {{ end }}
-      # Not .SpecialVars.ControlPlaneAgents / .WorkerAgents, which count entries
-      # in spec.nodes -- and spec.nodes is empty here for the reason above. The
-      # installer still has to be told how many Agents to wait for, so the counts
-      # come from this profile's configuration instead, the same way the guest
-      # VM sizing does. A differently shaped cluster is a second template set.
+      # Derived from the roles in spec.nodes, which the operator requires to be
+      # populated for any cluster type but HostedControlPlane -- so the counts
+      # are already there to be counted and need not be restated.
       provisionRequirements:
-{% endraw %}
-        controlPlaneAgents: {{ vcp_control_plane_replicas }}
-        workerAgents: {{ vcp_worker_replicas }}
-{% raw %}
+        controlPlaneAgents: {{ .SpecialVars.ControlPlaneAgents }}
+        workerAgents: {{ .SpecialVars.WorkerAgents }}
       sshPublicKey: "{{ .Spec.SSHPublicKey }}"
     {{ if gt (len .Spec.ExtraManifestsRefs) 0 }}
       manifestsConfigMapRefs:

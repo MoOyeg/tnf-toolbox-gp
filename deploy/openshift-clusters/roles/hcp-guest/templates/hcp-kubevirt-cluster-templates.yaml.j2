@@ -76,12 +76,13 @@ data:
     {{ .Spec.ClusterNetwork | toYaml | indent 6 }}
     {{ end }}
     {{ if .Spec.ServiceNetwork }}
+        # Objects, not bare strings. AgentClusterInstall's serviceNetwork is a
+        # list of CIDRs and the shipped assisted-installer template flattens to
+        # match; HostedCluster's is a list of {cidr: ...}, and handing it the
+        # flattened form fails server-side apply with
+        # ".spec.networking.serviceNetwork[0]: expected map, got &{172.31.0.0/16}".
         serviceNetwork:
-    {{ $serviceNetworks := list }}
-    {{ range .Spec.ServiceNetwork }}
-    {{ $serviceNetworks = append $serviceNetworks .CIDR }}
-    {{ end }}
-    {{ $serviceNetworks | toYaml | indent 6 }}
+    {{ .Spec.ServiceNetwork | toYaml | indent 6 }}
     {{ end }}
       platform:
         type: KubeVirt

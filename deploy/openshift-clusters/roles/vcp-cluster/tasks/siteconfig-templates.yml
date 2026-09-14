@@ -14,11 +14,12 @@
     definition: "{{ lookup('template', item) | from_yaml }}"
   loop:
     - vcp-cluster-templates.yaml.j2
+    - vcp-node-templates.yaml.j2
   loop_control:
     label: "{{ item | regex_replace('\\.yaml\\.j2$', '') }}"
 
 - name: Report the templates
   ansible.builtin.debug:
     msg: >-
-      {{ siteconfig_vcp_cluster_template }} is on the hub:
-      whole clusters on virtual machines.
+      {{ siteconfig_vcp_cluster_template }} and {{ siteconfig_vcp_node_template }}
+      are on the hub: whole clusters on virtual machines.

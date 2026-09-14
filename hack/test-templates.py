@@ -715,13 +715,16 @@ def test_siteconfig_install_templates():
     # schedulable there is nowhere for a workload to land. The CRD has no
     # default for this, so silence means "not schedulable".
     check("a cluster with no workers makes its control plane schedulable",
-          aci["spec"]["provisionRequirements"]["workerAgents"] != 0
+          int(defaults["vcp_worker_replicas"]) != 0
           or aci["spec"].get("mastersSchedulable") is True)
-    check("it waits for as many agents as the profile creates VMs",
-          aci["spec"]["provisionRequirements"]["controlPlaneAgents"]
-          == defaults["vcp_control_plane_replicas"]
-          and aci["spec"]["provisionRequirements"]["workerAgents"]
-          == defaults["vcp_worker_replicas"])
+    # Counted from spec.nodes by the operator rather than restated here. The
+    # site definition has to populate spec.nodes anyway -- validation rejects an
+    # empty list for any cluster type but HostedControlPlane -- so restating the
+    # counts would be a second place for them to disagree.
+    raw = vcp["data"]["AgentClusterInstall"]
+    check("it waits for as many agents as spec.nodes describes",
+          ".SpecialVars.ControlPlaneAgents" in raw
+          and ".SpecialVars.WorkerAgents" in raw)
 
     hosted = yaml.safe_load(strip_go(hcp["data"]["HostedCluster"]))
     strategies = {s["service"]: s["servicePublishingStrategy"]["type"]
@@ -792,7 +795,22 @@ def test_site_definitions():
         check(f"{name}: the template namespace agrees with where it is created",
               all(r["namespace"] == defaults["siteconfig_template_namespace"]
                   for r in ci["spec"]["templateRefs"]))
-        check(f"{name}: it claims no hardware", ci["spec"]["nodes"] == [])
+        # The operator's own rule, and it runs opposite ways for the two
+        # profiles: a hosted control plane must have no control-plane agents,
+        # and anything else must have at least one. An empty list on the wrong
+        # profile is accepted by the CRD and rejected at reconcile, which is a
+        # quiet way to never get a cluster.
+        masters = [n for n in ci["spec"]["nodes"] if n.get("role") == "master"]
+        if ci["spec"]["clusterType"] == "HostedControlPlane":
+            check(f"{name}: a hosted control plane claims no control-plane agents",
+                  not masters, f"found {len(masters)}")
+        else:
+            check(f"{name}: it declares at least one control-plane agent",
+                  len(masters) >= 1, "spec.nodes has no role: master")
+            check(f"{name}: every node names a template and BMC credentials",
+                  all(n.get("templateRefs") and n.get("bmcCredentialsName")
+                      and n.get("bmcAddress") and n.get("bootMACAddress")
+                      for n in ci["spec"]["nodes"]))
         # The install templates hardcode namespace: .Spec.ClusterName, so a
         # namespace that disagrees renders manifests into a namespace that does
         # not exist.

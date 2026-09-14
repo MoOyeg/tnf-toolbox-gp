@@ -32,10 +32,33 @@ spec:
   templateRefs:
     - name: {{ siteconfig_vcp_cluster_template }}
       namespace: {{ siteconfig_template_namespace }}
-  # Empty on purpose. These nodes are KubeVirt VMs with no BMC, and a NodeSpec
-  # requires a BMC address, a boot MAC and a credentials Secret the operator
-  # validates before it renders anything. There is no hardware to claim here --
-  # the VMs are created separately and register themselves as Agents from the
-  # one discovery ISO the InfraEnv builds. How many of them to expect is in the
-  # template, since the installer needs the count and this list cannot carry it.
-  nodes: []
+  # Every node has to be listed, and the operator's own validation is why:
+  #
+  #   controlPlaneCount < 1 && clusterType != HostedControlPlane
+  #     -> "at least 1 control-plane agent is required"
+  #
+  # An empty list is accepted by the CRD schema and then rejected at reconcile,
+  # which is a quiet way to fail -- the Application syncs green and the cluster
+  # never appears.
+  #
+  # So each VM is declared, and three of its required fields are fictions:
+  # a NodeSpec is written for hardware to be *claimed*, and these VMs do not
+  # exist until the infra cluster creates them. bmcAddress points into TEST-NET-1
+  # (RFC 5737, reserved for documentation) so that anything which does try to
+  # dial it fails immediately and visibly rather than reaching something real;
+  # the boot MAC is locally administered and is not the address KubeVirt will
+  # assign; and the credentials Secret exists only because the validator checks
+  # that it does. None is ever read, because the node template set renders no
+  # BareMetalHost for them to be read by.
+  nodes:
+{% for i in range(1, vcp_control_plane_replicas | int + 1) %}
+    - hostName: "{{ vcp_cluster_name }}-cp-{{ i }}"
+      role: master
+      bmcAddress: "redfish-virtualmedia://192.0.2.1/redfish/v1/Systems/{{ vcp_cluster_name }}-cp-{{ i }}"
+      bmcCredentialsName:
+        name: {{ vcp_cluster_name }}-bmc-placeholder
+      bootMACAddress: "02:00:00:00:00:{{ '%02x' | format(i) }}"
+      templateRefs:
+        - name: {{ siteconfig_vcp_node_template }}
+          namespace: {{ siteconfig_template_namespace }}
+{% endfor %}

@@ -13,18 +13,24 @@
   register: mch_components
   changed_when: false
 
-# A JSON patch appending to /spec/overrides/components fails if the array does
-# not exist yet, and duplicates the entry if it is already there. Reading the
-# list first and deciding makes the stage safe to re-run, which every stage in
-# this toolbox has to be.
-- name: Work out whether SiteConfig is already enabled
+# Three states, not two, and the difference matters: ACM ships the component
+# already listed and set to false. Testing only whether the name appears
+# therefore reports "already enabled" about a hub where it is switched off --
+# and because MCE installs the ClusterInstance CRD either way, everything
+# downstream looks healthy while no controller exists to reconcile anything.
+- name: Work out what the hub already says about SiteConfig
   ansible.builtin.set_fact:
-    siteconfig_present: >-
-      {{ siteconfig_component in
-         (mch_components.stdout | default('[]') | from_json
-          | map(attribute='name') | list) }}
+    mch_component_names: >-
+      {{ (mch_components.stdout | default('[]') | from_json)
+         | map(attribute='name') | list }}
+    siteconfig_enabled_now: >-
+      {{ ((mch_components.stdout | default('[]') | from_json)
+          | selectattr('name', 'equalto', siteconfig_component)
+          | map(attribute='enabled') | list | first) | default(false) }}
 
-- name: Enable the SiteConfig component
+# Appending when the entry is already there would leave the hub with two of
+# them, so the two cases are patched differently.
+- name: Add the SiteConfig component
   kubernetes.core.k8s_json_patch:
     kubeconfig: "{{ op_kubeconfig }}"
     api_version: operator.open-cluster-management.io/v1
@@ -37,12 +43,29 @@
         value:
           name: "{{ siteconfig_component }}"
           enabled: true
-  when: not siteconfig_present
+  when: siteconfig_component not in mch_component_names
+
+- name: Turn the SiteConfig component on
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ op_kubeconfig }}"
+    api_version: operator.open-cluster-management.io/v1
+    kind: MultiClusterHub
+    name: "{{ multiclusterhub_name }}"
+    namespace: "{{ acm_namespace }}"
+    patch:
+      - op: replace
+        path: "/spec/overrides/components/{{ mch_component_names.index(siteconfig_component) }}/enabled"
+        value: true
+  when:
+    - siteconfig_component in mch_component_names
+    - not siteconfig_enabled_now | bool
 
 - name: Report that SiteConfig was already on
   ansible.builtin.debug:
     msg: "SiteConfig is already enabled on this hub."
-  when: siteconfig_present
+  when:
+    - siteconfig_component in mch_component_names
+    - siteconfig_enabled_now | bool
 
 # The CRD is what everything downstream depends on: a ClusterInstance applied
 # before it exists is rejected outright, and Argo CD would report the site

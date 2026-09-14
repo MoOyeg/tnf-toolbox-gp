@@ -115,6 +115,7 @@ multiclusterhub_name: multiclusterhub
 # so the names are shared rather than owned by either.
 siteconfig_template_namespace: open-cluster-management
 siteconfig_vcp_cluster_template: vcp-cluster-templates-v1
+siteconfig_vcp_node_template: vcp-node-templates-v1
 siteconfig_hcp_cluster_template: hcp-kubevirt-cluster-templates-v1
 
 # The generated fleet. Ansible writes one folder per cluster under site_repo_dir

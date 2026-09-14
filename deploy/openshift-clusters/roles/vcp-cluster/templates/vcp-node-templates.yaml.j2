@@ -1,0 +1,47 @@
+#
+# Ansible managed -- roles/vcp-cluster/templates/vcp-node-templates.yaml.j2
+#
+# Node-level install templates for the all-VM cluster profile.
+#
+# Deliberately almost empty. The shipped ai-node-templates-v1 renders three
+# things per node and two of them are actively wrong here:
+#
+#   BareMetalHost  needs a BMC to drive. A KubeVirt VM has none -- it is booted
+#                  by the infra cluster, not by Ironic over Redfish -- so
+#                  rendering one would leave Ironic trying to reach an address
+#                  that does not answer.
+#
+#   InfraEnv       is one per *cluster* here, not one per node, and lives in
+#                  vcp-cluster-templates-v1. Rendering it per node would build a
+#                  discovery ISO per VM, all of them identical.
+#
+# NMStateConfig is kept, unchanged from the shipped version, because it disables
+# itself when a node has no nodeNetwork -- which is every node today, since the
+# VMs take an address from the infra cluster's pod network. It is here so that a
+# statically addressed VM later needs a site definition change and not a new
+# template set.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ siteconfig_vcp_node_template }}
+  namespace: {{ siteconfig_template_namespace }}
+data:
+{% raw %}
+  NMStateConfig: |
+    {{ if .SpecialVars.CurrentNode.NodeNetwork }}
+    apiVersion: agent-install.openshift.io/v1beta1
+    kind: NMStateConfig
+    metadata:
+      annotations:
+        siteconfig.open-cluster-management.io/sync-wave: "1"
+      name: "{{ .SpecialVars.CurrentNode.HostName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+      labels:
+        nmstate-label: "{{ .SpecialVars.CurrentNode.HostName }}"
+    spec:
+      config:
+    {{ .SpecialVars.CurrentNode.NodeNetwork.NetConfig | toYaml | indent 4}}
+      interfaces:
+    {{ .SpecialVars.CurrentNode.NodeNetwork.Interfaces | toYaml | indent 4 }}
+    {{ end }}
+{% endraw %}
