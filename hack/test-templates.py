@@ -72,6 +72,10 @@ CONTEXT = dict(
         "cores": 8, "memory": "20Gi", "gpus": 0},
     # set_fact'd per guest inside hcp-guest's loop, so no role default declares it
     guest_name="hcp-1",
+    # set_fact'd by vcp-cluster's plan-nodes.yml, for the same reason. Three
+    # schedulable control-plane nodes: the compact topology the profile builds.
+    vcp_nodes=[{"name": f"vcp-1-cp-{i}", "role": "control-plane",
+                "cores": 8, "memory": "32Gi", "gpus": 1} for i in (1, 2, 3)],
     haproxy_stats_port=9000,
     ansible_user="ec2-user",
     include_bootstrap=True,
@@ -820,6 +824,39 @@ def test_site_definitions():
               == ns["metadata"]["name"])
 
 
+def test_infra_half_of_a_site_carries_no_credential():
+    """The virtual machines are committed; what they boot from is not.
+
+    The discovery ISO's URL is issued by the hub's image service and carries a
+    signed token with no expiry, and the ISO it fetches contains the cluster's
+    pull secret and SSH key. The repository these manifests are committed to is
+    public, so the URL must never reach it -- the VMs reference a DataVolume by
+    name and Ansible creates that DataVolume on the infra cluster directly.
+    """
+    print("\nthe infra half of a site")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    defaults = {**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT}
+    rendered = render(f"{roles}/vcp-cluster/templates/sites-infra-virtualmachines.yaml.j2")
+    vms = [d for d in yaml.safe_load_all(rendered) if d]
+
+    check("one VirtualMachine per planned node",
+          len(vms) == len(CONTEXT["vcp_nodes"]),
+          f"{len(vms)} rendered for {len(CONTEXT['vcp_nodes'])} nodes")
+    check("all of them are VirtualMachines",
+          all(d["kind"] == "VirtualMachine" for d in vms))
+    check("they boot the cluster's shared discovery volume",
+          all(any(v.get("dataVolume", {}).get("name", "").endswith("-discovery")
+                  for v in d["spec"]["template"]["spec"]["volumes"]) for d in vms))
+    # The whole point: nothing here may be a credential.
+    forbidden = ("isoDownloadURL", "byapikey", "dockerconfigjson",
+                 "BEGIN RSA", "BEGIN OPENSSH", "password")
+    leaked = [w for w in forbidden if w in rendered]
+    check("nothing in them is a credential", not leaked, f"found {leaked}")
+    check("no DataVolume importing over http is committed",
+          "http:" not in rendered,
+          "an http source here would be the ISO URL, which is a bearer token")
+
+
 def main():
     test_every_template_renders()
     test_install_config()
@@ -836,6 +873,7 @@ def main():
     test_siteconfig_install_templates()
     test_agent_cluster_install_networking_is_nested()
     test_site_definitions()
+    test_infra_half_of_a_site_carries_no_credential()
     test_site_agnostic_roles_name_no_single_site()
     test_fetched_credentials_are_gitignored()
 

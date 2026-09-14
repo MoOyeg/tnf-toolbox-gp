@@ -22,3 +22,10 @@ gitops_applicationset_name: fleet-sites
 # ClusterDeployments across the hub -- so the controller needs more than the
 # namespace-scoped role the operator gives it by default.
 gitops_controller_sa: openshift-gitops-argocd-application-controller
+
+# How Argo CD is given access to the infra cluster. ACM owns the cluster
+# secrets: a Placement picks the managed clusters and a GitOpsCluster hands them
+# to Argo, which is tidier than minting a cluster secret from a kubeconfig and
+# then having to rotate it.
+gitops_cluster_set: default
+gitops_infra_placement: fleet-infra

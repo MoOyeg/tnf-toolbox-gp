@@ -1,0 +1,12 @@
+#
+# Ansible managed -- roles/vcp-cluster/templates/sites-infra-namespace.yaml.j2
+#
+# The namespace on the infra cluster that every all-VM cluster's nodes live in.
+# Shared by all of them, so it is written by each site and is the same file each
+# time -- Argo CD applying it twice is a no-op.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ vcp_vm_namespace }}
+  labels:
+    tnf-toolbox-gp/owner: acm-vcp

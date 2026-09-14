@@ -1,0 +1,84 @@
+#
+# Ansible managed -- roles/vcp-cluster/templates/sites-infra-virtualmachines.yaml.j2
+#
+# The virtual machines that are {{ vcp_cluster_name }}'s nodes, placed on the
+# infra cluster by Argo CD.
+#
+# These are in the fleet repository and the cluster's ClusterInstance is too,
+# but they are synced by a different ApplicationSet to a different destination:
+# the ClusterInstance is a hub object and these are objects of the infra cluster,
+# and an Argo CD Application has exactly one destination.
+#
+# What is NOT here is the DataVolume holding the discovery ISO these boot from.
+# Its URL is issued by the hub's image service and carries a signed token that
+# does not expire, and the ISO it fetches contains the cluster's pull secret and
+# SSH key -- so committing it would publish a permanent credential. Ansible puts
+# that DataVolume on the infra cluster directly, the same way it puts the pull
+# secret on the hub rather than in Git.
+{% for vm in vcp_nodes %}
+---
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: {{ vm.name }}
+  namespace: {{ vcp_vm_namespace }}
+  labels:
+    tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+    tnf-toolbox-gp/role: {{ vm.role }}
+spec:
+  running: true
+  dataVolumeTemplates:
+    - metadata:
+        name: {{ vm.name }}-root
+      spec:
+        storage:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: {{ vcp_root_disk }}
+          storageClassName: {{ storage_class }}
+        source:
+          blank: {}
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: {{ vm.name }}
+        tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+    spec:
+      domain:
+        cpu:
+          cores: {{ vm.cores }}
+        memory:
+          guest: {{ vm.memory }}
+        devices:
+          disks:
+            - name: root
+              bootOrder: 1
+              disk:
+                bus: virtio
+            - name: discovery
+              bootOrder: 2
+              cdrom:
+                bus: sata
+                readonly: true
+          interfaces:
+            - name: default
+              masquerade: {}
+{% if vm.gpus | int > 0 %}
+          hostDevices:
+{% for i in range(vm.gpus | int) %}
+            - name: gpu{{ i + 1 }}
+              deviceName: {{ gpu_resource_name }}
+{% endfor %}
+{% endif %}
+      networks:
+        - name: default
+          pod: {}
+      volumes:
+        - name: root
+          dataVolume:
+            name: {{ vm.name }}-root
+        - name: discovery
+          dataVolume:
+            name: {{ vcp_cluster_name }}-discovery
+{% endfor %}

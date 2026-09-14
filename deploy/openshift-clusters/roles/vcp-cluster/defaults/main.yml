@@ -12,7 +12,6 @@ vcp_cluster_name: vcp-1
 # Where the VMs are created. The hub installs the cluster; the infra cluster
 # runs every node of it.
 vcp_infra_kubeconfig: ""
-vcp_vm_namespace: acm-vcp-vms
 
 # Central Infrastructure Management, the assisted-installer service ACM uses to
 # build standalone clusters. It is off by default in MultiCluster Engine.

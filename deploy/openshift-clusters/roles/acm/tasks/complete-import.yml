@@ -1,0 +1,73 @@
+---
+# Finish importing a cluster the SiteConfig operator built.
+#
+# The install templates render a ManagedCluster and a KlusterletAddonConfig, and
+# the hub accepts the cluster and generates its import manifests -- and there it
+# stops. Nothing has applied those manifests to the cluster itself, so the
+# klusterlet never starts, nothing reports a lease, and the hub shows:
+#
+#   HubAcceptedManagedCluster=True         Accepted by hub cluster admin
+#   ManagedClusterImportSucceeded=False    Wait for importing
+#   ManagedClusterConditionAvailable=Unknown
+#       Registration agent stopped updating its lease
+#
+# which reads like a broken cluster and is in fact a cluster nobody has told.
+#
+# Deliberately narrower than import-cluster.yml, which also creates the
+# ManagedCluster and KlusterletAddonConfig: here those belong to the SiteConfig
+# operator, and creating them a second time from Ansible would have the two
+# fighting over the same objects.
+
+- name: "{{ import_cluster_name }}: wait for the hub's import manifests"
+  ansible.builtin.command: >-
+    oc get secret {{ import_cluster_name }}-import
+    -n {{ import_cluster_name }} -o jsonpath='{.data.import\.yaml}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: site_import_secret
+  changed_when: false
+  failed_when: false
+  retries: 30
+  delay: 10
+  until: site_import_secret.rc == 0 and site_import_secret.stdout | length > 0
+
+- name: "{{ import_cluster_name }}: fail if the hub never produced them"
+  ansible.builtin.assert:
+    that: site_import_secret.stdout | length > 0
+    fail_msg: >-
+      {{ import_cluster_name }}-import was never populated in namespace
+      {{ import_cluster_name }}. Without it the klusterlet cannot be installed.
+
+# crds.yaml first: import.yaml contains the custom resources those CRDs define,
+# and applying it first fails with "no matches for kind Klusterlet".
+- name: "{{ import_cluster_name }}: install the klusterlet"
+  ansible.builtin.shell: |
+    set -o pipefail
+    for key in crds.yaml import.yaml; do
+      oc --kubeconfig {{ op_kubeconfig }} get secret {{ import_cluster_name }}-import \
+        -n {{ import_cluster_name }} -o jsonpath="{.data.${key//./\\.}}" \
+        | base64 -d \
+        | oc --kubeconfig {{ import_cluster_kubeconfig }} apply -f -
+    done
+  register: site_klusterlet_applied
+  changed_when: "'created' in site_klusterlet_applied.stdout or 'configured' in site_klusterlet_applied.stdout"
+
+- name: "{{ import_cluster_name }}: wait for it to come online in the hub"
+  ansible.builtin.command: >-
+    oc get managedcluster {{ import_cluster_name }}
+    -o jsonpath='{.status.conditions[?(@.type=="ManagedClusterConditionAvailable")].status}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: site_managed_available
+  changed_when: false
+  failed_when: false
+  retries: "{{ (managed_cluster_timeout | int / 15) | int }}"
+  delay: 15
+  until: site_managed_available.stdout == "True"
+
+- name: "{{ import_cluster_name }}: report"
+  ansible.builtin.debug:
+    msg: >-
+      {{ import_cluster_name }} is
+      {{ 'online in the hub' if site_managed_available.stdout == 'True'
+         else 'still not reporting a lease; check the klusterlet pods in its open-cluster-management-agent namespace' }}.

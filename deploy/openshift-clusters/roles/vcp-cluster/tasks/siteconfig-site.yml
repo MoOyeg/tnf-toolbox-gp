@@ -8,6 +8,9 @@
 # everyone who can read the repository, and this one carries registry
 # credentials. So Ansible puts it straight on the hub and Git never sees it.
 
+- name: Plan the cluster's virtual machines
+  ansible.builtin.include_tasks: plan-nodes.yml
+
 - name: Create the site namespace on the hub
   kubernetes.core.k8s:
     kubeconfig: "{{ op_kubeconfig }}"
@@ -82,8 +85,98 @@
     label: "{{ item.dest }}"
   delegate_to: localhost
 
+- name: Create the infra half of the site folder
+  ansible.builtin.file:
+    path: "{{ site_infra_repo_dir }}/{{ vcp_cluster_name }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+
+- name: Write the virtual machines Argo CD places on the infra cluster
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ site_infra_repo_dir }}/{{ vcp_cluster_name }}/{{ item.dest }}"
+    mode: '0644'
+  loop:
+    - {src: sites-infra-namespace.yaml.j2, dest: namespace.yaml}
+    - {src: sites-infra-virtualmachines.yaml.j2, dest: virtualmachines.yaml}
+  loop_control:
+    label: "{{ item.dest }}"
+  delegate_to: localhost
+
+# Not committed, for the same reason the pull secret is not: the URL the image
+# service issues carries a signed token that does not expire, and the ISO it
+# fetches contains this cluster's pull secret and SSH key. Committing it would
+# publish a permanent credential to whoever can read the repository.
+#
+# It is also only knowable once the ClusterInstance has been synced and the
+# operator has rendered the InfraEnv, so a first run writes the site definitions
+# and finds nothing here. Running the stage again once Argo CD has caught up is
+# what creates it.
+- name: Look for the discovery ISO this cluster's VMs boot
+  ansible.builtin.command: >-
+    oc get infraenv {{ vcp_cluster_name }} -n {{ vcp_cluster_name }}
+    -o jsonpath={.status.isoDownloadURL}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: site_iso_url
+  changed_when: false
+  failed_when: false
+
+# Created here as well as committed, for the same reason the hub's site
+# namespace is: the DataVolume below goes in before Argo CD has synced anything,
+# and a Secret or a DataVolume cannot be created in a namespace that does not
+# exist yet. Argo CD re-asserting it afterwards is a no-op, and keeps the
+# Application self-contained rather than depending on this stage having run.
+- name: Create the VM namespace on the infra cluster
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_infra_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ vcp_vm_namespace }}"
+        labels:
+          tnf-toolbox-gp/owner: acm-vcp
+  when: site_iso_url.stdout | default('') | length > 0
+
+- name: Import the discovery ISO onto the infra cluster
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_infra_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: "{{ vcp_cluster_name }}-discovery"
+        namespace: "{{ vcp_vm_namespace }}"
+      spec:
+        source:
+          http:
+            url: "{{ site_iso_url.stdout }}"
+            # The image service presents the hub's ingress certificate, which
+            # the infra cluster has no reason to trust.
+            certConfigMap: ""
+        storage:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 8Gi
+          storageClassName: "{{ storage_class }}"
+  when: site_iso_url.stdout | default('') | length > 0
+
+- name: Say whether the VMs have an ISO to boot yet
+  ansible.builtin.debug:
+    msg: >-
+      {{ ('discovery ISO imported; Argo CD can start the VMs'
+          if site_iso_url.stdout | default('') | length > 0
+          else vcp_cluster_name ~ ' has no InfraEnv yet -- run this stage again once
+               Argo CD has synced its ClusterInstance, or the VMs will have nothing to boot') }}
+
 - name: Report what to commit
   ansible.builtin.debug:
     msg:
-      - "{{ vcp_cluster_name }}: site definition written to {{ site_repo_dir }}/{{ vcp_cluster_name }}/"
+      - "{{ vcp_cluster_name }}: hub half written to {{ site_repo_dir }}/{{ vcp_cluster_name }}/"
+      - "{{ vcp_cluster_name }}: infra half written to {{ site_infra_repo_dir }}/{{ vcp_cluster_name }}/"
       - "Commit and push it. Argo CD builds the cluster from Git, not from this run."

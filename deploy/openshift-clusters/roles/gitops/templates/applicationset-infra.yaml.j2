@@ -1,0 +1,58 @@
+#
+# Ansible managed -- roles/gitops/templates/applicationset-infra.yaml.j2
+#
+# The half of a site that does not belong on the hub.
+#
+# An all-VM cluster is described in two places because its pieces live on two
+# clusters. The ClusterInstance is a hub object and is synced by the fleet-sites
+# ApplicationSet; the virtual machines its nodes actually run on are objects of
+# the infra cluster, and an Argo CD Application has exactly one destination. So
+# there are two ApplicationSets over two directories rather than one over both.
+#
+# A hosted cluster has no folder here: HyperShift creates its worker VMs itself
+# from the NodePool's replica count, so there is nothing to place.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: {{ gitops_applicationset_name }}-infra
+  namespace: {{ gitops_argocd_namespace }}
+spec:
+  # Deleting an Application must not take the running virtual machines with it,
+  # for the same reason it must not deprovision a cluster.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+  goTemplate: true
+  goTemplateOptions: [missingkey=error]
+  generators:
+    - git:
+        repoURL: {{ site_repo_url }}
+        revision: {{ site_repo_revision }}
+        directories:
+          - path: '{{ site_infra_repo_path }}/*'
+  template:
+    metadata:
+      name: 'infra-{% raw %}{{.path.basename}}{% endraw %}'
+    spec:
+      project: default
+      source:
+        repoURL: {{ site_repo_url }}
+        targetRevision: {{ site_repo_revision }}
+        path: '{% raw %}{{.path.path}}{% endraw %}'
+      # By name, not by server URL. ACM's GitOpsCluster registers each managed
+      # cluster with Argo CD under its ManagedCluster name, and the URL is not
+      # known here.
+      destination:
+        name: {{ cluster_name }}
+        namespace: {{ vcp_vm_namespace }}
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

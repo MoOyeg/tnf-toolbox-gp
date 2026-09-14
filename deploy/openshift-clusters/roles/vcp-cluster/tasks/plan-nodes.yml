@@ -1,0 +1,26 @@
+---
+# The cluster's node list, in one place.
+#
+# Used by the stage that creates the VMs directly and by the one that writes
+# them into the fleet repository for Argo CD to create. Two copies of this would
+# be two chances for the VM a cluster waits for and the VM that exists to differ.
+
+- name: Plan the cluster's virtual machines
+  ansible.builtin.set_fact:
+    vcp_nodes: "{{ vcp_node_plan | from_yaml }}"
+  vars:
+    vcp_node_plan: |
+      {% for i in range(1, vcp_control_plane_replicas | int + 1) %}
+      - name: {{ vcp_cluster_name }}-cp-{{ i }}
+        role: control-plane
+        cores: {{ vcp_cp_cores }}
+        memory: {{ vcp_cp_memory }}
+        gpus: {{ vcp_gpus_per_node }}
+      {% endfor %}
+      {% for i in range(1, vcp_worker_replicas | int + 1) %}
+      - name: {{ vcp_cluster_name }}-worker-{{ i }}
+        role: worker
+        cores: {{ vcp_worker_cores }}
+        memory: {{ vcp_worker_memory }}
+        gpus: {{ vcp_gpus_per_node }}
+      {% endfor %}

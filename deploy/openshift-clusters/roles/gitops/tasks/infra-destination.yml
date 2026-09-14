@@ -1,0 +1,92 @@
+---
+# Let Argo CD place resources on the infra cluster, not just on the hub.
+#
+# An Argo CD Application has exactly one destination, and the two halves of an
+# all-VM cluster belong on different ones: the ClusterInstance is a hub object,
+# and the virtual machines its nodes run on are objects of the infra cluster.
+#
+# Rather than hand-building an Argo cluster secret from a kubeconfig, this uses
+# ACM's own integration: a Placement selects the managed clusters, and a
+# GitOpsCluster hands them to an Argo CD instance, which creates and rotates the
+# cluster secrets itself. The infra cluster is already a ManagedCluster -- the
+# hub imported it at the end of 36-acm-site.yml -- so there is nothing to
+# register that the hub does not already know.
+
+- name: Let the gitops namespace use the default cluster set
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: cluster.open-cluster-management.io/v1beta2
+      kind: ManagedClusterSetBinding
+      metadata:
+        name: "{{ gitops_cluster_set }}"
+        namespace: "{{ gitops_argocd_namespace }}"
+      spec:
+        clusterSet: "{{ gitops_cluster_set }}"
+
+# By name rather than by label: the infra cluster is one specific cluster, and a
+# label selector would quietly widen to any cluster that later grew the label --
+# which would start placing virtual machines on the hub.
+- name: Select the infra cluster
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: cluster.open-cluster-management.io/v1beta1
+      kind: Placement
+      metadata:
+        name: "{{ gitops_infra_placement }}"
+        namespace: "{{ gitops_argocd_namespace }}"
+      spec:
+        clusterSets:
+          - "{{ gitops_cluster_set }}"
+        predicates:
+          - requiredClusterSelector:
+              labelSelector:
+                matchLabels:
+                  # The hub labels every ManagedCluster with its own name. There
+                  # is no matching ClusterClaim, so this has to be the label.
+                  name: "{{ cluster_name }}"
+
+- name: Hand the selected clusters to Argo CD
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: apps.open-cluster-management.io/v1beta1
+      kind: GitOpsCluster
+      metadata:
+        name: "{{ gitops_infra_placement }}"
+        namespace: "{{ gitops_argocd_namespace }}"
+      spec:
+        argoServer:
+          cluster: local-cluster
+          argoNamespace: "{{ gitops_argocd_namespace }}"
+        placementRef:
+          kind: Placement
+          apiVersion: cluster.open-cluster-management.io/v1beta1
+          name: "{{ gitops_infra_placement }}"
+
+# The secret is what an Application's destination resolves against, so nothing
+# can be placed on the infra cluster until it exists.
+- name: Wait for Argo CD to be given the infra cluster
+  ansible.builtin.command: >-
+    oc get secret -n {{ gitops_argocd_namespace }}
+    -l argocd.argoproj.io/secret-type=cluster
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: argo_clusters
+  changed_when: false
+  failed_when: false
+  retries: 20
+  delay: 15
+  until: cluster_name in argo_clusters.stdout
+
+- name: Report the destinations Argo CD can reach
+  ansible.builtin.debug:
+    msg: >-
+      Argo CD destinations: {{ argo_clusters.stdout_lines | default([]) | join(', ') | default('none', true) }}
+      {{ '(the infra cluster is not among them; virtual machines cannot be placed yet)'
+         if cluster_name not in argo_clusters.stdout else '' }}

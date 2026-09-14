@@ -55,9 +55,83 @@
       vars:
         op_kubeconfig: "{{ acm_kubeconfig }}"
 
+    # The seam between "SiteConfig built a cluster" and everything downstream.
+    #
+    # The stages that create guests directly extract each cluster's kubeconfig
+    # as their last step, and 50-guest-gpu.yml and 60-app.yml find their work by
+    # globbing this directory. A cluster built from Git is never touched by
+    # those stages, so without this it exists and is reachable and no later
+    # stage can see it.
+    #
+    # Harvested for whatever is ready and quiet about the rest: a site committed
+    # a minute ago has no admin kubeconfig yet, and re-running this stage once it
+    # does is the way to pick it up.
+    - name: Make somewhere for the guest kubeconfigs
+      ansible.builtin.file:
+        path: "{{ guest_kubeconfig_dir }}"
+        state: directory
+        mode: '0700'
+
+    - name: List the clusters built from site definitions
+      ansible.builtin.command: >-
+        oc get clusterinstance -A
+        -o jsonpath='{range .items[*]}{.metadata.name}{"\n"}{end}'
+      register: site_clusters
+      changed_when: false
+
+    # Both profiles land on the same secret name -- HyperShift and Hive each
+    # write <cluster>-admin-kubeconfig into the cluster's own namespace -- so one
+    # harvest covers them without asking which kind it is looking at.
+    - name: Harvest the kubeconfig of every site that has one
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        oc get secret {{ item }}-admin-kubeconfig -n {{ item }}
+        -o jsonpath={.data.kubeconfig} | base64 -d
+        > {{ guest_kubeconfig_dir }}/{{ item }}.kubeconfig
+      loop: "{{ site_clusters.stdout_lines | select | list }}"
+      register: harvested
+      changed_when: harvested.rc == 0
+      failed_when: false
+
+    - name: Drop the empty files left by a cluster that is not ready yet
+      ansible.builtin.file:
+        path: "{{ guest_kubeconfig_dir }}/{{ item.item }}.kubeconfig"
+        state: absent
+      loop: "{{ harvested.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.rc | default(1) != 0
+
+    # The last link. A cluster built from a site definition is accepted by the
+    # hub and then waits to be told about itself; this applies the import
+    # manifests the hub generated, which is what starts its klusterlet.
+    # Only for guests whose kubeconfig was harvested above -- the rest are not
+    # installed yet and there is nothing to import.
+    - name: Finish importing each guest into the hub
+      ansible.builtin.include_role:
+        name: acm
+        tasks_from: complete-import
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+        import_cluster_name: "{{ item.item }}"
+        import_cluster_kubeconfig: "{{ guest_kubeconfig_dir }}/{{ item.item }}.kubeconfig"
+      loop: "{{ harvested.results | default([]) }}"
+      loop_control:
+        label: "{{ item.item }}"
+      when: item.rc | default(1) == 0
+
+    - name: Report which guests are reachable
+      ansible.builtin.shell: >-
+        set -o pipefail;
+        ls {{ guest_kubeconfig_dir }}/*.kubeconfig 2>/dev/null | wc -l
+      register: guest_count
+      changed_when: false
+
     - name: Say what happens next
       ansible.builtin.debug:
         msg:
           - "Site definitions are written under {{ site_repo_dir }}/."
           - "git add, commit and push them: Argo CD builds the fleet from Git,"
           - "not from this run. 'oc get clusterinstance -A' on the hub follows it."
+          - "{{ guest_count.stdout | trim }} guest kubeconfig(s) harvested into {{ guest_kubeconfig_dir }}."
+          - "Re-run this stage once more clusters finish installing to pick them up."

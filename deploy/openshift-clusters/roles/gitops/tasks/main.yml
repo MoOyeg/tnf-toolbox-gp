@@ -73,11 +73,22 @@
           name: "{{ gitops_controller_sa }}"
           namespace: "{{ gitops_argocd_namespace }}"
 
+# Before the ApplicationSets, because one of them places resources there and an
+# Application whose destination does not resolve sits Unknown rather than failing.
+- name: Give Argo CD access to the infra cluster
+  ansible.builtin.include_tasks: infra-destination.yml
+
 - name: Create the fleet ApplicationSet
   kubernetes.core.k8s:
     kubeconfig: "{{ op_kubeconfig }}"
     state: present
     definition: "{{ lookup('template', 'applicationset.yaml.j2') | from_yaml }}"
+
+- name: Create the infra-cluster ApplicationSet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition: "{{ lookup('template', 'applicationset-infra.yaml.j2') | from_yaml }}"
 
 - name: Report the fleet
   ansible.builtin.debug:

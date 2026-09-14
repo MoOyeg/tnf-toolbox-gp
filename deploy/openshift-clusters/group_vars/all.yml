@@ -129,6 +129,15 @@ siteconfig_hcp_cluster_template: hcp-kubevirt-cluster-templates-v1
 # separately rather than derived from one another because a nested path would
 # not survive the round trip.
 site_repo_path: sites
+# The half of each site that is placed on the infra cluster rather than the hub:
+# the virtual machines an all-VM cluster's nodes run on.
+site_infra_repo_path: sites-infra
+site_infra_repo_dir: "{{ repo_root }}/{{ site_infra_repo_path }}"
+
+# Where an all-VM cluster's virtual machines live on the infra cluster. Named
+# by the role that creates them and again by the ApplicationSet that places
+# them, so it is shared rather than owned by either.
+vcp_vm_namespace: acm-vcp-vms
 site_repo_dir: "{{ repo_root }}/{{ site_repo_path }}"
 site_repo_url: ""
 site_repo_revision: main
