@@ -17,31 +17,10 @@
         labels:
           tnf-toolbox-gp/owner: acm-vcp
 
-# One import for the whole cluster rather than one per VM: the ISO is the same
-# for every node, and CDI would otherwise pull it five times across the peering.
-- name: Import the discovery ISO once, as a shared DataVolume
-  kubernetes.core.k8s:
-    kubeconfig: "{{ vcp_infra_kubeconfig }}"
-    state: present
-    definition:
-      apiVersion: cdi.kubevirt.io/v1beta1
-      kind: DataVolume
-      metadata:
-        name: "{{ vcp_cluster_name }}-discovery"
-        namespace: "{{ vcp_vm_namespace }}"
-      spec:
-        source:
-          http:
-            url: "{{ iso_url.stdout }}"
-            # The image service presents the hub's ingress certificate, which
-            # this cluster has no reason to trust.
-            certConfigMap: ""
-        storage:
-          accessModes: [ReadWriteOnce]
-          resources:
-            requests:
-              storage: 8Gi
-          storageClassName: "{{ storage_class }}"
+- name: Import the discovery ISO
+  ansible.builtin.include_tasks: discovery-iso.yml
+  vars:
+    discovery_iso_url: "{{ iso_url.stdout }}"
 
 - name: Wait for the discovery ISO to finish importing
   ansible.builtin.command: >-

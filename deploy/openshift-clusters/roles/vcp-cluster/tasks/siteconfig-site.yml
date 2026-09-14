@@ -155,28 +155,9 @@
   when: site_iso_url.stdout | default('') | length > 0
 
 - name: Import the discovery ISO onto the infra cluster
-  kubernetes.core.k8s:
-    kubeconfig: "{{ vcp_infra_kubeconfig }}"
-    state: present
-    definition:
-      apiVersion: cdi.kubevirt.io/v1beta1
-      kind: DataVolume
-      metadata:
-        name: "{{ vcp_cluster_name }}-discovery"
-        namespace: "{{ vcp_vm_namespace }}"
-      spec:
-        source:
-          http:
-            url: "{{ site_iso_url.stdout }}"
-            # The image service presents the hub's ingress certificate, which
-            # the infra cluster has no reason to trust.
-            certConfigMap: ""
-        storage:
-          accessModes: [ReadWriteOnce]
-          resources:
-            requests:
-              storage: 8Gi
-          storageClassName: "{{ storage_class }}"
+  ansible.builtin.include_tasks: discovery-iso.yml
+  vars:
+    discovery_iso_url: "{{ site_iso_url.stdout }}"
   when: site_iso_url.stdout | default('') | length > 0
 
 - name: Say whether the VMs have an ISO to boot yet

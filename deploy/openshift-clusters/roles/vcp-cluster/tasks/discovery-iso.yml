@@ -1,0 +1,73 @@
+---
+# Import the hub's discovery ISO onto the infra cluster, with something CDI can
+# verify the hub against.
+#
+# Shared by the stage that builds an all-VM cluster directly and the one that
+# writes it for Argo CD, because both need the same ISO on the same cluster and
+# a second copy of this would be a second chance to get the trust wrong.
+#
+# certConfigMap was previously set to "", which reads as "no certificate to
+# worry about" and means nothing of the kind: CDI still verifies, now against
+# the system roots, and the hub's image service presents an ingress certificate
+# signed by the cluster's own CA. The import fails with
+#
+#   x509: certificate signed by unknown authority
+#
+# and the virtual machines sit in DataVolumeError waiting for a PVC that never
+# populates. So the hub's ingress CA is copied across and named here.
+#
+# Caller supplies discovery_iso_url.
+
+- name: Read the hub's ingress CA
+  ansible.builtin.command: >-
+    oc get configmap default-ingress-cert -n openshift-config-managed
+    -o jsonpath='{.data.ca-bundle\.crt}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: hub_ingress_ca
+  changed_when: false
+
+- name: Fail if the hub has no ingress CA to trust
+  ansible.builtin.assert:
+    that: hub_ingress_ca.stdout | length > 0
+    fail_msg: >-
+      default-ingress-cert in openshift-config-managed is empty on the hub.
+      Without it CDI cannot verify the image service and the discovery ISO
+      import fails with "certificate signed by unknown authority".
+
+- name: Give the infra cluster the hub's CA to verify against
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_infra_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ vcp_cluster_name }}-hub-ca"
+        namespace: "{{ vcp_vm_namespace }}"
+      data: "{{ {'ca.pem': hub_ingress_ca.stdout} }}"
+
+# One import for the whole cluster rather than one per VM: the ISO is the same
+# for every node, and CDI would otherwise pull it once per machine across the
+# peering connection.
+- name: Import the discovery ISO as a shared DataVolume
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_infra_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: cdi.kubevirt.io/v1beta1
+      kind: DataVolume
+      metadata:
+        name: "{{ vcp_cluster_name }}-discovery"
+        namespace: "{{ vcp_vm_namespace }}"
+      spec:
+        source:
+          http:
+            url: "{{ discovery_iso_url }}"
+            certConfigMap: "{{ vcp_cluster_name }}-hub-ca"
+        storage:
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 8Gi
+          storageClassName: "{{ storage_class }}"
