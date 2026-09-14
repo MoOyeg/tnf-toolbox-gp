@@ -12,6 +12,9 @@
 
 # Same lesson as the TNF install: auth/kubeconfig exists as soon as ignition is
 # generated, so its presence proves nothing. Ask the cluster.
+# Retried, because one timed-out probe is not evidence that a cluster is gone.
+# A single-node hub takes its API down with it whenever the node reboots -- a
+# KubeletConfig rollout is enough -- and answers nothing for several minutes.
 - name: Ask the ACM cluster whether it is actually installed
   ansible.builtin.command: >-
     oc --request-timeout=15s get clusterversion version
@@ -21,6 +24,9 @@
   register: acm_clusterversion
   changed_when: false
   failed_when: false
+  retries: "{{ (cluster_probe_timeout | int / 15) | int }}"
+  delay: 15
+  until: acm_clusterversion.rc == 0 and acm_clusterversion.stdout == 'True'
   when: acm_kubeconfig_stat.stat.exists
 
 - name: Record whether the ACM cluster is already up
@@ -29,6 +35,21 @@
       {{ acm_kubeconfig_stat.stat.exists
          and acm_clusterversion.rc | default(1) == 0
          and acm_clusterversion.stdout | default('') == 'True' }}
+
+# The dangerous case: a kubeconfig on disk and an API that will not answer. The
+# install block below opens by discarding the install directory and relaunching,
+# so against a cluster that is merely unreachable it destroys the credentials
+# for a hub that is still running -- and leaves a second bootstrap answering on
+# the same API name with a different CA. That happened once; it stops here now.
+- name: Refuse to reinstall over a hub that is only unreachable
+  ansible.builtin.assert:
+    that: not (acm_kubeconfig_stat.stat.exists and not acm_already_installed)
+    fail_msg: >-
+      {{ acm_kubeconfig }} exists but the hub did not answer within
+      {{ cluster_probe_timeout }}s, so this stage will not reinstall over it --
+      an unreachable API is not proof that the cluster is gone. If it is still
+      coming up, wait and re-run. If it is genuinely broken or was never
+      launched, run 'make destroy-acm' and then re-run.
 
 - name: Install the ACM cluster
   when: not acm_already_installed

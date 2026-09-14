@@ -1,0 +1,24 @@
+---
+# OpenShift GitOps, and the ApplicationSet that turns the generated site folders
+# into one Argo CD Application per cluster.
+#
+# The point of this role is that Git becomes the thing the hub reconciles
+# against. Ansible generates the site definitions and stops; from then on the
+# fleet is whatever is committed, and a ClusterInstance edited by hand on the
+# hub is put back.
+op_kubeconfig: ""
+
+gitops_package: openshift-gitops-operator
+# An AllNamespaces operator: it installs into openshift-operators and stands the
+# Argo CD instance up in a namespace of its own.
+gitops_namespace: openshift-operators
+gitops_argocd_namespace: openshift-gitops
+gitops_channel: auto
+gitops_ready_timeout: 900
+
+gitops_applicationset_name: fleet-sites
+# The service account Argo CD reconciles with. A ClusterInstance is a
+# cluster-scoped concern -- it creates namespaces, ManagedClusters and
+# ClusterDeployments across the hub -- so the controller needs more than the
+# namespace-scoped role the operator gives it by default.
+gitops_controller_sa: openshift-gitops-argocd-application-controller

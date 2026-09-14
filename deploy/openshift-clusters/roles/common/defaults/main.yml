@@ -8,4 +8,10 @@ op_channel: auto
 op_source: redhat-operators
 op_source_namespace: openshift-marketplace
 op_operator_group_scope: own # 'own' = targetNamespaces: [ns]; 'all' = cluster-wide
+# Whether to create an OperatorGroup at all. A namespace may only have one, and
+# OLM resolves nothing in a namespace that has two -- the Subscription simply
+# never gets an installedCSV, with no error to explain it. openshift-operators
+# ships with 'global-operators' already in it, so anything installed there must
+# set this false and use the one that is already present.
+op_create_operator_group: true
 op_csv_timeout: 900

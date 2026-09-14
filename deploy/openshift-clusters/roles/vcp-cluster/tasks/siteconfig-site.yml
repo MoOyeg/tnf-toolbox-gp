@@ -1,0 +1,68 @@
+---
+# Write this cluster's site definition into the fleet repository, and put the
+# secrets it references on the hub.
+#
+# The split is deliberate and is the one thing about this layout worth getting
+# right: the ClusterInstance goes to Git, where Argo CD syncs it and repairs
+# drift; the pull secret does not. A Secret in a Git repository is readable by
+# everyone who can read the repository, and this one carries registry
+# credentials. So Ansible puts it straight on the hub and Git never sees it.
+
+- name: Create the site namespace on the hub
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ vcp_cluster_name }}"
+        labels:
+          cluster.open-cluster-management.io/backup: cluster-activation
+
+# Created before the ClusterInstance is synced rather than after: the operator's
+# validator refuses to render anything while the referenced pull secret is
+# missing, and Argo CD would show the site permanently degraded.
+- name: Put the pull secret in the site namespace
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ vcp_cluster_name }}-pull-secret"
+        namespace: "{{ vcp_cluster_name }}"
+      type: kubernetes.io/dockerconfigjson
+      # Built as one expression, because pull_secret is JSON text and Ansible
+      # converts a templated value that looks like a literal back into one. Set
+      # as `.dockerconfigjson: "{{ pull_secret }}"` it arrives as an object and
+      # the API server rejects the Secret; wrapped, the conversion produces the
+      # mapping and the value inside it stays a string.
+      stringData: "{{ {'.dockerconfigjson': pull_secret} }}"
+  no_log: true
+
+- name: Create the site folder
+  ansible.builtin.file:
+    path: "{{ site_repo_dir }}/{{ vcp_cluster_name }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+
+- name: Write the site definition
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ site_repo_dir }}/{{ vcp_cluster_name }}/{{ item.dest }}"
+    mode: '0644'
+  loop:
+    - {src: site-namespace.yaml.j2, dest: namespace.yaml}
+    - {src: clusterinstance.yaml.j2, dest: clusterinstance.yaml}
+  loop_control:
+    label: "{{ item.dest }}"
+  delegate_to: localhost
+
+- name: Report what to commit
+  ansible.builtin.debug:
+    msg:
+      - "{{ vcp_cluster_name }}: site definition written to {{ site_repo_dir }}/{{ vcp_cluster_name }}/"
+      - "Commit and push it. Argo CD builds the cluster from Git, not from this run."

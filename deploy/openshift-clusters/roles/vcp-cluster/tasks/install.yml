@@ -59,8 +59,18 @@
         # provides those: NodePort services on the infra cluster, which is also
         # how the hosted variant publishes a guest API here.
         platformType: None
-        userManagedNetworking: true
+        # Without this a compact cluster has nowhere to run anything: there are
+        # no worker nodes, and the CRD has no default -- the field is documented
+        # as "set to true to allow control plane nodes to be schedulable", so
+        # not saying it means they are not.
+        mastersSchedulable: "{{ (vcp_worker_replicas | int == 0) | bool }}"
         networking:
+          # Under networking, not beside it: AgentClusterInstall has no
+          # spec.userManagedNetworking, and a structural schema prunes what it
+          # does not know. Placed one level up it was silently dropped and the
+          # installer only ever inferred user-managed networking from
+          # platformType: None.
+          userManagedNetworking: true
           clusterNetwork:
             - cidr: "{{ vcp_cluster_network_cidr }}"
               hostPrefix: "{{ cluster_network_host_prefix | int }}"
@@ -145,5 +155,9 @@
   ansible.builtin.debug:
     msg:
       - "{{ vcp_cluster_name }} installed: every node is a VM on the infra cluster."
-      - "Control plane: {{ vcp_control_plane_replicas }} VMs. Workers: {{ vcp_worker_replicas }} VMs."
+      - >-
+        {{ vcp_control_plane_replicas }} control-plane VMs
+        {{ 'and no separate workers: a compact cluster, so they are schedulable'
+           if vcp_worker_replicas | int == 0
+           else 'and ' ~ vcp_worker_replicas ~ ' worker VMs' }}.
       - "kubeconfig: {{ guest_kubeconfig_dir }}/{{ vcp_cluster_name }}.kubeconfig"

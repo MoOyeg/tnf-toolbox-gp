@@ -1,0 +1,15 @@
+---
+# The SiteConfig operator: one ClusterInstance in, the whole set of install
+# resources out -- ClusterDeployment, AgentClusterInstall, InfraEnv,
+# ManagedCluster, KlusterletAddonConfig.
+#
+# This role only turns the operator on. The install templates themselves belong
+# to the roles whose clusters are rendered from them: vcp-cluster ships the
+# all-VM set, hcp-guest the hosted-control-plane-on-KubeVirt set. A template is
+# the "how" of one profile, and the profile's role is what knows it.
+op_kubeconfig: ""
+
+# It ships disabled in MultiCluster Engine and is turned on as a
+# MultiClusterHub component override, not as its own Subscription.
+siteconfig_component: siteconfig
+siteconfig_enable_timeout: 600

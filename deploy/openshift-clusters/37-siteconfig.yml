@@ -1,0 +1,117 @@
+---
+# Stage 3d: make the hub able to build clusters from Git.
+#
+# Three things, in order, and the order matters:
+#
+#   the SiteConfig operator  turns one ClusterInstance into the whole set of
+#                            install resources a cluster needs
+#   the install templates    the "how" for each of the two profiles this
+#                            toolbox builds -- whole clusters on VMs, and
+#                            hosted control planes on KubeVirt
+#   OpenShift GitOps         an Argo CD Application per site folder, so the
+#                            fleet is whatever is committed
+#
+# The TNF cluster is not part of this and never will be. It is installed by
+# openshift-baremetal-install onto EC2 metal, and the assisted installer cannot
+# reach that hardware: provisioning a BareMetalHost needs Ironic to attach a
+# discovery ISO over Redfish virtual media, and EC2 has no virtual media to
+# attach. The Redfish shim on the bastion serves power actions only. TNF is also
+# the infra cluster every one of these guests runs on, so it has to exist before
+# any of this does.
+- name: Teach the ACM hub to build clusters from Git
+  hosts: acm_bastion
+  gather_facts: true
+  environment:
+    KUBECONFIG: "{{ acm_kubeconfig }}"
+    # The fallback must list the system sbin directories. A play's
+    # environment: applies to the implicit fact gathering too, so on that first
+    # task ansible_env is still undefined and the default is what PATH becomes
+    # -- and the setup module then reports *that* as ansible_env.PATH for every
+    # task after it. A short fallback silently loses /usr/sbin for the whole
+    # play, and tools like haproxy stop being found.
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+
+  tasks:
+    - name: Confirm the ACM hub exists
+      ansible.builtin.stat:
+        path: "{{ acm_kubeconfig }}"
+      register: acm_hub
+
+    - name: Fail if the ACM hub has not been built
+      ansible.builtin.assert:
+        that: acm_hub.stat.exists
+        fail_msg: "No ACM kubeconfig. Run 'make acm-site' first -- it builds the hub."
+
+    - name: Confirm the TNF infra credential is in place
+      ansible.builtin.stat:
+        path: "{{ acm_install_dir }}/infra-kubeconfig"
+      register: infra_cred
+
+    - name: Fail if the infra credential is missing
+      ansible.builtin.assert:
+        that: infra_cred.stat.exists
+        fail_msg: >-
+          {{ acm_install_dir }}/infra-kubeconfig is missing. Re-run
+          'make acm-site'; its last stage writes the credential ACM uses to
+          reach TNF.
+
+    - name: Enable the SiteConfig operator
+      ansible.builtin.include_role:
+        name: siteconfig
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+
+    # Central Infrastructure Management, and the ClusterImageSet naming this
+    # release. Both are prerequisites of a site definition rather than of a
+    # cluster, which is why they belong here and not in the stage that builds
+    # one:
+    #
+    #   * every ClusterInstance names a ClusterImageSet, and the operator's
+    #     validator refuses to render anything at all while it is missing --
+    #     the Application would sync and the site would simply never appear.
+    #     ACM ships a catalogue of img4.x-*-appsub sets, none of which is this
+    #     cluster's release.
+    #   * the all-VM profile is an assisted install, so its InfraEnv needs an
+    #     assisted-service to build a discovery ISO from. Without it the
+    #     rendered InfraEnv is inert.
+    #
+    # Idempotent, and shared with the stage that builds an all-VM cluster
+    # directly, so the two paths cannot disagree about the image set's name.
+    - name: Enable Central Infrastructure Management and the release image set
+      ansible.builtin.include_role:
+        name: vcp-cluster
+        tasks_from: cim
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+
+    - name: Create the all-VM install templates
+      ansible.builtin.include_role:
+        name: vcp-cluster
+        tasks_from: siteconfig-templates
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+
+    # Read from TNF, where the GPUs physically are, not from the hub. The hub
+    # has none and would report none -- and unlike the stages that create a
+    # cluster, this one bakes the answer into a template that every future guest
+    # is rendered from, so getting it from the wrong cluster would be durable.
+    - name: Discover the passthrough GPU resource name on the infra cluster
+      ansible.builtin.include_role:
+        name: common
+        tasks_from: discover-gpu-resource
+      vars:
+        op_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
+
+    - name: Create the hosted-control-plane install template
+      ansible.builtin.include_role:
+        name: hcp-guest
+        tasks_from: siteconfig-template
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+        guest_api_address: "{{ acm_sno_private_ip }}"
+
+    - name: Install OpenShift GitOps and the fleet ApplicationSet
+      ansible.builtin.include_role:
+        name: gitops
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"

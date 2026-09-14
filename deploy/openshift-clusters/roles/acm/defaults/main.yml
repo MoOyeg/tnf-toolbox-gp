@@ -2,7 +2,6 @@
 op_kubeconfig: ""
 acm_namespace: open-cluster-management
 mce_namespace: multicluster-engine
-multiclusterhub_name: multiclusterhub
 mch_timeout: 2400
 
 # How long to wait for an imported cluster's klusterlet to come up and report

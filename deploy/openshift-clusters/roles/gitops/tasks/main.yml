@@ -1,0 +1,86 @@
+---
+# Install OpenShift GitOps on the hub and point it at the fleet repository.
+
+- name: Fail without a fleet repository URL
+  ansible.builtin.assert:
+    that: site_repo_url | length > 0
+    fail_msg: >-
+      site_repo_url is empty. The ApplicationSet reads site definitions from
+      Git, so it needs the repository they are committed to. Set SITE_REPO_URL
+      in config/instance.env.
+
+- name: Install the OpenShift GitOps operator
+  ansible.builtin.include_role:
+    name: common
+    tasks_from: install-operator
+  vars:
+    op_package: "{{ gitops_package }}"
+    op_namespace: "{{ gitops_namespace }}"
+    op_channel: "{{ gitops_channel }}"
+    op_source: redhat-operators
+    # AllNamespaces: the OperatorGroup must have no targetNamespaces at all.
+    op_operator_group_scope: all
+    # And no OperatorGroup of our own. openshift-operators already contains
+    # 'global-operators', and a namespace with two OperatorGroups is one where
+    # OLM resolves nothing at all: the Subscription is accepted, never gets an
+    # installedCSV, and reports only that its catalog sources are healthy.
+    op_create_operator_group: false
+    op_csv_timeout: "{{ operator_csv_timeout }}"
+
+# The operator creates this namespace and the default Argo CD instance in it a
+# little after its CSV succeeds, so the ApplicationSet has something to be
+# created in only once this appears.
+- name: Wait for the Argo CD instance
+  ansible.builtin.command: >-
+    oc get argocd openshift-gitops -n {{ gitops_argocd_namespace }}
+    -o jsonpath={.metadata.name}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: argocd_instance
+  changed_when: false
+  failed_when: false
+  retries: "{{ (gitops_ready_timeout | int / 15) | int }}"
+  delay: 15
+  until: argocd_instance.rc == 0 and argocd_instance.stdout | length > 0
+
+- name: Fail if Argo CD never came up
+  ansible.builtin.assert:
+    that: argocd_instance.rc == 0
+    fail_msg: >-
+      The Argo CD instance did not appear within {{ gitops_ready_timeout }}s.
+      'oc get csv -n {{ gitops_namespace }}' shows whether the operator
+      installed at all.
+
+# Argo CD's controller is namespace-scoped out of the box, and a ClusterInstance
+# is not: syncing one creates a namespace, a ManagedCluster and a
+# ClusterDeployment. Without this the site Applications fail to sync with
+# "permission denied" on the first resource they touch.
+- name: Let Argo CD manage cluster-scoped fleet resources
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: ClusterRoleBinding
+      metadata:
+        name: "{{ gitops_applicationset_name }}-cluster-admin"
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: ClusterRole
+        name: cluster-admin
+      subjects:
+        - kind: ServiceAccount
+          name: "{{ gitops_controller_sa }}"
+          namespace: "{{ gitops_argocd_namespace }}"
+
+- name: Create the fleet ApplicationSet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition: "{{ lookup('template', 'applicationset.yaml.j2') | from_yaml }}"
+
+- name: Report the fleet
+  ansible.builtin.debug:
+    msg:
+      - "Argo CD is watching {{ site_repo_url }} ({{ site_repo_revision }}) for site folders."
+      - "Commit what 'make sites' generated under {{ site_repo_dir }}/ and the hub builds them."

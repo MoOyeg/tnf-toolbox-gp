@@ -1,0 +1,37 @@
+#
+# Ansible managed -- roles/hcp-guest/templates/clusterinstance.yaml.j2
+#
+# Site definition for {{ guest_name }}: a hosted control plane. The control
+# plane runs as pods on this hub; the worker VMs run on the infra cluster,
+# across the peering connection, where the GPUs are.
+#
+# This file is the *what* -- name, domain, networks. The *how* is
+# {{ siteconfig_hcp_cluster_template }}, which renders the HostedCluster,
+# NodePool, ManagedCluster and KlusterletAddonConfig, and which carries the
+# worker sizing because the ClusterInstance API has nowhere to put it.
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: {{ guest_name }}
+  namespace: {{ guest_name }}
+spec:
+  clusterName: {{ guest_name }}
+  baseDomain: {{ base_domain }}
+  clusterType: HostedControlPlane
+  clusterImageSetNameRef: openshift-{{ ocp_version }}
+  networkType: OVNKubernetes
+  pullSecretRef:
+    name: {{ guest_name }}-pull-secret
+  sshPublicKey: "{{ ssh_public_key }}"
+  clusterNetwork:
+    - cidr: {{ guest_cluster_network_cidr }}
+      hostPrefix: {{ cluster_network_host_prefix }}
+  serviceNetwork:
+    - cidr: {{ guest_service_network_cidr }}
+  templateRefs:
+    - name: {{ siteconfig_hcp_cluster_template }}
+      namespace: {{ siteconfig_template_namespace }}
+  # Empty on purpose, and more plainly so than for the all-VM profile: a hosted
+  # cluster's workers do not exist until HyperShift creates them from the
+  # NodePool's replica count. There is no host to describe.
+  nodes: []

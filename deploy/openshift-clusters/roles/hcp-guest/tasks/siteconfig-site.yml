@@ -1,0 +1,120 @@
+---
+# Write one guest's site definition into the fleet repository, and put the
+# secrets it references on the hub.
+#
+# Three secrets rather than the all-VM profile's one, because a hosted control
+# plane runs here: the pull secret, the kubeconfig that lets HyperShift create
+# VMs on the infra cluster, and the key its etcd is encrypted with. None of them
+# belongs in Git; all three are what the validator and HyperShift look for
+# before the HostedCluster can come up.
+
+- name: Set the name for this guest cluster
+  ansible.builtin.set_fact:
+    guest_name: "{{ guest_cluster_prefix }}-{{ guest_index }}"
+
+- name: "{{ guest_name }}: create the site namespace on the hub"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ guest_name }}"
+        labels:
+          cluster.open-cluster-management.io/backup: cluster-activation
+
+- name: "{{ guest_name }}: put the pull secret in the site namespace"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ guest_name }}-pull-secret"
+        namespace: "{{ guest_name }}"
+      type: kubernetes.io/dockerconfigjson
+      # Built as one expression, because pull_secret is JSON text and Ansible
+      # converts a templated value that looks like a literal back into one. Set
+      # as `.dockerconfigjson: "{{ pull_secret }}"` it arrives as an object and
+      # the API server rejects the Secret; wrapped, the conversion produces the
+      # mapping and the value inside it stays a string.
+      stringData: "{{ {'.dockerconfigjson': pull_secret} }}"
+  no_log: true
+
+# What puts the worker VMs on the infra cluster instead of on this hub. Without
+# it HyperShift creates them locally, which is the whole thing this layout
+# exists to avoid -- the hub has no GPUs and no room for them.
+- name: "{{ guest_name }}: read the infra cluster credential"
+  ansible.builtin.slurp:
+    src: "{{ guest_infra_kubeconfig }}"
+  register: guest_infra_cred
+  when: guest_infra_kubeconfig | default('') | length > 0
+
+- name: "{{ guest_name }}: put the infra credential in the site namespace"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ guest_name }}-infra-credentials"
+        namespace: "{{ guest_name }}"
+      data:
+        kubeconfig: "{{ guest_infra_cred.content }}"
+  no_log: true
+  when: guest_infra_kubeconfig | default('') | length > 0
+
+# Generated once and then left alone. 'hcp create' mints this itself; rendering
+# from a template means nothing does unless we do. Rotating it out from under a
+# running guest would make its etcd unreadable, so an existing key is kept.
+- name: "{{ guest_name }}: look for an existing etcd encryption key"
+  ansible.builtin.command: >-
+    oc get secret {{ guest_name }}-etcd-encryption-key -n {{ guest_name }} -o name
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: etcd_key
+  changed_when: false
+  failed_when: false
+
+- name: "{{ guest_name }}: create the etcd encryption key"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        name: "{{ guest_name }}-etcd-encryption-key"
+        namespace: "{{ guest_name }}"
+      type: Opaque
+      data:
+        # aescbc wants 32 bytes, base64 encoded.
+        key: "{{ lookup('password', '/dev/null length=32 chars=hexdigits') | b64encode }}"
+  no_log: true
+  when: etcd_key.rc != 0
+
+- name: "{{ guest_name }}: create the site folder"
+  ansible.builtin.file:
+    path: "{{ site_repo_dir }}/{{ guest_name }}"
+    state: directory
+    mode: '0755'
+  delegate_to: localhost
+
+- name: "{{ guest_name }}: write the site definition"
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "{{ site_repo_dir }}/{{ guest_name }}/{{ item.dest }}"
+    mode: '0644'
+  loop:
+    - {src: site-namespace.yaml.j2, dest: namespace.yaml}
+    - {src: clusterinstance.yaml.j2, dest: clusterinstance.yaml}
+  loop_control:
+    label: "{{ item.dest }}"
+  delegate_to: localhost
+
+- name: "{{ guest_name }}: report what to commit"
+  ansible.builtin.debug:
+    msg: "{{ guest_name }}: site definition written to {{ site_repo_dir }}/{{ guest_name }}/"

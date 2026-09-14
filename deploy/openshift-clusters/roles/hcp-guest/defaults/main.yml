@@ -55,3 +55,12 @@ guest_api_address: "{{ master0_private_ip }}"
 guest_control_plane_availability: SingleReplica
 # Likewise inside the guest, which has one worker VM.
 guest_infra_availability: SingleReplica
+
+# The guest's own internal ranges. These are what 'hcp create cluster kubevirt'
+# has defaulted to on every guest built so far; they are named here because the
+# ClusterInstance has to state them explicitly rather than inherit a CLI default.
+# Deliberately not the infra cluster's: a guest's nodes are VMs on that cluster's
+# network, and overlapping the two makes the guest's service traffic
+# indistinguishable from the host's.
+guest_cluster_network_cidr: 10.132.0.0/14
+guest_service_network_cidr: 172.31.0.0/16

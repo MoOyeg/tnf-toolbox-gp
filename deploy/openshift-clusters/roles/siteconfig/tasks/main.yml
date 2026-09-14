@@ -1,0 +1,77 @@
+---
+# Enable the SiteConfig operator on the hub and install our install templates.
+#
+# Runs against the ACM hub. Everything here is idempotent: enabling a component
+# that is already enabled is a no-op, and the templates are plain ConfigMaps.
+
+- name: Read the MultiClusterHub's current component list
+  ansible.builtin.command: >-
+    oc get multiclusterhub {{ multiclusterhub_name }} -n {{ acm_namespace }}
+    -o jsonpath={.spec.overrides.components}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: mch_components
+  changed_when: false
+
+# A JSON patch appending to /spec/overrides/components fails if the array does
+# not exist yet, and duplicates the entry if it is already there. Reading the
+# list first and deciding makes the stage safe to re-run, which every stage in
+# this toolbox has to be.
+- name: Work out whether SiteConfig is already enabled
+  ansible.builtin.set_fact:
+    siteconfig_present: >-
+      {{ siteconfig_component in
+         (mch_components.stdout | default('[]') | from_json
+          | map(attribute='name') | list) }}
+
+- name: Enable the SiteConfig component
+  kubernetes.core.k8s_json_patch:
+    kubeconfig: "{{ op_kubeconfig }}"
+    api_version: operator.open-cluster-management.io/v1
+    kind: MultiClusterHub
+    name: "{{ multiclusterhub_name }}"
+    namespace: "{{ acm_namespace }}"
+    patch:
+      - op: add
+        path: /spec/overrides/components/-
+        value:
+          name: "{{ siteconfig_component }}"
+          enabled: true
+  when: not siteconfig_present
+
+- name: Report that SiteConfig was already on
+  ansible.builtin.debug:
+    msg: "SiteConfig is already enabled on this hub."
+  when: siteconfig_present
+
+# The CRD is what everything downstream depends on: a ClusterInstance applied
+# before it exists is rejected outright, and Argo CD would report the site
+# Application permanently degraded rather than retrying into success.
+- name: Wait for the ClusterInstance CRD
+  ansible.builtin.command: >-
+    oc get crd clusterinstances.siteconfig.open-cluster-management.io
+    -o jsonpath={.metadata.name}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: ci_crd
+  changed_when: false
+  failed_when: false
+  retries: "{{ (siteconfig_enable_timeout | int / 15) | int }}"
+  delay: 15
+  until: ci_crd.rc == 0 and ci_crd.stdout | length > 0
+
+- name: Fail if the CRD never appeared
+  ansible.builtin.assert:
+    that: ci_crd.rc == 0
+    fail_msg: >-
+      The SiteConfig operator did not install within
+      {{ siteconfig_enable_timeout }}s. 'oc get multiclusterhub
+      {{ multiclusterhub_name }} -n {{ acm_namespace }} -o yaml' shows which
+      component is stuck.
+
+- name: Report that the operator is ready
+  ansible.builtin.debug:
+    msg: >-
+      SiteConfig is enabled. The install templates are created by the roles that
+      own them: vcp-cluster for whole clusters on VMs, hcp-guest for hosted
+      control planes on KubeVirt.

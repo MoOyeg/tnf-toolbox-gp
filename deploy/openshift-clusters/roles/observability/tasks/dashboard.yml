@@ -20,8 +20,17 @@
         namespace: "{{ obs_namespace }}"
         labels:
           grafana-custom-dashboard: "true"
-      data:
-        gpu-app-dashboard.json: "{{ lookup('file', 'gpu-app-dashboard.json') }}"
+      # The whole mapping is built inside one expression, and it has to be.
+      # Ansible converts a templated value that looks like a literal back into
+      # one, so `key: "{{ lookup('file', ...) }}"` on JSON hands the API server a
+      # ConfigMap whose data value is an object rather than a string:
+      #
+      #   cannot unmarshal object into Go struct field ConfigMap.data of type string
+      #
+      # Wrapping the mapping means the conversion produces the dict, and the
+      # value inside it stays the text that was read. Same reason the node
+      # labels in gpu-passthrough are built this way.
+      data: "{{ {'gpu-app-dashboard.json': lookup('file', 'gpu-app-dashboard.json')} }}"
 
 - name: Read the Grafana route
   ansible.builtin.command: >-

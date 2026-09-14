@@ -64,9 +64,14 @@ CONTEXT = dict(
     # skips it -- it keeps only literals.
     lb_bind_address="10.0.0.5",
     lb_bootstrap_address="10.0.0.9",
+    # Another Jinja-valued role default: the hub node the guest control plane's
+    # NodePorts answer on, which role_defaults() drops for the same reason.
+    guest_api_address="10.1.0.10",
     # loop_var for the virtual machine template
     vm={"name": "vcp-1-cp-1", "role": "control-plane",
         "cores": 8, "memory": "20Gi", "gpus": 0},
+    # set_fact'd per guest inside hcp-guest's loop, so no role default declares it
+    guest_name="hcp-1",
     haproxy_stats_port=9000,
     ansible_user="ec2-user",
     include_bootstrap=True,
@@ -77,6 +82,23 @@ CONTEXT = dict(
          "gpu_workload": "vm-passthrough", "data_volume": "vol-0bbb"},
     ],
 )
+
+
+def strip_go(template):
+    """A Go template with its directives removed, so YAML can be parsed from it.
+
+    The values inside a SiteConfig template ConfigMap are Go templates, not
+    YAML: `{{ if ... }}` lines and `{{ .Spec.X }}` scalars. Dropping whole
+    directive lines and quoting bare substitutions leaves something close enough
+    to parse, which is all these assertions need -- they check structure, not
+    the values the operator will substitute.
+    """
+    lines = []
+    for line in template.splitlines():
+        if re.match(r"\s*\{\{.*\}\}\s*$", line):
+            continue  # a directive or an indented block insert, not a mapping
+        lines.append(re.sub(r"\{\{[^}]*\}\}", "placeholder", line))
+    return "\n".join(lines)
 
 
 def role_defaults():
@@ -644,6 +666,142 @@ def test_fetched_credentials_are_gitignored():
         )
 
 
+def test_siteconfig_install_templates():
+    """The install templates the SiteConfig operator renders our clusters from.
+
+    These are Go templates wrapped in Jinja, which is an easy thing to get
+    subtly wrong, and the cost of getting it wrong is high: a ClusterInstance
+    naming a template that does not exist sits Failed on the hub, and a
+    HostedCluster with one Route-strategy service left in it brings back the
+    private router and its LoadBalancer, which on platform:none never gets an
+    address. Both surface long after the commit that caused them.
+    """
+    print("\nSiteConfig install templates")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    # The same merged context render() uses: some of these live in role
+    # defaults, some are supplied by the run-playbook.sh wrapper.
+    defaults = {**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT}
+
+    vcp = yaml.safe_load(render(f"{roles}/vcp-cluster/templates/vcp-cluster-templates.yaml.j2"))
+    hcp = yaml.safe_load(render(f"{roles}/hcp-guest/templates/hcp-kubevirt-cluster-templates.yaml.j2"))
+
+    # The generator writes templateRefs by name; the installer creates a
+    # ConfigMap by name. Nothing joins the two but these strings agreeing.
+    check("the all-VM template is named what the site definition asks for",
+          vcp["metadata"]["name"] == defaults["siteconfig_vcp_cluster_template"])
+    check("the hosted template is named what the site definition asks for",
+          hcp["metadata"]["name"] == defaults["siteconfig_hcp_cluster_template"])
+
+    # The whole reason for a custom set rather than ai-cluster-templates-v1:
+    # the shipped InfraEnv is per node and names itself after one, which would
+    # build a discovery ISO per VM.
+    check("the all-VM set carries its own cluster-scoped InfraEnv",
+          "InfraEnv" in vcp["data"])
+    check("that InfraEnv is named for the cluster, not for a node",
+          ".SpecialVars.CurrentNode" not in vcp["data"]["InfraEnv"])
+
+    aci = yaml.safe_load(strip_go(vcp["data"]["AgentClusterInstall"]))
+    # Under spec.networking, not beside it. AgentClusterInstall has no
+    # spec.userManagedNetworking; a structural schema prunes what it does not
+    # know, so one level up the field is accepted, dropped, and never applied.
+    check("the all-VM install is user-managed networking",
+          aci["spec"]["networking"].get("userManagedNetworking") is True)
+    check("and says so where the CRD actually has the field",
+          "userManagedNetworking" not in aci["spec"],
+          "spec.userManagedNetworking is pruned by the API server")
+    check("and claims no VIPs, which a pod network cannot provide",
+          "apiVIPs" not in aci["spec"] and "ingressVIPs" not in aci["spec"])
+    # A compact cluster has no workers, so unless the control-plane nodes are
+    # schedulable there is nowhere for a workload to land. The CRD has no
+    # default for this, so silence means "not schedulable".
+    check("a cluster with no workers makes its control plane schedulable",
+          aci["spec"]["provisionRequirements"]["workerAgents"] != 0
+          or aci["spec"].get("mastersSchedulable") is True)
+    check("it waits for as many agents as the profile creates VMs",
+          aci["spec"]["provisionRequirements"]["controlPlaneAgents"]
+          == defaults["vcp_control_plane_replicas"]
+          and aci["spec"]["provisionRequirements"]["workerAgents"]
+          == defaults["vcp_worker_replicas"])
+
+    hosted = yaml.safe_load(strip_go(hcp["data"]["HostedCluster"]))
+    strategies = {s["service"]: s["servicePublishingStrategy"]["type"]
+                  for s in hosted["spec"]["services"]}
+    check("every hosted service is published on a NodePort",
+          set(strategies.values()) == {"NodePort"},
+          f"found {sorted(set(strategies.values()))}")
+    check("all four services a hosted cluster needs are published",
+          set(strategies) == {"APIServer", "OAuthServer", "Ignition", "Konnectivity"},
+          f"found {sorted(strategies)}")
+    check("the workers are KubeVirt, not Agent",
+          hosted["spec"]["platform"]["type"] == "KubeVirt")
+
+    pool = yaml.safe_load(strip_go(hcp["data"]["NodePool"]))
+    check("the node pool is KubeVirt too",
+          pool["spec"]["platform"]["type"] == "KubeVirt")
+    check("it asks for as many workers as the profile is configured for",
+          pool["spec"]["replicas"] == defaults["guest_nodepool_replicas"])
+
+
+def test_agent_cluster_install_networking_is_nested():
+    """The same field, in the role that creates an AgentClusterInstall directly.
+
+    vcp-cluster/tasks/install.yml builds this object without SiteConfig, and had
+    userManagedNetworking one level too high for as long as it has existed --
+    accepted by the API server, pruned on write, and never applied. It worked
+    only because platformType: None makes the installer infer user-managed
+    networking anyway. Both paths are checked so they cannot drift apart again.
+    """
+    print("\nAgentClusterInstall networking")
+    path = f"{ROOT}/deploy/openshift-clusters/roles/vcp-cluster/tasks/install.yml"
+    tasks = yaml.safe_load(open(path, encoding="utf-8"))
+    aci = next(t["kubernetes.core.k8s"]["definition"] for t in tasks
+               if t.get("kubernetes.core.k8s", {}).get("definition", {}).get("kind")
+               == "AgentClusterInstall")
+    check("the role agrees about a compact cluster's schedulable control plane",
+          str(aci["spec"].get("mastersSchedulable", "")).lower().find("worker_replicas") != -1
+          or aci["spec"].get("mastersSchedulable") is True,
+          f"install.yml has mastersSchedulable={aci['spec'].get('mastersSchedulable')!r}")
+    check("the role nests userManagedNetworking under networking",
+          aci["spec"]["networking"].get("userManagedNetworking") is True)
+    check("and does not leave a copy where it would be pruned",
+          "userManagedNetworking" not in aci["spec"])
+
+
+def test_site_definitions():
+    """One ClusterInstance per cluster, and what has to be true of every one.
+
+    spec.nodes is empty in both profiles on purpose. A NodeSpec requires a BMC
+    address, a boot MAC and a credentials Secret that the operator's validator
+    checks for before rendering -- none of which exists for a KubeVirt VM. An
+    entry here would mean three fabrications per node and a dummy Secret on the
+    hub, for fields no rendered manifest would ever read.
+    """
+    print("\nsite definitions")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    defaults = {**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT}
+    sites = {
+        "vcp-cluster": defaults["siteconfig_vcp_cluster_template"],
+        "hcp-guest": defaults["siteconfig_hcp_cluster_template"],
+    }
+    for role, template_name in sites.items():
+        ci = yaml.safe_load(render(f"{roles}/{role}/templates/clusterinstance.yaml.j2"))
+        name = os.path.basename(role)
+        check(f"{name}: it is a ClusterInstance", ci["kind"] == "ClusterInstance")
+        check(f"{name}: it points at the template its role creates",
+              [r["name"] for r in ci["spec"]["templateRefs"]] == [template_name])
+        check(f"{name}: the template namespace agrees with where it is created",
+              all(r["namespace"] == defaults["siteconfig_template_namespace"]
+                  for r in ci["spec"]["templateRefs"]))
+        check(f"{name}: it claims no hardware", ci["spec"]["nodes"] == [])
+        # The install templates hardcode namespace: .Spec.ClusterName, so a
+        # namespace that disagrees renders manifests into a namespace that does
+        # not exist.
+        ns = yaml.safe_load(render(f"{roles}/{role}/templates/site-namespace.yaml.j2"))
+        check(f"{name}: cluster name, namespace and folder all agree",
+              ci["metadata"]["namespace"] == ci["spec"]["clusterName"]
+              == ns["metadata"]["name"])
+
+
 def main():
     test_every_template_renders()
     test_install_config()
@@ -657,6 +815,9 @@ def main():
     test_play_path_fallbacks_keep_the_system_directories()
     test_iommu_is_enabled_at_install_time()
     test_vcp_virtual_machine()
+    test_siteconfig_install_templates()
+    test_agent_cluster_install_networking_is_nested()
+    test_site_definitions()
     test_site_agnostic_roles_name_no_single_site()
     test_fetched_credentials_are_gitignored()
 

@@ -1,0 +1,24 @@
+---
+# Create this profile's SiteConfig install templates on the hub.
+#
+# Split out from main.yml because it runs at a different time and against a
+# different thing: main.yml builds one cluster, this puts the templates every
+# such cluster is rendered from on the hub, once. They sit in the same namespace
+# as the operator's own ai-* and ibi-* sets, so a ClusterInstance can reference
+# either without a namespace change.
+
+- name: Create the all-VM install templates
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition: "{{ lookup('template', item) | from_yaml }}"
+  loop:
+    - vcp-cluster-templates.yaml.j2
+  loop_control:
+    label: "{{ item | regex_replace('\\.yaml\\.j2$', '') }}"
+
+- name: Report the templates
+  ansible.builtin.debug:
+    msg: >-
+      {{ siteconfig_vcp_cluster_template }} is on the hub:
+      whole clusters on virtual machines.

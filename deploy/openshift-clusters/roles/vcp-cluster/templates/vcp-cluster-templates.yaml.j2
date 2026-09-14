@@ -1,0 +1,192 @@
+#
+# Ansible managed -- roles/siteconfig/templates/vcp-cluster-templates.yaml.j2
+#
+# Cluster-level install templates for a whole OpenShift cluster on virtual
+# machines: control-plane VMs as well as worker VMs, every one of them a
+# KubeVirt VM on the infra cluster.
+#
+# Why this is not ai-cluster-templates-v1, the set that ships with the operator:
+#
+#   1. The shipped InfraEnv is a *node*-level template named after each node, so
+#      a five-node cluster renders five InfraEnvs and five discovery ISOs. That
+#      is the bare-metal model, where one ISO is bound to one BareMetalHost.
+#      Our nodes have no BMC at all -- the VMs boot one shared ISO and register
+#      themselves as Agents -- so the InfraEnv belongs here, once per cluster.
+#
+#      This is also why every site definition using this set carries `nodes: []`.
+#      A NodeSpec requires bmcAddress, bootMACAddress *and* a BMC credentials
+#      Secret that the operator's validator checks for before it will render
+#      anything -- three fabrications per VM, for fields nothing would ever read,
+#      since no BareMetalHost is rendered to read them. An empty list is honest
+#      about there being no hardware to claim, and the validator only walks the
+#      list, so it renders the cluster-level manifests and nothing else.
+#
+#   2. The shipped AgentClusterInstall has no way to ask for user-managed
+#      networking. These VMs sit on the infra cluster's pod network, where OVN
+#      owns every address and keepalived cannot claim a VIP by ARP. The install
+#      has to be told there are no VIPs and that the API and ingress are
+#      published by other means -- NodePort services, created after the install.
+#
+# The values are Go templates over the ClusterInstance, not Jinja: Ansible only
+# puts this ConfigMap on the hub, and the SiteConfig operator renders it there.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ siteconfig_vcp_cluster_template }}
+  namespace: {{ siteconfig_template_namespace }}
+data:
+{% raw %}
+  ClusterDeployment: |
+    apiVersion: hive.openshift.io/v1
+    kind: ClusterDeployment
+    metadata:
+      name: "{{ .Spec.ClusterName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+      annotations:
+        siteconfig.open-cluster-management.io/sync-wave: "1"
+    spec:
+      baseDomain: "{{ .Spec.BaseDomain }}"
+      clusterInstallRef:
+        group: extensions.hive.openshift.io
+        kind: AgentClusterInstall
+        name: "{{ .Spec.ClusterName }}"
+        version: v1beta1
+      clusterName: "{{ .Spec.ClusterName }}"
+      platform:
+        agentBareMetal:
+          # Matched against the labels the InfraEnv below stamps on every Agent
+          # born from its ISO. That is the whole binding between a booted VM and
+          # the cluster it joins -- there is no BareMetalHost to do it.
+          agentSelector:
+            matchLabels:
+              cluster-name: "{{ .Spec.ClusterName }}"
+      pullSecretRef:
+        name: "{{ .Spec.PullSecretRef.Name }}"
+  AgentClusterInstall: |
+    apiVersion: extensions.hive.openshift.io/v1beta1
+    kind: AgentClusterInstall
+    metadata:
+      name: "{{ .Spec.ClusterName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+      annotations:
+    {{ if .SpecialVars.InstallConfigOverrides }}
+        agent-install.openshift.io/install-config-overrides: '{{ .SpecialVars.InstallConfigOverrides }}'
+    {{ end }}
+        siteconfig.open-cluster-management.io/sync-wave: "1"
+    spec:
+      clusterDeploymentRef:
+        name: "{{ .Spec.ClusterName }}"
+      holdInstallation: {{ .Spec.HoldInstallation }}
+      imageSetRef:
+        name: "{{ .Spec.ClusterImageSetNameRef }}"
+      # No apiVIPs and no ingressVIPs, deliberately. A bare-metal assisted
+      # install would put them on addresses keepalived claims by ARP on the
+      # machine network; on a pod network there is no unallocated address to
+      # claim. Same reason MetalLB does not work in a VPC, one layer further in.
+      platformType: None
+{% endraw %}
+      # Without this a compact cluster has nowhere to run anything: there are no
+      # worker nodes, and the CRD has no default -- the field is documented as
+      # "set to true to allow control plane nodes to be schedulable", so not
+      # saying it means they are not.
+      mastersSchedulable: {{ 'true' if vcp_worker_replicas | int == 0 else 'false' }}
+{% raw %}
+      networking:
+        # Under networking, not beside it. The CRD has no spec.userManagedNetworking
+        # and a structural schema prunes what it does not know, so the field is
+        # silently dropped when it is put one level up -- leaving the installer
+        # to infer it from platformType rather than being told.
+        userManagedNetworking: true
+    {{ if .Spec.ClusterNetwork }}
+        clusterNetwork:
+    {{ .Spec.ClusterNetwork | toYaml | indent 6 }}
+    {{ end }}
+    {{ if .Spec.ServiceNetwork }}
+        serviceNetwork:
+    {{ $serviceNetworks := list }}
+    {{ range .Spec.ServiceNetwork }}
+    {{ $serviceNetworks = append $serviceNetworks .CIDR }}
+    {{ end }}
+    {{ $serviceNetworks | toYaml | indent 6 }}
+    {{ end }}
+      # Not .SpecialVars.ControlPlaneAgents / .WorkerAgents, which count entries
+      # in spec.nodes -- and spec.nodes is empty here for the reason above. The
+      # installer still has to be told how many Agents to wait for, so the counts
+      # come from this profile's configuration instead, the same way the guest
+      # VM sizing does. A differently shaped cluster is a second template set.
+      provisionRequirements:
+{% endraw %}
+        controlPlaneAgents: {{ vcp_control_plane_replicas }}
+        workerAgents: {{ vcp_worker_replicas }}
+{% raw %}
+      sshPublicKey: "{{ .Spec.SSHPublicKey }}"
+    {{ if gt (len .Spec.ExtraManifestsRefs) 0 }}
+      manifestsConfigMapRefs:
+    {{ .Spec.ExtraManifestsRefs | toYaml | indent 4 }}
+    {{ end }}
+  InfraEnv: |
+    apiVersion: agent-install.openshift.io/v1beta1
+    kind: InfraEnv
+    metadata:
+      name: "{{ .Spec.ClusterName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+      annotations:
+        siteconfig.open-cluster-management.io/sync-wave: "1"
+    spec:
+      clusterRef:
+        name: "{{ .Spec.ClusterName }}"
+        namespace: "{{ .Spec.ClusterName }}"
+      sshAuthorizedKey: "{{ .Spec.SSHPublicKey }}"
+      pullSecretRef:
+        name: "{{ .Spec.PullSecretRef.Name }}"
+      # What binds a booted VM to this cluster. Every Agent that registers from
+      # this ISO carries the label the ClusterDeployment's agentSelector looks
+      # for, so the VMs need to know nothing about the cluster they are joining.
+      agentLabels:
+        cluster-name: "{{ .Spec.ClusterName }}"
+      # Full ISO rather than minimal: a minimal one fetches its root filesystem
+      # over the network mid-boot, and these VMs reach the hub across a VPC
+      # peering connection where that is one more thing to go wrong.
+      imageType: full-iso
+    {{ if .Spec.Proxy }}
+      proxy:
+    {{ .Spec.Proxy | toYaml | indent 4 }}
+    {{ end }}
+    {{ if .Spec.AdditionalNTPSources }}
+      additionalNTPSources:
+    {{ .Spec.AdditionalNTPSources | toYaml | indent 4 }}
+    {{ end }}
+  ManagedCluster: |
+    apiVersion: cluster.open-cluster-management.io/v1
+    kind: ManagedCluster
+    metadata:
+      name: "{{ .Spec.ClusterName }}"
+      annotations:
+        siteconfig.open-cluster-management.io/sync-wave: "2"
+      labels:
+        cloud: auto-detect
+        vendor: auto-detect
+    spec:
+      hubAcceptsClient: true
+  KlusterletAddonConfig: |
+    apiVersion: agent.open-cluster-management.io/v1
+    kind: KlusterletAddonConfig
+    metadata:
+      name: "{{ .Spec.ClusterName }}"
+      namespace: "{{ .Spec.ClusterName }}"
+      annotations:
+        siteconfig.open-cluster-management.io/sync-wave: "2"
+    spec:
+      clusterName: "{{ .Spec.ClusterName }}"
+      clusterNamespace: "{{ .Spec.ClusterName }}"
+      applicationManager:
+        enabled: false
+      certPolicyController:
+        enabled: false
+      iamPolicyController:
+        enabled: false
+      policyController:
+        enabled: true
+      searchCollector:
+        enabled: false
+{% endraw %}

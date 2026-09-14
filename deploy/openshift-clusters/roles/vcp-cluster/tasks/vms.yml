@@ -83,4 +83,5 @@
   ansible.builtin.debug:
     msg: >-
       {{ vcp_nodes | length }} VMs running on the infra cluster:
-      {{ vcp_control_plane_replicas }} control plane, {{ vcp_worker_replicas }} workers.
+      {{ vcp_control_plane_replicas }} control plane, {{ vcp_worker_replicas }} workers
+      ({{ vcp_nodes | length }} nodes, {{ vcp_gpus_per_node }} GPU(s) each).

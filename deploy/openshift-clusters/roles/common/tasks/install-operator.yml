@@ -30,6 +30,7 @@
       # An AllNamespaces operator must have no targetNamespaces at all -- an
       # empty list is not the same thing and OLM rejects it.
       spec: "{{ {'targetNamespaces': [op_namespace]} if op_operator_group_scope == 'own' else {} }}"
+  when: op_create_operator_group | bool
 
 - name: "{{ op_package }}: wait for the package manifest to appear"
   ansible.builtin.command: >-

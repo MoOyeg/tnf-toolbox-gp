@@ -1,0 +1,12 @@
+#
+# Ansible managed -- roles/vcp-cluster/templates/site-namespace.yaml.j2
+#
+# The install templates hardcode `namespace: {{ '{{' }} .Spec.ClusterName {{ '}}' }}`,
+# so the namespace, the cluster name and the folder name must all agree.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ vcp_cluster_name }}
+  labels:
+    # Lets the hub back this site definition up and restore it.
+    cluster.open-cluster-management.io/backup: cluster-activation

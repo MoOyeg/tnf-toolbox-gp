@@ -36,6 +36,7 @@ already decided.
 | `make gpu` | `20-base-gpu.yml` | 10 min |
 | `make virt-mce` | `30-virt-mce.yml` | 15 min |
 | `make acm-site` | `36-acm-site.yml` | 56 min |
+| `make siteconfig` | `37-siteconfig.yml` | 10 min |
 | `make hcp-make-guests-from-acm` | `40-hcp-guests-from-acm.yml` | 40 min |
 | `make guest-gpu` | `50-guest-gpu.yml` | 33 min |
 
@@ -45,6 +46,7 @@ Not in `make all`:
 |---|---|---|
 | `make guests` | `40-hcp-guests.yml` | guests hosted by TNF's own MCE instead of ACM |
 | `make vcp-make-guests-from-acm` | `41-vcp-clusters-from-acm.yml` | a whole cluster on VMs, control plane included |
+| `make sites` | `42-sites.yml` | write the fleet's site definitions for Argo CD to build |
 | `make tnf-recover` | `16-tnf-recover.yml` | a TNF pair that did not re-form after a reboot |
 | `make app` | `60-app.yml` | the visual inspection app, in every guest cluster |
 
@@ -52,16 +54,53 @@ Each is re-runnable. `make tnf` skips the install if `auth/kubeconfig` already
 exists on the bastion, but still reapplies the Pacemaker timeouts — which is
 what you want after the TNF controller has recreated a stonith device.
 `make tnf` writes the IOMMU MachineConfig into the install manifests, so the
-nodes boot with `intel_iommu=on iommu=pt` and `make iommu` has nothing to do on
-a cluster this repo built. It is kept for clusters built before that, where it
-still performs the day-2 rollout — two serial reboots, and the operation that
-has split the Pacemaker pair three times.
+nodes boot with `intel_iommu=on iommu=pt` and `make iommu` has no *kernel
+arguments* to apply on a cluster this repo built — it detects that and skips the
+rollout, so no reboot happens. It is still required, and is not an optional
+stage: it is also the only thing that labels the nodes
+`nvidia.com/gpu.workload.config=vm-passthrough`. Without that label the GPU
+Operator leaves them on `sandboxWorkloads.defaultWorkload` (container), the GPUs
+stay bound to the NVIDIA driver instead of `vfio-pci`, no passthrough resource
+is ever advertised, and `make virt-mce` fails minutes later at
+`discover-gpu-resource` with an error that points at GPUs rather than at a
+missing label.
+
+On a cluster built before the MachineConfig moved into the install manifests it
+also performs the day-2 rollout — two serial reboots, and the operation that has
+split the Pacemaker pair three times.
 
 `make tnf-recover` is the one to reach for when a stage stops with "the cluster
 is not healthy as a two-node fencing cluster". It works through the documented
 recovery steps in order and stops at the first that helps; the destructive ones
 are opt-in and are skipped anyway while the missing node still answers. See the
 README's "When the cluster does not come back".
+
+## Two ways to build a cluster
+
+Every cluster except TNF can be described as a `ClusterInstance` and built by
+the SiteConfig operator from Git, instead of by the Ansible role that creates
+the install resources directly. Both paths still exist and produce the same
+clusters:
+
+| | Ansible builds it | Git builds it |
+|---|---|---|
+| hosted guests | `make hcp-make-guests-from-acm` | `make siteconfig` then `make sites` |
+| a whole cluster on VMs | `make vcp-make-guests-from-acm` | `make siteconfig` then `make sites` |
+
+`make siteconfig` is the one-time setup: it enables the SiteConfig operator on
+the hub, creates the install template each profile is rendered from, and
+installs OpenShift GitOps with an ApplicationSet watching `SITE_REPO_URL`.
+`make sites` then writes one folder per cluster under `sites/` and puts the
+secrets each one references on the hub. **Committing and pushing that folder is
+the last step and it is yours** — the hub reconciles against Git, not against
+the run that generated the files.
+
+TNF is deliberately not in this table. It is installed by
+`openshift-baremetal-install` onto EC2 metal, and the assisted installer cannot
+reach that hardware: a `BareMetalHost` needs Ironic to attach a discovery ISO
+over Redfish virtual media, EC2 has no virtual media to attach, and the Redfish
+shim on the bastion serves power actions only. TNF is also the infra cluster
+every one of these guests runs on, so it has to exist first either way.
 
 ## Teardown
 

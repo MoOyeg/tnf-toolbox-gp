@@ -1,0 +1,54 @@
+#
+# Ansible managed -- roles/gitops/templates/applicationset.yaml.j2
+#
+# One Argo CD Application per site folder, generated from Git.
+#
+# Adding a cluster to the fleet is a matter of committing a folder: no Argo CD
+# change and no pipeline change. The Application name comes from the folder's
+# basename, so moving a site between directories keeps its identity and Argo CD
+# just updates the source path rather than deleting and recreating the cluster.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: {{ gitops_applicationset_name }}
+  namespace: {{ gitops_argocd_namespace }}
+spec:
+  # Deleting an Application cascades to the ClusterInstance, and deleting a
+  # ClusterInstance deprovisions the cluster. With this set, a site that leaves
+  # Git stops being managed but keeps running -- so destroying a cluster stays a
+  # deliberate act rather than a side effect of renaming a folder.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+  goTemplate: true
+  goTemplateOptions: [missingkey=error]
+  generators:
+    - git:
+        repoURL: {{ site_repo_url }}
+        revision: {{ site_repo_revision }}
+        directories:
+          - path: '{{ site_repo_path }}/*'
+  template:
+    metadata:
+      name: 'site-{% raw %}{{.path.basename}}{% endraw %}'
+    spec:
+      project: default
+      source:
+        repoURL: {{ site_repo_url }}
+        targetRevision: {{ site_repo_revision }}
+        path: '{% raw %}{{.path.path}}{% endraw %}'
+      destination:
+        server: https://kubernetes.default.svc
+      syncPolicy:
+        # prune + selfHeal is what makes Git the source of truth: edit a
+        # ClusterInstance on the hub by hand and Argo CD puts it back.
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

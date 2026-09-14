@@ -123,6 +123,79 @@ A hosted control plane is cheaper — it is pods, and it shares the hub's etcd
 machinery. A standalone one costs three more VMs before a single workload runs,
 and in exchange it survives the hub going away.
 
+## Building clusters from Git
+
+Every cluster except TNF can be described as a single `ClusterInstance` and
+built by the [SiteConfig operator](https://docs.redhat.com/en/documentation/red_hat_advanced_cluster_management_for_kubernetes/2.13/html/multicluster_engine_operator_with_red_hat_advanced_cluster_management/siteconfig-intro)
+from a Git repository, rather than by an Ansible role creating the install
+resources directly:
+
+```bash
+make siteconfig    # SiteConfig operator + the install templates + OpenShift GitOps
+make sites         # one folder per cluster, written under sites/
+git add sites && git commit -m "the fleet" && git push
+```
+
+Ansible generates; Git is what the hub reconciles against. An ApplicationSet
+turns each folder into an Argo CD Application, so adding a cluster is a commit
+and a `ClusterInstance` edited by hand on the hub is put back.
+
+**Secrets never go to Git.** Each site's pull secret — and for a hosted cluster
+the infra-cluster kubeconfig and its etcd encryption key — are written straight
+to the hub by `make sites`. A `Secret` in a repository is readable by everyone
+who can read the repository.
+
+### What is the *what* and what is the *how*
+
+A site definition carries identity and networking. Everything about how the
+cluster is installed lives in the template it points at, which is created by the
+role that owns that profile:
+
+| Profile | Template | Renders |
+|---|---|---|
+| whole cluster on VMs | `vcp-cluster-templates-v1` | ClusterDeployment, AgentClusterInstall, InfraEnv, ManagedCluster, KlusterletAddonConfig |
+| hosted control plane | `hcp-kubevirt-cluster-templates-v1` | HostedCluster, NodePool, ManagedCluster, KlusterletAddonConfig |
+
+Neither is the set that ships with the operator, for reasons written into the
+top of each template file. The shipped `ai-*` set renders one InfraEnv *per
+node*, named after that node — the bare-metal model, where one discovery ISO is
+bound to one `BareMetalHost`. Our nodes are KubeVirt VMs sharing one ISO. The
+shipped hosted set renders `platform: type: Agent` with one `NodePool` of
+`replicas: 1` per node; ours are OpenShift Virtualization VMs that HyperShift
+creates itself from a replica count.
+
+### Two consequences worth knowing before you use it
+
+**`spec.nodes` is empty in every site definition.** A `NodeSpec` requires
+`bmcAddress`, `bootMACAddress` *and* a BMC credentials `Secret` that the
+operator's validator checks for before it renders anything. None of those exist
+for a KubeVirt VM — there is no BMC, and the boot MAC is assigned at creation.
+Filling them in would mean three fabrications per node plus a dummy Secret on
+the hub, for fields no rendered manifest would ever read.
+
+**Worker sizing and node counts live in the template, not the site
+definition.** The `ClusterInstance` API has nowhere to put cores, memory or
+GPUs: `NodeSpec` describes hardware to be *claimed*, not hardware to be
+*created*. This matches how the toolbox already works — `GUEST_VM_CORES` and
+friends in `config/instance.env` are fleet-wide rather than per guest. A
+differently shaped cluster is a second template set, which is the separation the
+operator is built around.
+
+One thing the conversion fixes outright: `hcp create` mints a fresh random
+`infraID` on every invocation, and `infraID` is immutable once the
+`HostedCluster` exists, so re-rendering a guest could never be applied. A
+template sets `infraID` from the cluster name, so rendering is repeatable.
+
+### Why TNF is not in this
+
+TNF is installed by `openshift-baremetal-install` onto EC2 metal. The assisted
+installer cannot reach that hardware: provisioning a `BareMetalHost` needs
+Ironic to attach a discovery ISO over Redfish virtual media, EC2 has no virtual
+media to attach, and the Redfish shim on the bastion implements `Systems`,
+`PowerState` and `ComputerSystem.Reset` only. TNF is also the infra cluster
+every one of these guests runs on, and the hub's own SNO cannot provision
+itself, so both stay on their current installers.
+
 ## The application
 
 [`app/`](app/) is what the stack is for: a GPU visual inspection pipeline that
@@ -344,6 +417,8 @@ deploy/
     scripts/             create, destroy, doctor, status, inventory, ssh
   openshift-clusters/    Ansible: the numbered stages, plus teardown
     roles/               one role per layer, reused across sites and guests
+sites/                   generated: one ClusterInstance per cluster, synced to
+                         the hub by Argo CD (commit these)
 docs/                    architecture, fencing, GPU allocation, guest clusters,
                          the app redesign, and the editable diagram
 hack/                    lint and static template checks
@@ -399,12 +474,13 @@ docs advise against — on a single node there is nowhere else to reschedule to.
 - **19 unit tests** for the Redfish shim — routing, both auth modes, the
   power-state mapping including every transitional EC2 state, and reset-type
   translation. The EC2 layer is stubbed.
-- **70 static checks** over the templates — every Jinja template renders under
+- **126 static checks** over the templates — every Jinja template renders under
   `StrictUndefined`, the rendered `install-config.yaml` has the fencing shape
   TNF requires, the ignition pointers are valid JSON inside the CloudFormation
-  parameter limit, haproxy drops bootstrap from the ingress backends, and every
-  CloudFormation `Ref`/`GetAtt` resolves to something declared.
-- **Playbook syntax checks** for all ten playbooks.
+  parameter limit, haproxy drops bootstrap from the ingress backends, every
+  CloudFormation `Ref`/`GetAtt` resolves to something declared, and each
+  `ClusterInstance` names an install template that some role actually creates.
+- **Playbook syntax checks** for all fifteen playbooks.
 
 **This has been run end to end against real hardware in AWS**, and the whole
 pipeline completes: both sites, GPUs reaching guest cluster workers, and

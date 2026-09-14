@@ -1,0 +1,63 @@
+---
+# Stage 4d: write the fleet's site definitions.
+#
+# One folder per cluster: a namespace and a ClusterInstance, which is the whole
+# description of a cluster -- name, domain, networks, and which install template
+# builds it. Ansible writes them and stops. What the hub actually reconciles
+# against is Git, so the last step is yours: commit and push.
+#
+# Secrets do not go to Git. Each site's pull secret, and for a hosted cluster the
+# infra-cluster kubeconfig and its etcd encryption key, are put straight on the
+# hub by these roles. A Secret in a repository is readable by everyone who can
+# read the repository.
+- name: Write the fleet's site definitions
+  hosts: acm_bastion
+  gather_facts: true
+  environment:
+    KUBECONFIG: "{{ acm_kubeconfig }}"
+    # The fallback must list the system sbin directories. A play's
+    # environment: applies to the implicit fact gathering too, so on that first
+    # task ansible_env is still undefined and the default is what PATH becomes
+    # -- and the setup module then reports *that* as ansible_env.PATH for every
+    # task after it. A short fallback silently loses /usr/sbin for the whole
+    # play, and tools like haproxy stop being found.
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+
+  tasks:
+    - name: Confirm the ClusterInstance CRD exists
+      ansible.builtin.command: >-
+        oc get crd clusterinstances.siteconfig.open-cluster-management.io
+        -o jsonpath={.metadata.name}
+      register: ci_crd
+      changed_when: false
+      failed_when: false
+
+    - name: Fail if SiteConfig has not been enabled
+      ansible.builtin.assert:
+        that: ci_crd.rc == 0
+        fail_msg: >-
+          The ClusterInstance CRD is missing. Run 'make siteconfig' first: it
+          enables the operator and creates the install templates these site
+          definitions reference.
+
+    - name: Write the guest clusters' site definitions
+      ansible.builtin.include_role:
+        name: hcp-guest
+        tasks_from: siteconfig-sites
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+        guest_infra_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
+
+    - name: Write the all-VM cluster's site definition
+      ansible.builtin.include_role:
+        name: vcp-cluster
+        tasks_from: siteconfig-site
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+
+    - name: Say what happens next
+      ansible.builtin.debug:
+        msg:
+          - "Site definitions are written under {{ site_repo_dir }}/."
+          - "git add, commit and push them: Argo CD builds the fleet from Git,"
+          - "not from this run. 'oc get clusterinstance -A' on the hub follows it."

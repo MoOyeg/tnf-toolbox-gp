@@ -1,0 +1,35 @@
+---
+# Create this profile's SiteConfig install template on the hub.
+#
+# Sizing is baked into the template rather than taken from each site definition,
+# because the ClusterInstance API has nowhere to put cores, memory or GPUs --
+# NodeSpec describes hardware to be claimed, not hardware to be created. The
+# values come from config/instance.env, which already treats guest sizing as
+# fleet-wide rather than per guest.
+#
+# Two of them are discovered rather than configured, so the caller has to have
+# run the discovery first: gpu_resource_name from the infra cluster's GPU
+# Operator, and storage_class from the hub.
+
+- name: Confirm the discovered values are in hand
+  ansible.builtin.assert:
+    that:
+      - gpu_resource_name | default('') | length > 0 or guest_gpus_per_node | int == 0
+      - storage_class | default('') | length > 0
+    fail_msg: >-
+      The KubeVirt template is rendered with the GPU resource name and the
+      storage class baked in. Run the discover-gpu-resource task against the
+      infra cluster and resolve storage_class before including this.
+
+- name: Create the hosted-control-plane-on-KubeVirt install template
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition: "{{ lookup('template', 'hcp-kubevirt-cluster-templates.yaml.j2') | from_yaml }}"
+
+- name: Report the template
+  ansible.builtin.debug:
+    msg: >-
+      {{ siteconfig_hcp_cluster_template }} is on the hub:
+      {{ guest_nodepool_replicas }} x {{ guest_vm_cores }} core /
+      {{ guest_vm_memory }} workers, {{ guest_gpus_per_node }} GPU(s) each.

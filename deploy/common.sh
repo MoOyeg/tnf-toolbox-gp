@@ -231,6 +231,33 @@ delete_stack() {
   green "stack ${stack} deleted"
 }
 
+# Delete several stacks at once, and report which of them failed.
+#
+# CloudFormation is not the slow part of a teardown; waiting is. Nearly all of
+# it is inside `wait stack-delete-complete` while EC2 releases a bare-metal
+# instance, which takes about twenty minutes -- so two metal stacks deleted one
+# after the other cost forty minutes for work that has no ordering between it.
+#
+# Stacks passed here are deleted together. The caller keeps the ordering that
+# does matter: instances before the security groups they sit in, the peering
+# before either VPC.
+delete_stacks_parallel() {
+  local stack rc=0 i
+  local -a pids=() names=()
+  for stack in "$@"; do
+    delete_stack "${stack}" &
+    pids+=("$!")
+    names+=("${stack}")
+  done
+  for i in "${!pids[@]}"; do
+    if ! wait "${pids[$i]}"; then
+      red "stack ${names[$i]} failed to delete"
+      rc=1
+    fi
+  done
+  return "${rc}"
+}
+
 save_state() {
   printf '%s' "$2" > "${STATE_DIR}/$1"
 }

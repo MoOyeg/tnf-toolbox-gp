@@ -106,6 +106,32 @@ lvms_namespace: openshift-storage
 cnv_namespace: openshift-cnv
 acm_namespace: open-cluster-management
 
+# The MultiClusterHub instance name. Needed by the acm role that creates it and
+# by the siteconfig role that enables a component on it.
+multiclusterhub_name: multiclusterhub
+
+# SiteConfig install templates. A template set is named by the role that creates
+# it and again by the generator that writes templateRefs into a ClusterInstance,
+# so the names are shared rather than owned by either.
+siteconfig_template_namespace: open-cluster-management
+siteconfig_vcp_cluster_template: vcp-cluster-templates-v1
+siteconfig_hcp_cluster_template: hcp-kubevirt-cluster-templates-v1
+
+# The generated fleet. Ansible writes one folder per cluster under site_repo_dir
+# and Argo CD reads them back from site_repo_url -- so the files are generated,
+# but Git is what the hub actually syncs from. Set site_repo_url to the
+# repository these are committed to; the ApplicationSet cannot be built without
+# it, and a wrong one silently syncs somebody else's fleet.
+# site_repo_path is the path *inside* the repository, which is what the
+# ApplicationSet's Git generator scans; site_repo_dir is where that same folder
+# lives on this workstation, which is where Ansible writes. They are stated
+# separately rather than derived from one another because a nested path would
+# not survive the round trip.
+site_repo_path: sites
+site_repo_dir: "{{ repo_root }}/{{ site_repo_path }}"
+site_repo_url: ""
+site_repo_revision: main
+
 # ------------------------------------------------------------------ GPU
 # g4dn.metal carries eight Tesla T4s. 10DE:1EB8 is the PCI id KubeVirt matches
 # on; nvidia.com/TU104GL_Tesla_T4 is the resource name the GPU Operator's
@@ -136,6 +162,12 @@ storage_class: "lvms-vg1"
 # needs a reboot has to drain half the cluster to do it.
 operator_csv_timeout: 900
 mcp_rollout_timeout: 3600
+
+# How long to keep asking a cluster whether it is there before concluding it is
+# not. Long enough to ride out an API server restart or a single-node reboot,
+# because the alternative reading -- "no cluster" -- leads to reinstalling over
+# one that is still running.
+cluster_probe_timeout: 300
 bootstrap_timeout: 3600
 install_timeout: 5400
 hosted_cluster_timeout: 3600

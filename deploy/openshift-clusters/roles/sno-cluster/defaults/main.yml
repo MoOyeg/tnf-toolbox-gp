@@ -23,3 +23,9 @@ infra_kubeconfig_secret: tnf-infra-kubeconfig
 # Pods per node on the hub. The default 250 is not enough for ACM plus MCE plus
 # OpenShift Virtualization plus a hosted control plane for every guest cluster.
 acm_max_pods: 500
+
+# How long to wait for the node to come back after the KubeletConfig rollout.
+# It is a reboot of a bare-metal machine, and m5zn.metal POSTs slowly: the first
+# time this was tried the budget was ten minutes and the node returned about two
+# minutes later, which failed the stage over nothing.
+acm_pod_capacity_timeout: 2400

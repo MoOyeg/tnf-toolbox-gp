@@ -11,8 +11,13 @@ load_config
 require_tools aws
 
 delete_stack "${PEERING_STACK}"
-delete_stack "${ACM_CLUSTER_NAME}-bootstrap"
-delete_stack "${ACM_SNO_STACK}"
+
+# The two instance stacks together: the SNO is bare metal and takes about twenty
+# minutes to terminate, and the bootstrap has no relationship to it.
+delete_stacks_parallel "${ACM_CLUSTER_NAME}-bootstrap" "${ACM_SNO_STACK}"
+
+# Serial from here, and necessarily so: the bastion sits in the security groups
+# the services stack owns, and everything sits in the VPC the network stack owns.
 delete_stack "${ACM_SERVICES_STACK}"
 delete_stack "${ACM_NETWORK_STACK}"
 

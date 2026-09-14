@@ -1,6 +1,6 @@
 ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 
-.PHONY: all keypair infra acm-infra peering tnf kubeconfig iommu gpu virt-mce \
+.PHONY: all keypair infra acm-infra peering siteconfig sites tnf kubeconfig iommu gpu virt-mce \
         tnf-recover \
         acm-site guests hcp-make-guests-from-acm vcp-make-guests-from-acm \
         guest-gpu app observability-bucket guest-lb doctor ssh acm-ssh status \
@@ -57,6 +57,19 @@ acm-infra:
 
 peering:
 	@./aws-infra/scripts/create-peering.sh
+
+# The hub's ability to build clusters from Git: the SiteConfig operator, the
+# install templates for each profile, and OpenShift GitOps with the fleet
+# ApplicationSet. Not TNF -- that is installed by openshift-baremetal-install
+# onto EC2 metal, which the assisted installer cannot reach.
+siteconfig:
+	@$(ANSIBLE) 37-siteconfig.yml $(EXTRA_ARGS)
+
+# One folder per cluster, written into the fleet repository. Ansible generates;
+# Git is what the hub reconciles against, so committing is the last step and it
+# is yours.
+sites:
+	@$(ANSIBLE) 42-sites.yml $(EXTRA_ARGS)
 
 # The ACM cluster itself: single-node OpenShift on bare metal at the ACM site.
 # The S3 bucket and scoped IAM user that MultiClusterObservability keeps its
@@ -149,6 +162,10 @@ help:
 	@echo "  make acm-infra     - the ACM site: its own VPC, subnet, DNS and bastion"
 	@echo "  make peering       - VPC peering between the two sites, plus routes and"
 	@echo "                       cross-VPC DNS so each resolves the other privately"
+	@echo "  make siteconfig    - the SiteConfig operator, the install templates for"
+	@echo "                       each profile, and OpenShift GitOps on the hub"
+	@echo "  make sites         - write one site definition per cluster into the fleet"
+	@echo "                       repository (commit and push them; Argo CD builds)"
 	@echo "  make observability-bucket - S3 + scoped IAM user for the hub's Thanos"
 	@echo "  make guest-lb GUEST=hcp-1 - public NLB for a guest's API and console login"
 	@echo "  make acm-site      - the ACM cluster: single-node OpenShift on bare metal"

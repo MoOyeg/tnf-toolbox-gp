@@ -21,16 +21,27 @@ cim_database_storage: 20Gi
 cim_filesystem_storage: 20Gi
 cim_image_storage: 50Gi
 
-# Three control-plane nodes, because a standalone cluster carries its own etcd
-# quorum -- unlike a hosted cluster, whose etcd is pods on the hub.
+# A compact three-node cluster: three control-plane nodes carrying their own etcd
+# quorum -- unlike a hosted cluster, whose etcd is pods on the hub -- and no
+# separate workers, because the control-plane nodes are schedulable and do that
+# job themselves.
+#
+# Three is the fleet's shape for a guest cluster either way. A hosted guest also
+# has three nodes; they are simply all workers there, since its control plane is
+# pods on the hub rather than nodes of its own.
 vcp_control_plane_replicas: 3
-vcp_worker_replicas: 2
+vcp_worker_replicas: 0
 
 # Assisted installer minimums are 4 vCPU / 16 GiB for a control-plane node and
 # 2 / 8 for a worker. These sit above them: the installer validates against free
 # memory at discovery time, and a node exactly at the minimum fails that check.
+# Sized for both jobs at once. These nodes are the control plane *and* the only
+# place a workload can land, so the old split -- 20Gi for a control-plane node
+# that ran nothing, 24Gi for a worker that did -- does not apply. 32Gi matches
+# GUEST_VM_MEMORY, so both kinds of guest node are the same size.
 vcp_cp_cores: 8
-vcp_cp_memory: 20Gi
+vcp_cp_memory: 32Gi
+# Only used if workers are asked for explicitly; the default topology has none.
 vcp_worker_cores: 8
 vcp_worker_memory: 24Gi
 # 64Gi was too small and evicted builds: a worker carries ~25GiB of platform
@@ -40,9 +51,11 @@ vcp_worker_memory: 24Gi
 # ceiling costs nothing until it is written into.
 vcp_root_disk: 200Gi
 
-# GPUs go to the workers only. Control-plane VMs run nothing worth a T4, and
-# passing one through would take it out of the pool for nothing.
-vcp_gpus_per_worker: 1
+# Per node, not per worker. In a compact cluster the control-plane nodes are
+# where workloads run, so that is where the GPUs have to go -- the older split,
+# which gave control-plane VMs none on the grounds that they ran nothing worth a
+# T4, would now leave the cluster with no GPUs at all.
+vcp_gpus_per_node: 1
 
 vcp_agent_timeout: 1800
 vcp_install_timeout: 5400

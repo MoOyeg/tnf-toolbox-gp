@@ -1,0 +1,19 @@
+---
+# Write a site definition for every guest cluster.
+#
+# The same loop main.yml uses to build them, so the fleet in Git and the fleet
+# this role would create directly are the same set by construction rather than
+# by two lists that have to be kept in step.
+
+- name: Write each guest's site definition
+  ansible.builtin.include_tasks: siteconfig-site.yml
+  loop: "{{ range(1, (guest_cluster_count | int) + 1) | list }}"
+  loop_control:
+    loop_var: guest_index
+    label: "{{ guest_cluster_prefix }}-{{ guest_index }}"
+
+- name: Report the fleet
+  ansible.builtin.debug:
+    msg: >-
+      {{ guest_cluster_count }} guest site definition(s) written under
+      {{ site_repo_dir }}/. Commit and push; Argo CD builds them from Git.
