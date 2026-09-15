@@ -27,7 +27,10 @@ spec:
   goTemplateOptions: [missingkey=error]
   generators:
     # PlacementDecisions, read through the ConfigMap infra-destination.yml
-    # creates. {{ '{{name}}' }} below is the cluster name each decision carries.
+    # creates. {{ '{{.name}}' }} below is the cluster name each decision carries,
+    # in Go template form because spec.goTemplate is true above -- the bare
+    # {{ '{{name}}' }} form belongs to the older fasttemplate syntax, and mixing
+    # them fails with 'function "name" not defined' and generates nothing.
     - clusterDecisionResource:
         configMapRef: {{ gitops_placement_generator }}
         labelSelector:
@@ -37,13 +40,13 @@ spec:
   template:
     metadata:
 {% raw %}
-      name: '{{name}}-workloads'
+      name: '{{.name}}-workloads'
       annotations:
         # The three that make this a pull. The first names the cluster the
         # Application is destined for, the second the namespace it is created in
         # there, and the third tells the hub's own Argo CD to keep its hands off
         # -- without it both models reconcile the same resources and fight.
-        apps.open-cluster-management.io/ocm-managed-cluster: '{{name}}'
+        apps.open-cluster-management.io/ocm-managed-cluster: '{{.name}}'
 {% endraw %}
         apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: {{ gitops_argocd_namespace }}
         argocd.argoproj.io/skip-reconcile: "true"
@@ -54,7 +57,7 @@ spec:
       source:
         repoURL: {{ site_repo_url }}
         targetRevision: {{ site_repo_revision }}
-        path: '{{ gitops_fleet_repo_path }}{% raw %}/{{name}}{% endraw %}'
+        path: '{{ gitops_fleet_repo_path }}{% raw %}/{{.name}}{% endraw %}'
         directory:
           # A cluster's folder holds one subdirectory per application instance,
           # so this has to descend into them.

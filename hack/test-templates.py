@@ -864,9 +864,12 @@ def test_fleet_workloads_are_pulled_not_pushed():
           ["matchLabels"]["cluster.open-cluster-management.io/placement"]
           == defaults["gitops_fleet_placement"])
 
+    # Go template form, because the ApplicationSet sets goTemplate: true. This
+    # asserted the bare {{name}} for as long as the ApplicationSet carried it,
+    # which is how a generator that produced nothing at all stayed green.
     check("each Application names the cluster it is destined for",
-          ann.get("apps.open-cluster-management.io/ocm-managed-cluster") == "{{name}}",
-          str(sorted(ann)))
+          ann.get("apps.open-cluster-management.io/ocm-managed-cluster") == "{{.name}}",
+          str(ann.get("apps.open-cluster-management.io/ocm-managed-cluster")))
     check("and is labelled for the propagation controller to pick up",
           (tpl["metadata"].get("labels") or {})
           .get("apps.open-cluster-management.io/pull-to-ocm-managed-cluster") == "true",
@@ -885,7 +888,8 @@ def test_fleet_workloads_are_pulled_not_pushed():
           tpl["spec"]["source"]["directory"]["recurse"] is True)
     check("reading that cluster's folder in the fleet tree",
           tpl["spec"]["source"]["path"]
-          == f"{defaults['gitops_fleet_repo_path']}/{{{{name}}}}")
+          == f"{defaults['gitops_fleet_repo_path']}/{{{{.name}}}}",
+          tpl["spec"]["source"]["path"])
 
     # The operator policy, and the namespace trap the VM policy fell into.
     docs = [d for d in yaml.safe_load_all(
@@ -1562,6 +1566,32 @@ def test_the_guest_entry_point_follows_the_control_plane():
               "spec.services is immutable once the HostedCluster exists")
 
 
+def test_applicationset_templates_match_their_template_engine():
+    """goTemplate: true means Go syntax, in every reference.
+
+    Argo CD has two template engines. The older fasttemplate takes {{name}};
+    Go templates take {{.name}}, and mixing them fails at generation with
+    'function "name" not defined'. The ApplicationSet still reports Healthy,
+    generates nothing, and the workloads simply never arrive -- there is no
+    error anywhere except in the ApplicationSet's own conditions.
+    """
+    print("\nApplicationSet templating")
+    tmpl = f"{ROOT}/deploy/openshift-clusters/roles/gitops/templates"
+    for path in sorted(glob.glob(f"{tmpl}/applicationset*.yaml.j2")):
+        rendered = render(path)
+        doc = yaml.safe_load(rendered)
+        name = os.path.basename(path)
+        if not doc.get("spec", {}).get("goTemplate"):
+            continue
+        # Everything the engine will expand, from the whole spec at once.
+        body = yaml.safe_dump(doc["spec"])
+        bare = re.findall(r"\{\{\s*([a-zA-Z_][\w.]*)\s*\}\}", body)
+        offenders = [b for b in bare if not b.startswith(".")]
+        check(f"{name}: every reference uses Go template syntax",
+              not offenders,
+              f"{offenders} should be dotted, e.g. {{{{.name}}}}")
+
+
 def test_the_guest_is_built_from_git_onto_its_host():
     """hcp-1's definition is delivered to the cluster that runs it.
 
@@ -1679,6 +1709,7 @@ def main():
     test_fetched_credentials_are_gitignored()
     test_control_planes_are_hosted_on_tnf()
     test_the_guest_entry_point_follows_the_control_plane()
+    test_applicationset_templates_match_their_template_engine()
     test_the_guest_is_built_from_git_onto_its_host()
 
     print()
