@@ -273,7 +273,7 @@ spec:
                           accessModes: [ReadWriteOnce]
                           resources:
                             requests:
-                              storage: 200Gi
+                              storage: 180Gi
                           storageClassName: lvms-vg1
                         source:
                           blank: {}
@@ -376,7 +376,7 @@ spec:
                           accessModes: [ReadWriteOnce]
                           resources:
                             requests:
-                              storage: 200Gi
+                              storage: 180Gi
                           storageClassName: lvms-vg1
                         source:
                           blank: {}
@@ -479,7 +479,7 @@ spec:
                           accessModes: [ReadWriteOnce]
                           resources:
                             requests:
-                              storage: 200Gi
+                              storage: 180Gi
                           storageClassName: lvms-vg1
                         source:
                           blank: {}

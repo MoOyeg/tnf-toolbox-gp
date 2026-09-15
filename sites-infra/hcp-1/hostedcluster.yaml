@@ -51,15 +51,24 @@ spec:
     aescbc:
       activeKey:
         name: hcp-1-etcd-encryption-key
+  # The guest's own ranges, not the hosting cluster's. They must not overlap:
+  # the worker VMs sit on the infra cluster's pod network and resolve through
+  # its DNS, so if the guest's service network covers that resolver's address
+  # the guest's own OVN captures it the moment it starts. The resolver then
+  # points at a CoreDNS that does not exist yet, nothing in the guest can
+  # resolve a registry, and every image pull fails -- including the one for the
+  # service-CA operator that has to issue the certificate CoreDNS needs to
+  # start. Sharing service_network_cidr with the infra cluster produced exactly
+  # that, and it looks like a broken registry rather than a CIDR collision.
   networking:
     networkType: OVNKubernetes
     clusterNetwork:
-      - cidr: 10.128.0.0/14
+      - cidr: 10.132.0.0/14
     # Objects, not bare strings: HostedCluster's serviceNetwork is a list of
     # {cidr: ...} and the flattened form fails server-side apply with
     # ".spec.networking.serviceNetwork[0]: expected map, got &{...}".
     serviceNetwork:
-      - cidr: 172.30.0.0/16
+      - cidr: 172.31.0.0/16
   platform:
     type: KubeVirt
     kubevirt:
