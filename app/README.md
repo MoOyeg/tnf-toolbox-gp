@@ -28,9 +28,16 @@ was being asked what was wrong with a rectangle.
 
 `camera-sim/build-line-video.sh` encodes those stills into a looping line at
 image build time: each part dwells about a second, and one part in eleven is
-defective, so the anomaly still arrives on a known schedule. Each camera enters
-the loop at a different offset, so the fleet is not four copies of one frame.
-`CATEGORY` selects which line is running; both are baked into the image.
+defective, so the anomaly still arrives on a known schedule.
+
+Every category under `camera-sim/frames/` becomes its own line, and the camera
+budget is split across them: with the two that ship and `CAMERAS=4`, that is
+`pcb1-1`, `pcb1-2`, `capsules-1`, `capsules-2`. Cameras on the same line enter
+the loop at different offsets, so the fleet is not four copies of one frame.
+
+The stream name carries the line, which is how the analyzer knows to score a
+capsule against the capsule model rather than the pcb1 one. Set `CATEGORIES` to
+a comma-separated subset to run fewer lines.
 
 ## Why two models, not one
 

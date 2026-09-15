@@ -38,9 +38,10 @@ spec:
             - {name: CAMERAS, value: "4"}
             - {name: VLLM_URL, value: "http://vllm:8000/v1/chat/completions"}
             - {name: VLLM_MODEL, value: Qwen/Qwen2.5-VL-3B-Instruct}
-            # Which line is running. The analyzer fits a model per category
-            # and both are baked in, so this matches camera-sim's CATEGORY.
-            - {name: CATEGORY, value: pcb1}
+            # No CATEGORY. The analyzer fits one model per line it finds
+            # training data for, and takes each camera's line from the stream
+            # name the camera published -- so the two sides cannot disagree
+            # about which parts a model is scoring.
             - {name: MODEL_DIR, value: /models}
             # Matplotlib comes in with anomalib and wants a config dir. The
             # arbitrary uid OpenShift assigns cannot write to /, so without

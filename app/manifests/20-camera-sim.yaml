@@ -18,12 +18,11 @@ spec:
           env:
             - {name: RTSP_HOST, value: rtsp-server}
             - {name: CAMERAS, value: "4"}
-            # Which line is running. Both categories are encoded into the image
-            # at build time, so switching is a redeploy rather than a rebuild.
-            # VIDEO is deliberately unset: the entrypoint derives it from
-            # CATEGORY, and pinning a path here is how it ends up pointing at a
-            # file the image does not contain.
-            - {name: CATEGORY, value: pcb1}
+            # No CATEGORY. Every line encoded into the image is published,
+            # with the camera budget split across them -- pinning one here is
+            # what left the other video sitting unused while four cameras all
+            # watched the same parts. Set CATEGORIES to a comma-separated list
+            # to run a subset.
           resources:
             requests: {cpu: 200m, memory: 256Mi}
             limits: {cpu: "4", memory: 2Gi}

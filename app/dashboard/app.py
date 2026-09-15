@@ -93,6 +93,11 @@ async function tick(){
     const dev = RT.gpu || {};
     const uuid = (dev.uuid || '').replace(/^GPU-/,'').slice(0,8);
     const rows = [
+      // Which production line this camera watches. Cameras are split across
+      // the lines the image was built with, and each line is scored by its own
+      // model -- so two cards showing different scores may simply be looking
+      // at different parts.
+      ['line', `<b>${d.category || '&hellip;'}</b>`],
       ['node', RT.node ? `<b>${RT.node}</b>` : '&hellip;'],
       ['gpu', dev.name ? `<b>${dev.name}</b>${uuid ? ' &middot; ' + uuid : ''}`
                        : '<b>cpu only</b>'],
