@@ -1251,6 +1251,88 @@ def test_vcp_nodes_get_addresses_of_their_own():
           str(acis["spec"]["networking"].get("machineNetwork")))
 
 
+def test_fleet_workloads_are_pulled_not_pushed():
+    """The fleet ApplicationSet delivers by pull, and the pieces must agree.
+
+    Pull and push are not variations of one thing: the generator differs, the
+    destination differs, and the hub must be told to keep out of the result. Get
+    one of them wrong and the symptom is silence -- no Applications, or two
+    controllers reconciling the same resources against each other.
+    """
+    print("\nfleet workloads by pull")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    defaults = {**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT}
+    appset = yaml.safe_load(render(f"{roles}/gitops/templates/applicationset-fleet.yaml.j2"))
+    tpl = appset["spec"]["template"]
+    ann = tpl["metadata"]["annotations"]
+
+    # A git generator here would produce Applications with no cluster to name,
+    # and every annotation below would have nothing to fill in.
+    check("it generates from placement decisions, not from folders",
+          list(appset["spec"]["generators"][0]) == ["clusterDecisionResource"],
+          str(list(appset["spec"]["generators"][0])))
+    check("through the ConfigMap the gitops role creates",
+          appset["spec"]["generators"][0]["clusterDecisionResource"]["configMapRef"]
+          == defaults["gitops_placement_generator"])
+    # The generator and the GitOpsCluster must name the same Placement or the
+    # decisions it reads belong to someone else.
+    check("selecting the placement the fleet GitOpsCluster hands over",
+          appset["spec"]["generators"][0]["clusterDecisionResource"]["labelSelector"]
+          ["matchLabels"]["cluster.open-cluster-management.io/placement"]
+          == defaults["gitops_fleet_placement"])
+
+    check("each Application names the cluster it is destined for",
+          ann.get("apps.open-cluster-management.io/ocm-managed-cluster") == "{{name}}",
+          str(sorted(ann)))
+    check("and is labelled for the propagation controller to pick up",
+          (tpl["metadata"].get("labels") or {})
+          .get("apps.open-cluster-management.io/pull-to-ocm-managed-cluster") == "true",
+          str(sorted(tpl["metadata"].get("labels") or {})))
+    # Without this the hub's own Argo CD reconciles it too, and both models
+    # fight over the same resources on the same cluster.
+    check("the hub is told not to reconcile it itself",
+          ann.get("argocd.argoproj.io/skip-reconcile") == "true",
+          str(sorted(ann)))
+    # Reconciliation happens on the managed cluster, so "local" is local to it.
+    check("it applies to the cluster it lands on, not a named one",
+          tpl["spec"]["destination"] == {"server": "https://kubernetes.default.svc"},
+          str(tpl["spec"]["destination"]))
+    # A cluster's folder holds one subdirectory per app instance.
+    check("it descends into each instance folder",
+          tpl["spec"]["source"]["directory"]["recurse"] is True)
+    check("reading that cluster's folder in the fleet tree",
+          tpl["spec"]["source"]["path"]
+          == f"{defaults['gitops_fleet_repo_path']}/{{{{name}}}}")
+
+    # The operator policy, and the namespace trap the VM policy fell into.
+    docs = [d for d in yaml.safe_load_all(
+        render(f"{roles}/gitops/templates/policy-gitops-operator.yaml.j2")) if d]
+    kinds = {d["kind"]: d for d in docs}
+    check("Argo CD is installed on the fleet by policy",
+          "Policy" in kinds and "OperatorPolicy" in str(kinds["Policy"]))
+    check("and enforced rather than merely reported",
+          kinds["Policy"]["spec"]["remediationAction"] == "enforce")
+    # ACM reserves a cluster's own namespace for replicated policies and deletes
+    # anything else there.
+    check("the policy is not in a namespace named after a cluster",
+          kinds["Policy"]["metadata"]["namespace"] == defaults["gitops_argocd_namespace"])
+    # One predicate has to reach an imported cluster and a SiteConfig-built one.
+    fleet_label = defaults["gitops_fleet_label"]
+    selects = kinds["Placement"]["spec"]["predicates"][0]["requiredClusterSelector"]
+    check("it is placed at the fleet by label",
+          selects["labelSelector"]["matchLabels"] == {fleet_label: "true"},
+          str(selects["labelSelector"]["matchLabels"]))
+    # The label the Placement selects must be the label the clusters carry --
+    # compared against the templates rather than asserted as a literal.
+    for role, tmpl in (("hcp-guest", "hcp-kubevirt-cluster-templates.yaml.j2"),
+                       ("vcp-cluster", "vcp-cluster-templates.yaml.j2")):
+        cm = yaml.safe_load(render(f"{roles}/{role}/templates/{tmpl}"))
+        mc = yaml.safe_load(strip_go(cm["data"]["ManagedCluster"]))
+        check(f"{role}'s clusters carry that label",
+              fleet_label in mc["metadata"]["labels"],
+              str(list(mc["metadata"]["labels"])))
+
+
 def test_infra_half_of_a_site_carries_only_its_namespace():
     """What is left in sites-infra/ once the Policy owns the machines.
 
@@ -1750,6 +1832,7 @@ def main():
     test_guest_time_is_configured_at_install_time()
     test_virtual_machines_are_an_acm_policy()
     test_vcp_nodes_get_addresses_of_their_own()
+    test_fleet_workloads_are_pulled_not_pushed()
     test_infra_half_of_a_site_carries_only_its_namespace()
     test_site_agnostic_roles_name_no_single_site()
     test_fetched_credentials_are_gitignored()

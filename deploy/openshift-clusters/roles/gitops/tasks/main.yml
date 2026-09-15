@@ -32,7 +32,7 @@
 # created in only once this appears.
 - name: Wait for the Argo CD instance
   ansible.builtin.command: >-
-    oc get argocd openshift-gitops -n {{ gitops_argocd_namespace }}
+    oc get argocd {{ gitops_argocd_instance }} -n {{ gitops_argocd_namespace }}
     -o jsonpath={.metadata.name}
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
@@ -89,6 +89,23 @@
     kubeconfig: "{{ op_kubeconfig }}"
     state: present
     definition: "{{ lookup('template', 'applicationset-infra.yaml.j2') | from_yaml }}"
+
+# Multi-document, unlike the two ApplicationSets above, so it is split and
+# applied one object at a time rather than passed through from_yaml.
+- name: Put OpenShift GitOps on every cluster in the fleet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition: "{{ item }}"
+  loop: "{{ lookup('template', 'policy-gitops-operator.yaml.j2') | from_yaml_all | select | list }}"
+  loop_control:
+    label: "{{ item.kind }}/{{ item.metadata.name }}"
+
+- name: Create the pull-model ApplicationSet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition: "{{ lookup('template', 'applicationset-fleet.yaml.j2') | from_yaml }}"
 
 - name: Report the fleet
   ansible.builtin.debug:

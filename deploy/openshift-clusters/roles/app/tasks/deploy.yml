@@ -1,111 +1,44 @@
 ---
-# Apply the manifests and wait for the pipeline to come up.
+# Write this instance's manifests into the fleet repository.
 #
-# This runs the application's own `make deploy` rather than reimplementing its
-# substitutions here. The app repository owns how it is deployed; copying that
-# logic would mean two places to change the day it gains a component, and the
-# two would drift silently because nothing compares them. Every value the
-# Makefile takes is passed explicitly, so nothing depends on its defaults
-# happening to match this role's.
+# Not applied. The cluster's own Argo CD applies them, having been handed the
+# Application by ACM's pull model -- so this stage's job is to render what
+# should be running and commit is what makes it so, the same contract
+# 'make sites' has for site definitions.
+#
+# Rendering runs the application's own `make render` rather than reimplementing
+# its substitutions here, for the reason the deploy path had: the app repository
+# owns how a manifest becomes a deployable manifest, and two copies of that
+# would drift silently because nothing compares them. render and deploy share
+# the substitutions, so a component added to one is added to both.
+#
+# On localhost, not the bastion. The fleet repository is on the control host and
+# so is the application source; the bastion's staged copy exists for the image
+# build, which needs a cluster to build in.
 
-- name: "{{ app_label }}/{{ app_namespace }}: apply the manifests"
+- name: "{{ app_label }}/{{ app_namespace }}: work out which cluster this is"
+  ansible.builtin.set_fact:
+    app_cluster: "{{ app_label | regex_replace('\\.kubeconfig$', '') }}"
+
+- name: "{{ app_label }}/{{ app_namespace }}: render the manifests into the fleet repository"
   ansible.builtin.command:
     cmd: >-
-      make -C {{ app_workdir }} deploy
+      make -C {{ repo_root }}/app render
+      OUT={{ gitops_fleet_repo_dir }}/{{ app_cluster }}/{{ app_namespace }}
       NAMESPACE={{ app_namespace }}
       REGISTRY={{ app_registry }}
       CAMERAS={{ app_cameras }}
       MODEL={{ app_model }}
       VLLM_IMAGE={{ app_vllm_image }}
-  environment:
-    KUBECONFIG: "{{ op_kubeconfig }}"
-  register: app_apply
+  delegate_to: localhost
+  register: app_render
   changed_when: true
 
-# Applying an unchanged manifest is a no-op, and the images are pushed to a
-# mutable :latest -- so a build that changes only code leaves the pod template
-# identical and Kubernetes has no reason to restart anything. The deployment
-# keeps serving the previous image, the play reports success, and the change
-# silently never shipped. Restarting the three deployments this stage builds is
-# what makes 'make app' actually deploy what it just built.
-#
-# Only those three: rtsp-server and vllm run upstream images this stage never
-# rebuilds, and restarting vllm would re-load several GiB of weights for nothing.
-- name: "{{ app_label }}/{{ app_namespace }}: restart the deployments whose images were rebuilt"
-  ansible.builtin.command: >-
-    oc -n {{ app_namespace }} rollout restart deployment/{{ item }}
-  environment:
-    KUBECONFIG: "{{ op_kubeconfig }}"
-  loop: "{{ app_images }}"
-  register: app_restart
-  changed_when: app_restart.rc == 0
-
-- name: "{{ app_label }}/{{ app_namespace }}: wait for every component to roll out"
-  block:
-    # Serially, in dependency order, so a failure names the component that
-    # actually broke rather than whichever one lost the race.
-    # loop_control.label rather than {{ item }} in the name: the name is
-    # templated once, before the loop binds item, so it would print raw.
-    - name: "{{ app_label }}/{{ app_namespace }}: roll out each component"
-      ansible.builtin.command: >-
-        oc -n {{ app_namespace }} rollout status deployment/{{ item }}
-        --timeout={{ app_rollout_timeout }}s
-      environment:
-        KUBECONFIG: "{{ op_kubeconfig }}"
-      loop: "{{ app_deployments }}"
-      register: app_rollout
-      changed_when: false
-      async: "{{ app_rollout_timeout + 120 }}"
-      poll: 30
-      loop_control:
-        label: "{{ item }}"
-  rescue:
-    - name: "{{ app_label }}/{{ app_namespace }}: collect deployment diagnostics"
-      ansible.builtin.shell: |
-        echo "--- pods ---"
-        oc get pods -n {{ app_namespace }} -o wide 2>&1
-        echo "--- pods not running ---"
-        oc get pods -n {{ app_namespace }} --no-headers 2>&1 \
-          | grep -v 'Running\|Completed' || true
-        echo "--- gpu allocatable ---"
-        oc get nodes -o custom-columns=NODE:.metadata.name,GPU:.status.allocatable.'nvidia\.com/gpu' 2>&1
-        echo "--- builds ---"
-        oc get builds -n {{ app_namespace }} 2>&1
-        echo "--- events ---"
-        oc get events -n {{ app_namespace }} --sort-by=.lastTimestamp 2>&1 | tail -25
-      environment:
-        KUBECONFIG: "{{ op_kubeconfig }}"
-      register: app_diagnostics
-      changed_when: false
-      failed_when: false
-
-    - name: "{{ app_label }}: report and fail"
-      ansible.builtin.fail:
-        msg: |
-          The app did not come up in {{ app_label }}. Note that rollout status
-          also returns early on a crashloop, so this is not necessarily the
-          {{ app_rollout_timeout }}s timeout expiring -- read the pod states below
-          before assuming it needs longer.
-
-          A pod Pending on nvidia.com/gpu means the guest is not advertising two
-          GPUs -- 'make guest-gpu'. A vllm pod in Error or CrashLoopBackOff has
-          failed to start rather than run out of time, and its log is the only
-          thing that says why:
-
-            oc --kubeconfig {{ op_kubeconfig }} logs -n {{ app_namespace }} deploy/vllm
-
-          {{ app_diagnostics.stdout }}
-
-- name: "{{ app_label }}/{{ app_namespace }}: read the dashboard route"
-  ansible.builtin.command: >-
-    oc -n {{ app_namespace }} get route dashboard -o jsonpath={.spec.host}
-  environment:
-    KUBECONFIG: "{{ op_kubeconfig }}"
-  register: app_route
-  changed_when: false
-
-- name: "{{ app_label }}/{{ app_namespace }}: report the dashboard"
+- name: "{{ app_label }}/{{ app_namespace }}: say what happens next"
   ansible.builtin.debug:
     msg:
-      - "{{ app_label }} {{ app_namespace }}: https://{{ app_route.stdout }}"
-      - "{{ app_cameras }} cameras, {{ app_model }} on the slow path, 2 GPUs."
+      - "{{ app_cluster }}: {{ app_namespace }} written to
+         {{ gitops_fleet_repo_dir }}/{{ app_cluster }}/{{ app_namespace }}/"
+      - "Commit and push it. The cluster's own Argo CD applies it -- this run does not."
+      - "The images are built already; a Deployment whose image is still building
+         simply stays unhealthy until it lands."

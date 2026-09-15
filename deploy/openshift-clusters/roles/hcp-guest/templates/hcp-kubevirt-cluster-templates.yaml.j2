@@ -219,6 +219,10 @@ data:
       labels:
         cloud: auto-detect
         vendor: auto-detect
+        # The label a fleet-wide Placement selects on. Guests carry no name
+        # label -- the operator does not set one -- so without this there is no
+        # predicate that reaches both an imported cluster and a built one.
+        tnf-toolbox-gp/fleet: "true"
     spec:
       hubAcceptsClient: true
   KlusterletAddonConfig: |

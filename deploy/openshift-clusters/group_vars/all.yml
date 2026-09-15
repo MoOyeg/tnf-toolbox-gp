@@ -144,6 +144,13 @@ vcp_vm_namespace: acm-vcp-vms
 # Policy, which binds it in the site namespace for the policy framework -- the
 # binding is per namespace, so both are needed and both must name the same set.
 gitops_cluster_set: default
+
+# Where a cluster's workloads live in the fleet repository: one folder per
+# cluster, named for it, holding a folder per application instance. Named by the
+# gitops role, which points the pull ApplicationSet at it, and again by the app
+# role, which writes into it -- so it is shared rather than owned by either.
+gitops_fleet_repo_path: fleet
+gitops_fleet_repo_dir: "{{ repo_root }}/{{ gitops_fleet_repo_path }}"
 site_repo_dir: "{{ repo_root }}/{{ site_repo_path }}"
 site_repo_url: ""
 site_repo_revision: main

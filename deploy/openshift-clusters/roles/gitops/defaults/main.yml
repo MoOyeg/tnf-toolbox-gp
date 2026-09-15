@@ -31,3 +31,29 @@ gitops_controller_sa: openshift-gitops-argocd-application-controller
 # for its own Placement, and a role's defaults are invisible to every other
 # role. It lives in group_vars/all.yml.
 gitops_infra_placement: fleet-infra
+
+# ---------------------------------------------------------------- pull model
+# The fleet's workloads are delivered by ACM's pull model rather than pushed:
+# the hub wraps each Application in a ManifestWork and the cluster's own agent
+# collects it, so no credential leaves the hub and nothing reaches inward.
+#
+# Separate Placement and GitOpsCluster from the fleet-infra pair above, and
+# deliberately so: that one selects exactly the infra cluster for the push path,
+# this one selects the whole fleet. One Placement doing both would mean tnf-gp
+# was pushed to and pulled from at once.
+gitops_fleet_placement: fleet-workloads
+gitops_fleet_applicationset: fleet-workloads
+# The label every ManagedCluster in this toolbox carries -- set by
+# import-cluster.yml for the infra cluster and by both SiteConfig template sets
+# for the clusters ACM builds.
+gitops_fleet_label: tnf-toolbox-gp/fleet
+# gitops_fleet_repo_path is not here: the app role writes into that tree and a
+# role's defaults are invisible to every other role. It lives in group_vars.
+# The ConfigMap the clusterDecisionResource generator reads PlacementDecisions
+# through. ACM does not create it here, so the role does.
+gitops_placement_generator: ocm-placement-generator
+# The Argo CD instance the operator stands up by default. Named here because the
+# fleet policy asserts it exists on every managed cluster, and main.yml waits for
+# it on the hub -- the name was a literal in one place and is now needed in two.
+gitops_argocd_instance: openshift-gitops
+

@@ -1,0 +1,77 @@
+#
+# Ansible managed -- roles/gitops/templates/applicationset-fleet.yaml.j2
+#
+# The fleet's workloads, delivered by pull.
+#
+# The other two ApplicationSets generate one Application per *folder* and the
+# hub reconciles them -- into itself for sites/, and into the infra cluster for
+# sites-infra/, using a credential ACM mints for it. This one generates one
+# Application per *cluster* and the hub reconciles none of them: the propagation
+# controller wraps each in a ManifestWork, the cluster's own agent collects it,
+# and the Argo CD running there applies it.
+#
+# The two generators are not interchangeable. A git generator here would produce
+# Applications with no cluster to name, and the pull annotations below would have
+# nothing to fill in.
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: {{ gitops_fleet_applicationset }}
+  namespace: {{ gitops_argocd_namespace }}
+spec:
+  # A workload that leaves Git stops being managed and keeps running, for the
+  # same reason a site definition does.
+  syncPolicy:
+    preserveResourcesOnDeletion: true
+  goTemplate: true
+  goTemplateOptions: [missingkey=error]
+  generators:
+    # PlacementDecisions, read through the ConfigMap infra-destination.yml
+    # creates. {{ '{{name}}' }} below is the cluster name each decision carries.
+    - clusterDecisionResource:
+        configMapRef: {{ gitops_placement_generator }}
+        labelSelector:
+          matchLabels:
+            cluster.open-cluster-management.io/placement: {{ gitops_fleet_placement }}
+        requeueAfterSeconds: 30
+  template:
+    metadata:
+{% raw %}
+      name: '{{name}}-workloads'
+      annotations:
+        # The three that make this a pull. The first names the cluster the
+        # Application is destined for, the second the namespace it is created in
+        # there, and the third tells the hub's own Argo CD to keep its hands off
+        # -- without it both models reconcile the same resources and fight.
+        apps.open-cluster-management.io/ocm-managed-cluster: '{{name}}'
+{% endraw %}
+        apps.open-cluster-management.io/ocm-managed-cluster-app-namespace: {{ gitops_argocd_namespace }}
+        argocd.argoproj.io/skip-reconcile: "true"
+      labels:
+        apps.open-cluster-management.io/pull-to-ocm-managed-cluster: "true"
+    spec:
+      project: default
+      source:
+        repoURL: {{ site_repo_url }}
+        targetRevision: {{ site_repo_revision }}
+        path: '{{ gitops_fleet_repo_path }}{% raw %}/{{name}}{% endraw %}'
+        directory:
+          # A cluster's folder holds one subdirectory per application instance,
+          # so this has to descend into them.
+          recurse: true
+      destination:
+        # The managed cluster's own API, not a named cluster. Reconciliation
+        # happens there, so "local" means local to whoever is applying it.
+        server: https://kubernetes.default.svc
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+        retry:
+          limit: 5
+          backoff:
+            duration: 10s
+            factor: 2
+            maxDuration: 3m

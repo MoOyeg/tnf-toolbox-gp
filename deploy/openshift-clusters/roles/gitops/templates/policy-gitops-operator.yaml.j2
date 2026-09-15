@@ -1,0 +1,114 @@
+#
+# Ansible managed -- roles/gitops/templates/policy-gitops-operator.yaml.j2
+#
+# OpenShift GitOps on every cluster in the fleet.
+#
+# The pull model reconciles on the managed cluster, not on the hub: the hub
+# wraps each Application in a ManifestWork and the cluster's own agent collects
+# it, so every target needs an Argo CD of its own. Without one the Application
+# arrives and nothing acts on it -- no error, no pods, just an Application
+# sitting there.
+#
+# A Policy rather than a loop over harvested kubeconfigs, because this has to
+# hold: a cluster that joins the fleet later gets Argo CD because the Placement
+# widened, and a cluster whose operator is removed gets it back. The kubeconfig
+# loop that installs the GPU stack only acts when the stage is run.
+#
+# In openshift-gitops, not a cluster's own namespace. A namespace named after a
+# ManagedCluster is reserved for the replicated copies of policies propagated
+# there, and ACM's propagator deletes anything else it finds -- which the
+# virtual-machine policy learned by being deleted on a loop.
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: {{ gitops_cluster_set }}
+  namespace: {{ gitops_argocd_namespace }}
+spec:
+  clusterSet: {{ gitops_cluster_set }}
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: {{ gitops_fleet_applicationset }}-operator
+  namespace: {{ gitops_argocd_namespace }}
+  annotations:
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+spec:
+  disabled: false
+  # enforce, not inform. An informing policy would report that Argo CD is
+  # missing and install nothing, which looks the same as working right up until
+  # no workload appears.
+  remediationAction: enforce
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1beta1
+        kind: OperatorPolicy
+        metadata:
+          name: {{ gitops_fleet_applicationset }}-operator
+        spec:
+          remediationAction: enforce
+          severity: high
+          # The operator outlives the policy. Removing the policy should stop
+          # managing Argo CD, not uninstall it and take every running
+          # Application with it.
+          complianceType: musthave
+          upgradeApproval: Automatic
+          subscription:
+            name: {{ gitops_package }}
+            namespace: {{ gitops_namespace }}
+            source: redhat-operators
+            sourceNamespace: openshift-marketplace
+{% if gitops_channel != 'auto' %}
+            channel: {{ gitops_channel }}
+{% endif %}
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: {{ gitops_fleet_applicationset }}-instance
+        spec:
+          remediationAction: inform
+          severity: high
+          # inform, and only inform. The operator stands its own default Argo CD
+          # up in openshift-gitops; this asserts that it did rather than trying
+          # to create one, because two things creating the same ArgoCD CR is how
+          # you get a reconcile loop between them.
+          object-templates:
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: argoproj.io/v1beta1
+                kind: ArgoCD
+                metadata:
+                  name: {{ gitops_argocd_instance }}
+                  namespace: {{ gitops_argocd_namespace }}
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: {{ gitops_fleet_applicationset }}-operator
+  namespace: {{ gitops_argocd_namespace }}
+spec:
+  clusterSets:
+    - {{ gitops_cluster_set }}
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          # The fleet, by label. A cluster that joins later is selected without
+          # anything here changing, which is the reason this is a Policy.
+          matchLabels: {{ {gitops_fleet_label: 'true'} }}
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: {{ gitops_fleet_applicationset }}-operator
+  namespace: {{ gitops_argocd_namespace }}
+placementRef:
+  apiGroup: cluster.open-cluster-management.io
+  kind: Placement
+  name: {{ gitops_fleet_applicationset }}-operator
+subjects:
+  - apiGroup: policy.open-cluster-management.io
+    kind: Policy
+    name: {{ gitops_fleet_applicationset }}-operator

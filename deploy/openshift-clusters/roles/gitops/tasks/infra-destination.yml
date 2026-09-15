@@ -90,3 +90,71 @@
       Argo CD destinations: {{ argo_clusters.stdout_lines | default([]) | join(', ') | default('none', true) }}
       {{ '(the infra cluster is not among them; virtual machines cannot be placed yet)'
          if cluster_name not in argo_clusters.stdout else '' }}
+
+# ---------------------------------------------------------------- pull model
+# Everything below serves the pull path, which is separate from the push path
+# above and shares nothing with it but the cluster set binding.
+
+# The generator reads PlacementDecisions through this ConfigMap rather than
+# knowing their shape itself. ACM documents it as part of the pull model setup
+# and does not create it -- checked on a hub that already had a GitOpsCluster
+# and did not have this.
+- name: Teach the generator how to read a PlacementDecision
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: "{{ gitops_placement_generator }}"
+        namespace: "{{ gitops_argocd_namespace }}"
+      data:
+        apiVersion: cluster.open-cluster-management.io/v1beta1
+        kind: placementdecisions
+        statusListKey: decisions
+        matchKey: clusterName
+
+# By label, unlike the infra Placement above, and the difference is the point:
+# that one names one cluster because placing virtual machines on the wrong one
+# would be bad, this one asks "every cluster this toolbox manages" and should
+# widen when the fleet does.
+- name: Select the whole fleet
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: cluster.open-cluster-management.io/v1beta1
+      kind: Placement
+      metadata:
+        name: "{{ gitops_fleet_placement }}"
+        namespace: "{{ gitops_argocd_namespace }}"
+      spec:
+        clusterSets:
+          - "{{ gitops_cluster_set }}"
+        predicates:
+          - requiredClusterSelector:
+              labelSelector:
+                matchLabels: "{{ {gitops_fleet_label: 'true'} }}"
+
+- name: Hand the fleet to Argo CD for pull delivery
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: apps.open-cluster-management.io/v1beta1
+      kind: GitOpsCluster
+      metadata:
+        name: "{{ gitops_fleet_placement }}"
+        namespace: "{{ gitops_argocd_namespace }}"
+      spec:
+        argoServer:
+          # Must be local-cluster. The pull model reconciles on each managed
+          # cluster; this names where the ApplicationSet controller runs.
+          cluster: local-cluster
+          argoNamespace: "{{ gitops_argocd_namespace }}"
+        placementRef:
+          kind: Placement
+          apiVersion: cluster.open-cluster-management.io/v1beta1
+          name: "{{ gitops_fleet_placement }}"
+

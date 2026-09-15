@@ -35,6 +35,11 @@
           name: "{{ import_cluster_name }}"
           cloud: Amazon
           vendor: OpenShift
+          # What a Placement selects the fleet on. The per-cluster name label
+          # above picks exactly one cluster by design; this one says "a cluster
+          # this toolbox manages", which is the question a fleet-wide Placement
+          # is actually asking.
+          tnf-toolbox-gp/fleet: "true"
       spec:
         hubAcceptsClient: true
 
