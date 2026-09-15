@@ -3,7 +3,7 @@ ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 .PHONY: all keypair infra acm-infra peering siteconfig sites tnf kubeconfig iommu gpu virt-mce \
         tnf-recover \
         acm-site guests hcp-make-guests-from-acm vcp-make-guests-from-acm \
-        guest-gpu app observability-bucket guest-lb doctor ssh acm-ssh status \
+        guest-gpu app observability-bucket guest-lb guest-lbs doctor ssh acm-ssh status \
         inventory clean clean-guests destroy destroy-acm help
 
 # ---------------------------------------------------------------- end to end
@@ -11,7 +11,7 @@ ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 # before anything reboots it, and its credentials must be on your workstation
 # before the one stage that can break it.
 all: keypair infra acm-infra peering tnf kubeconfig iommu gpu virt-mce acm-site \
-     guests guest-gpu
+     guest-lbs guests guest-gpu
 	@echo ""
 	@echo "Everything is up. 'make status' for a summary."
 
@@ -82,9 +82,29 @@ observability-bucket:
 # the NodePorts are pinned so it can be, and spec.services cannot be changed once
 # the HostedCluster exists. Set GUEST_PUBLIC_CONTROL_PLANE=true for the guest
 # stage to actually publish against it.
+#
+# SITE says which cluster hosts the control plane, and so which cluster's nodes
+# answer the NodePorts: tnf for a guest from 'make guests', acm for one from
+# 'make hcp-make-guests-from-acm'. The default follows 'make all'.
 guest-lb:
-	@test -n "$(GUEST)" || { echo "usage: make guest-lb GUEST=hcp-1"; exit 1; }
-	@./aws-infra/scripts/create-guest-lb.sh "$(GUEST)"
+	@test -n "$(GUEST)" || { echo "usage: make guest-lb GUEST=hcp-1 [SITE=tnf]"; exit 1; }
+	@./aws-infra/scripts/create-guest-lb.sh "$(GUEST)" "$(or $(SITE),tnf)"
+
+# Every guest's entry point, for 'make all'. A no-op unless
+# GUEST_PUBLIC_CONTROL_PLANE is on, so the default path costs nothing; when it
+# is on, this has to happen before 'guests' or the guest stage stops dead,
+# because the address is baked into the HostedCluster at creation and
+# spec.services is immutable afterwards.
+guest-lbs:
+	@set -eu; . ../config/instance.env; \
+	if [ "$${GUEST_PUBLIC_CONTROL_PLANE:-false}" != "true" ]; then \
+	  echo "==> GUEST_PUBLIC_CONTROL_PLANE is off; no guest load balancers needed"; \
+	else \
+	  i=1; while [ "$$i" -le "$${GUEST_CLUSTER_COUNT:-1}" ]; do \
+	    ./aws-infra/scripts/create-guest-lb.sh "$${GUEST_CLUSTER_PREFIX:-hcp}-$$i" tnf; \
+	    i=$$((i + 1)); \
+	  done; \
+	fi
 
 acm-site: observability-bucket
 	@$(ANSIBLE) 36-acm-site.yml $(EXTRA_ARGS)

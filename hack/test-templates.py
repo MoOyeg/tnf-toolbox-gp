@@ -1879,6 +1879,68 @@ def test_control_planes_are_hosted_on_tnf():
           f"SnoInstanceType defaults to {default}")
 
 
+def test_the_guest_entry_point_follows_the_control_plane():
+    """The public load balancer must target whichever cluster hosts the guest.
+
+    A NodePort only answers on nodes of the cluster running the pods behind it.
+    While the control plane lived on the ACM hub this stack was built in the ACM
+    VPC against the hub's single node, and moving the control plane to TNF makes
+    that silently wrong: the stack still builds, the targets never turn healthy,
+    and the guest console times out with nothing to say why.
+
+    It is also ordered. The address is baked into the HostedCluster at creation
+    and spec.services is immutable afterwards, so the load balancer has to exist
+    before the guest stage runs -- which is why 'all' names it.
+    """
+    print("\nthe guest's public entry point")
+    deploy = f"{ROOT}/deploy"
+    script = open(f"{deploy}/aws-infra/scripts/create-guest-lb.sh",
+                  encoding="utf-8").read()
+
+    check("it can target the TNF site",
+          "master0_instance_id" in script and "master1_instance_id" in script,
+          "TNF hosts the control plane, so TNF's nodes answer the NodePorts")
+    check("it still knows the hub-hosted layout",
+          "sno_instance_id" in script,
+          "'make hcp-make-guests-from-acm' publishes on the hub's own node")
+    check("it refuses a site it does not know",
+          "unknown site" in script,
+          "a typo must not quietly fall through to the wrong VPC")
+    # Both nodes, because either can be fenced.
+    check("a two-node host registers both its nodes",
+          "SecondTargetInstanceId" in script)
+
+    stack = _cfn_load(f"{deploy}/aws-infra/templates/guest-lb-stack.yaml")
+    check("the stack accepts a second target",
+          "SecondTargetInstanceId" in stack["Parameters"])
+    check("and defaults it to empty for a single-node host",
+          stack["Parameters"]["SecondTargetInstanceId"].get("Default") == "")
+    check("the second target is conditional",
+          "HasSecondTarget" in stack.get("Conditions", {}),
+          "a single-node host must not register an empty instance id")
+    for group in ("ApiTargetGroup", "OAuthTargetGroup"):
+        targets = stack["Resources"][group]["Properties"]["Targets"]
+        check(f"{group} registers two targets",
+              len(targets) == 2, f"{len(targets)} declared")
+        # Each entry carries its own Port; losing it silently sends traffic to
+        # the target group's default port on the second node.
+        conditional = [t for t in targets if "Fn::If" in t]
+        check(f"{group}'s conditional target keeps its port",
+              conditional and "Port" in conditional[0]["Fn::If"][1],
+              "an entry without Port falls back to the group's port")
+
+    makefile = open(f"{deploy}/Makefile", encoding="utf-8").read()
+    all_target = re.search(r"^all:(.*?)(?=\n\t|\n[^\s#])", makefile, re.S | re.M)
+    stages = all_target.group(1).replace("\\\n", " ").split() if all_target else []
+    check("'make all' builds the entry points itself",
+          "guest-lbs" in stages,
+          "a clean account has no recorded load balancer, so 'all' must make one")
+    if "guest-lbs" in stages and "guests" in stages:
+        check("and builds them before the guests",
+              stages.index("guest-lbs") < stages.index("guests"),
+              "spec.services is immutable once the HostedCluster exists")
+
+
 def main():
     test_every_template_renders()
     test_install_config()
@@ -1906,6 +1968,7 @@ def main():
     test_site_agnostic_roles_name_no_single_site()
     test_fetched_credentials_are_gitignored()
     test_control_planes_are_hosted_on_tnf()
+    test_the_guest_entry_point_follows_the_control_plane()
 
     print()
     if FAILURES:

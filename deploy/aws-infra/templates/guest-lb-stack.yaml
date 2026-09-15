@@ -2,10 +2,16 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   A public entry point for a hosted guest cluster's control plane.
 
-  The guest's API and OAuth servers are published as NodePorts on the hub's
-  private address, which is right for the worker VMs and useless for a browser:
-  the console redirects to OAuth, the redirect names a 10.x address, and login
-  fails from anywhere outside the VPC.
+  The guest's API and OAuth servers are published as NodePorts on a private
+  address inside the VPC, which is right for the worker VMs and useless for a
+  browser: the console redirects to OAuth, the redirect names a 10.x address,
+  and login fails from anywhere outside the VPC.
+
+  The targets are whichever cluster hosts the control plane -- TNF's two
+  masters for a guest built by 'make guests', the hub's single node for one
+  built by 'make hcp-make-guests-from-acm'. A NodePort answers on every node of
+  the hosting cluster, so a two-node host gets both nodes registered and
+  survives one of them being fenced.
 
   MetalLB is not an option here -- its own documentation lists AWS as
   unsupported, because cloud fabrics resolve only addresses the platform has
@@ -23,7 +29,15 @@ Parameters:
     Description: A subnet with a route to an internet gateway.
   TargetInstanceId:
     Type: String
-    Description: The hub instance carrying the hosted control plane.
+    Description: An instance of the cluster carrying the hosted control plane.
+  SecondTargetInstanceId:
+    Type: String
+    Default: ''
+    Description: >-
+      A second node of the same cluster, where there is one. TNF has two and
+      the NodePort answers on both, so registering only one would send every
+      client to a node that fencing can take away. Empty for a single-node
+      host, which is what the ACM hub is.
   ApiNodePort:
     Type: Number
     Description: Pinned NodePort for the guest's kube-apiserver.
@@ -37,9 +51,10 @@ Parameters:
   ClusterSecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
     Description: >-
-      The hub node's own security group. The NodePorts live behind it, and it
-      otherwise admits only the bastion, the nodes themselves and the peered
-      VPC -- so without the rules below every probe and every client is dropped.
+      The hosting cluster's own node security group. The NodePorts live behind
+      it, and it otherwise admits only the bastion, the nodes themselves and the
+      peered VPC -- so without the rules below every probe and every client is
+      dropped.
   AllowedApiCidr:
     Type: String
     Description: >-
@@ -48,6 +63,9 @@ Parameters:
   VpcCidr:
     Type: String
     Description: This VPC's CIDR, which is where the load balancer's ENIs live.
+
+Conditions:
+  HasSecondTarget: !Not [!Equals [!Ref SecondTargetInstanceId, '']]
 
 Resources:
   # An NLB rather than an ALB: both services speak TLS end to end and the guest
@@ -81,6 +99,13 @@ Resources:
       Targets:
         - Id: !Ref TargetInstanceId
           Port: !Ref ApiNodePort
+        # Long form rather than !If: the short tag applied to a sequence entry
+        # is ambiguous YAML and will not parse.
+        - Fn::If:
+            - HasSecondTarget
+            - Id: !Ref SecondTargetInstanceId
+              Port: !Ref ApiNodePort
+            - !Ref AWS::NoValue
 
   OAuthTargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -97,6 +122,13 @@ Resources:
       Targets:
         - Id: !Ref TargetInstanceId
           Port: !Ref OAuthNodePort
+        # Long form rather than !If: the short tag applied to a sequence entry
+        # is ambiguous YAML and will not parse.
+        - Fn::If:
+            - HasSecondTarget
+            - Id: !Ref SecondTargetInstanceId
+              Port: !Ref OAuthNodePort
+            - !Ref AWS::NoValue
 
   # The ports the clients use are the same as the NodePorts behind them. The
   # address HyperShift publishes carries a port, so keeping them equal means the

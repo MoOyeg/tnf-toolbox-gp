@@ -629,7 +629,15 @@ VPC, so the redirect names something a browser cannot reach. `make guest-lb
 GUEST=<name>` builds an AWS network load balancer in front of the API and OAuth
 NodePorts, and `GUEST_PUBLIC_CONTROL_PLANE=true` publishes the guest against it,
 which is what MetalLB's documentation means by "use the platform's load
-balancer".
+balancer". `make all` does this for you — the `guest-lbs` stage runs before
+`guests`, because the address is baked into the `HostedCluster` at creation and
+`spec.services` is immutable afterwards.
+
+The load balancer targets whichever cluster hosts the control plane, which is
+TNF, so both of TNF's masters are registered: a NodePort answers on every node
+of the hosting cluster, and registering one would put the console behind the
+node fencing is most likely to take away. `SITE=acm` targets the hub instead,
+for a guest built the hub-hosted way.
 
 Only the two services a human touches move there. Ignition and Konnectivity stay
 on `master0_private_ip`, because those are spoken only by the worker VMs, which

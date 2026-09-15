@@ -141,8 +141,8 @@
   when: guest_public_control_plane | bool
 
 # What each service publishes. Konnectivity and Ignition are spoken only by the
-# worker VMs and stay on the hub's private address; the two a human touches move
-# to the load balancer, which is the whole point of the exercise.
+# worker VMs and stay on the hosting cluster's private address; the two a human
+# touches move to the load balancer, which is the whole point of the exercise.
 - name: "{{ guest_name }}: decide where each service is published"
   vars:
     guest_lb_dns: "{{ guest_lb_state.content | default('') | b64decode | trim }}"
