@@ -44,7 +44,11 @@ metadata:
 rules:
   - apiGroups: [""]
     resources: [configmaps]
-    resourceNames: [default-ingress-cert]
+    # No resourceNames. RBAC only applies it to get, update and delete -- a list
+    # request carries no name to match against, so naming one here does not
+    # narrow the rule, it denies the list outright and the lookup fails with
+    # "cannot list resource". The namespace is the boundary that actually holds.
+    #
     # watch as well as read: it is what lets the resolver notice a change and
     # re-render, rather than holding the value it first saw.
     verbs: [get, list, watch]
@@ -58,6 +62,35 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: {{ vcp_cluster_name }}-read-ingress-cert
+subjects:
+  - kind: ServiceAccount
+    name: {{ vcp_cluster_name }}-policy-templates
+    namespace: {{ vcp_cluster_name }}
+---
+# The InfraEnv lookup needs its own grant. Naming a serviceAccountName does not
+# add to the default same-namespace access a hub template would otherwise have --
+# it replaces it, so every lookup the policy makes now runs as this account and
+# each one has to be granted. Without this the template fails to resolve at all
+# and the whole policy reports template-error, having created nothing.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ vcp_cluster_name }}-read-infraenv
+  namespace: {{ vcp_cluster_name }}
+rules:
+  - apiGroups: [agent-install.openshift.io]
+    resources: [infraenvs]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ vcp_cluster_name }}-read-infraenv
+  namespace: {{ vcp_cluster_name }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ vcp_cluster_name }}-read-infraenv
 subjects:
   - kind: ServiceAccount
     name: {{ vcp_cluster_name }}-policy-templates

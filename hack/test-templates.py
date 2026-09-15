@@ -1097,14 +1097,32 @@ def test_virtual_machines_are_an_acm_policy():
     check("hub templates run as a service account",
           kinds["Policy"]["spec"]["hubTemplateOptions"]["serviceAccountName"]
           == kinds["ServiceAccount"]["metadata"]["name"])
-    check("that account's extra access is a Role, not a ClusterRole",
-          kinds["Role"]["kind"] == "Role"
-          and kinds["Role"]["metadata"]["namespace"] == "openshift-config-managed")
-    check("scoped to the one ConfigMap it reads",
-          kinds["Role"]["rules"][0]["resourceNames"] == ["default-ingress-cert"])
+    # Naming a service account replaces the default same-namespace access rather
+    # than adding to it, so every lookup the policy makes needs its own grant --
+    # the ingress cert in openshift-config-managed and the InfraEnv beside the
+    # policy. Missing either leaves the template unresolved and the whole policy
+    # reporting template-error, having created nothing.
+    roles = [d for d in docs if d["kind"] == "Role"]
+    bindings = [d for d in docs if d["kind"] == "RoleBinding"]
+    granted = {r["metadata"]["namespace"] for r in roles}
+    check("the account can read the ingress cert and the InfraEnv",
+          granted == {"openshift-config-managed", kinds["Policy"]["metadata"]["namespace"]},
+          str(granted))
+    check("its extra access is Roles, not ClusterRoles",
+          all(r["kind"] == "Role" for r in roles) and len(roles) == 2)
+    check("every Role is bound to that account",
+          {b["roleRef"]["name"] for b in bindings} == {r["metadata"]["name"] for r in roles}
+          and all(sub["name"] == kinds["ServiceAccount"]["metadata"]["name"]
+                  for b in bindings for sub in b["subjects"]))
+    # RBAC applies resourceNames only to get, update and delete. A list request
+    # carries no name to match, so naming one does not narrow the rule -- it
+    # denies the list, and the lookup fails with "cannot list resource".
+    check("no rule narrows a list with resourceNames",
+          not [r for r in roles for rule in r["rules"]
+               if rule.get("resourceNames") and "list" in rule["verbs"]])
     # watch, not just read: it is what lets a changed value re-render.
     check("with watch, so a change re-renders",
-          "watch" in kinds["Role"]["rules"][0]["verbs"])
+          all("watch" in rule["verbs"] for r in roles for rule in r["rules"]))
 
     by_kind = {o["kind"]: o for o in objects}
     vms = [o for o in objects if o["kind"] == "VirtualMachine"]
