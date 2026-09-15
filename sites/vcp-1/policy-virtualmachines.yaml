@@ -50,10 +50,11 @@ metadata:
   namespace: vcp-1-policies
 ---
 # A hub template may read namespaced objects in the Policy's own namespace and
-# nothing else. The InfraEnv is in this namespace and so needs no permission at
-# all; the hub's ingress certificate is not, and this is the whole of the extra
-# access granted for it -- one verb set, one ConfigMap, in one namespace. A
-# ClusterRole would have been fewer objects and considerably more permission.
+# nothing else -- and naming a service account replaces that default rather than
+# adding to it, so every lookup needs granting. This is the ingress certificate
+# the DataVolume verifies the hub against; the InfraEnv gets its own Role below.
+# Namespaced Roles, not a ClusterRole: fewer objects, considerably more
+# permission, and neither read needs to reach beyond one namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -184,7 +185,7 @@ spec:
           # it the document separator joins the previous line and the Policy
           # and the PlacementBinding silently merge into one object.
           object-templates-raw: |
-            {{hub if (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" .PolicyMetadata.namespace .PolicyMetadata.namespace).status.isoDownloadURL hub}}
+            {{hub if (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" "vcp-1" "vcp-1").status.isoDownloadURL hub}}
             - complianceType: musthave
               objectDefinition:
                 apiVersion: v1
@@ -218,7 +219,7 @@ spec:
                       # not cover it. This URL is a permanent credential to the
                       # cluster's pull secret and SSH key, so only ciphertext is
                       # allowed to travel.
-                      url: '{{hub (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" .PolicyMetadata.namespace .PolicyMetadata.namespace).status.isoDownloadURL | protect hub}}'
+                      url: '{{hub (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" "vcp-1" "vcp-1").status.isoDownloadURL | protect hub}}'
                       certConfigMap: vcp-1-hub-ca
                   storage:
                     accessModes: [ReadWriteOnce]

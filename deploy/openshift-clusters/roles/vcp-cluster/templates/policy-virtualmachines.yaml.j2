@@ -1,3 +1,8 @@
+{# The InfraEnv's namespace and name, quoted for the Go template. Built here
+   because the policy no longer lives in the site namespace, so
+   .PolicyMetadata.namespace is the wrong answer for both -- it would look for
+   an InfraEnv named after the policy's own namespace and find nothing. #}
+{% set infraenv_ref = '"' ~ vcp_cluster_name ~ '" "' ~ vcp_cluster_name ~ '"' %}
 #
 # Ansible managed -- roles/vcp-cluster/templates/policy-virtualmachines.yaml.j2
 #
@@ -50,10 +55,11 @@ metadata:
   namespace: {{ vcp_policy_namespace }}
 ---
 # A hub template may read namespaced objects in the Policy's own namespace and
-# nothing else. The InfraEnv is in this namespace and so needs no permission at
-# all; the hub's ingress certificate is not, and this is the whole of the extra
-# access granted for it -- one verb set, one ConfigMap, in one namespace. A
-# ClusterRole would have been fewer objects and considerably more permission.
+# nothing else -- and naming a service account replaces that default rather than
+# adding to it, so every lookup needs granting. This is the ingress certificate
+# the DataVolume verifies the hub against; the InfraEnv gets its own Role below.
+# Namespaced Roles, not a ClusterRole: fewer objects, considerably more
+# permission, and neither read needs to reach beyond one namespace.
 apiVersion: rbac.authorization.k8s.io/v1
 kind: Role
 metadata:
@@ -184,7 +190,7 @@ spec:
           # it the document separator joins the previous line and the Policy
           # and the PlacementBinding silently merge into one object.
           object-templates-raw: |
-            {% raw %}{{hub if (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" .PolicyMetadata.namespace .PolicyMetadata.namespace).status.isoDownloadURL hub}}{% endraw +%}
+            {% raw %}{{hub if (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" {% endraw %}{{ infraenv_ref }}{% raw %}).status.isoDownloadURL hub}}{% endraw +%}
             - complianceType: musthave
               objectDefinition:
                 apiVersion: v1
@@ -218,7 +224,7 @@ spec:
                       # not cover it. This URL is a permanent credential to the
                       # cluster's pull secret and SSH key, so only ciphertext is
                       # allowed to travel.
-                      {% raw %}url: '{{hub (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" .PolicyMetadata.namespace .PolicyMetadata.namespace).status.isoDownloadURL | protect hub}}'{% endraw +%}
+                      {% raw %}url: '{{hub (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" {% endraw %}{{ infraenv_ref }}{% raw %}).status.isoDownloadURL | protect hub}}'{% endraw +%}
                       certConfigMap: {{ vcp_cluster_name }}-hub-ca
                   storage:
                     accessModes: [ReadWriteOnce]
