@@ -73,6 +73,9 @@ CONTEXT = dict(
         "cores": 8, "memory": "20Gi", "gpus": 0},
     # set_fact'd per guest inside hcp-guest's loop, so no role default declares it
     guest_name="hcp-1",
+    # Another Jinja-valued role default, dropped by role_defaults() for the same
+    # reason: the policy's own namespace, which is deliberately not the site's.
+    vcp_policy_namespace="vcp-1-policies",
     # set_fact'd by vcp-cluster's plan-nodes.yml, for the same reason. Three
     # schedulable control-plane nodes: the compact topology the profile builds.
     vcp_nodes=[{"name": f"vcp-1-cp-{i}", "role": "control-plane",
@@ -1065,6 +1068,8 @@ def test_virtual_machines_are_an_acm_policy():
     print("\nvirtual machines by policy")
     rendered, docs, objects = vcp_policy()
     kinds = {d["kind"]: d for d in docs}
+    roles_dir = f"{ROOT}/deploy/openshift-clusters/roles"
+    vcp_ci = yaml.safe_load(render(f"{roles_dir}/vcp-cluster/templates/clusterinstance.yaml.j2"))
 
     # A Policy nothing binds is propagated nowhere, and reports no error for it.
     binding = kinds["PlacementBinding"]
@@ -1078,6 +1083,14 @@ def test_virtual_machines_are_an_acm_policy():
           ["labelSelector"]["matchLabels"] == {"name": CONTEXT["cluster_name"]})
     # A Placement may only select from a set its own namespace is bound to, and
     # the gitops role's binding lives in openshift-gitops.
+    # A cluster's own namespace is reserved by ACM for the replicated copies of
+    # policies propagated to it; its propagator deletes any root policy there,
+    # on a loop, saying so only in its own log. Every site namespace is also a
+    # ManagedCluster name, so the policy cannot live beside its ClusterInstance.
+    check("the policy is not in a cluster's own namespace",
+          kinds["Policy"]["metadata"]["namespace"]
+          != vcp_ci["metadata"]["namespace"],
+          kinds["Policy"]["metadata"]["namespace"])
     check("its namespace is bound to the cluster set it selects from",
           kinds["ManagedClusterSetBinding"]["metadata"]["namespace"]
           == kinds["Placement"]["metadata"]["namespace"])
@@ -1105,8 +1118,11 @@ def test_virtual_machines_are_an_acm_policy():
     roles = [d for d in docs if d["kind"] == "Role"]
     bindings = [d for d in docs if d["kind"] == "RoleBinding"]
     granted = {r["metadata"]["namespace"] for r in roles}
+    # The Roles live where the objects they grant access to are -- the ingress
+    # cert in openshift-config-managed, the InfraEnv in the site's namespace --
+    # which is neither of them the namespace the policy itself is in.
     check("the account can read the ingress cert and the InfraEnv",
-          granted == {"openshift-config-managed", kinds["Policy"]["metadata"]["namespace"]},
+          granted == {"openshift-config-managed", vcp_ci["metadata"]["namespace"]},
           str(granted))
     check("its extra access is Roles, not ClusterRoles",
           all(r["kind"] == "Role" for r in roles) and len(roles) == 2)

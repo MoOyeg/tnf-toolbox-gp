@@ -25,11 +25,29 @@
 #
 # Everything here is a hub object, so this file belongs to sites/ and is synced
 # by the fleet-sites ApplicationSet. Only the namespace is left in sites-infra/.
+# Not the site namespace. {{ vcp_cluster_name }} is also a ManagedCluster name,
+# and ACM reserves a cluster's namespace for the *replicated* copies of policies
+# it propagates there. Its own propagator deletes anything else:
+#
+#   Invalid policy in cluster namespace: missing root policy ns prefix
+#   The policy was found in the cluster namespace but doesn't belong to any
+#   root policy, deleting it
+#
+# So a root policy put there is created and removed again, on a loop, with
+# nothing but the propagator's log to say why. Per site rather than one shared
+# namespace, so two site Applications can never contend for the same object.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ vcp_policy_namespace }}
+  labels:
+    tnf-toolbox-gp/owner: {{ vcp_cluster_name }}
+---
 apiVersion: v1
 kind: ServiceAccount
 metadata:
   name: {{ vcp_cluster_name }}-policy-templates
-  namespace: {{ vcp_cluster_name }}
+  namespace: {{ vcp_policy_namespace }}
 ---
 # A hub template may read namespaced objects in the Policy's own namespace and
 # nothing else. The InfraEnv is in this namespace and so needs no permission at
@@ -65,7 +83,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ vcp_cluster_name }}-policy-templates
-    namespace: {{ vcp_cluster_name }}
+    namespace: {{ vcp_policy_namespace }}
 ---
 # The InfraEnv lookup needs its own grant. Naming a serviceAccountName does not
 # add to the default same-namespace access a hub template would otherwise have --
@@ -94,7 +112,7 @@ roleRef:
 subjects:
   - kind: ServiceAccount
     name: {{ vcp_cluster_name }}-policy-templates
-    namespace: {{ vcp_cluster_name }}
+    namespace: {{ vcp_policy_namespace }}
 ---
 # A Placement may only select from cluster sets its namespace is bound to, and
 # the binding is per namespace -- the one the gitops role creates lives in
@@ -103,7 +121,7 @@ apiVersion: cluster.open-cluster-management.io/v1beta2
 kind: ManagedClusterSetBinding
 metadata:
   name: {{ gitops_cluster_set }}
-  namespace: {{ vcp_cluster_name }}
+  namespace: {{ vcp_policy_namespace }}
 spec:
   clusterSet: {{ gitops_cluster_set }}
 ---
@@ -111,7 +129,7 @@ apiVersion: cluster.open-cluster-management.io/v1beta1
 kind: Placement
 metadata:
   name: {{ vcp_cluster_name }}-infra
-  namespace: {{ vcp_cluster_name }}
+  namespace: {{ vcp_policy_namespace }}
 spec:
   clusterSets:
     - {{ gitops_cluster_set }}
@@ -128,7 +146,7 @@ apiVersion: policy.open-cluster-management.io/v1
 kind: Policy
 metadata:
   name: {{ vcp_cluster_name }}-virtual-machines
-  namespace: {{ vcp_cluster_name }}
+  namespace: {{ vcp_policy_namespace }}
   annotations:
     policy.open-cluster-management.io/categories: CM Configuration Management
     policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
@@ -316,7 +334,7 @@ apiVersion: policy.open-cluster-management.io/v1
 kind: PlacementBinding
 metadata:
   name: {{ vcp_cluster_name }}-virtual-machines
-  namespace: {{ vcp_cluster_name }}
+  namespace: {{ vcp_policy_namespace }}
 placementRef:
   apiGroup: cluster.open-cluster-management.io
   kind: Placement

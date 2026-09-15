@@ -64,3 +64,8 @@ vcp_install_timeout: 5400
 # guest's service traffic indistinguishable from the host's.
 vcp_cluster_network_cidr: 10.132.0.0/14
 vcp_service_network_cidr: 172.31.0.0/16
+
+# Where this site's policy and the objects that place it live. Deliberately not
+# the site namespace: that name is also a ManagedCluster, and ACM's propagator
+# deletes any root policy it finds in a cluster's namespace.
+vcp_policy_namespace: "{{ vcp_cluster_name }}-policies"
