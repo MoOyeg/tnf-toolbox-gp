@@ -3,7 +3,7 @@
 #
 # The kubelet's default is 250 pods per node. A single-node hub carrying ACM,
 # MultiCluster Engine, OpenShift Virtualization and one hosted control plane per
-# guest cluster goes past that with room to spare on every other axis -- the
+# guest cluster went past that with room to spare on every other axis -- the
 # node was at 279 pods wanted against 250 allowed, with 47 of 48 cores and 187
 # GiB of memory free. The second guest cluster's control plane simply never
 # scheduled:
@@ -12,6 +12,11 @@
 #
 # Nothing about that message points at a per-node cap rather than at capacity,
 # which is why it is worth setting deliberately rather than discovering twice.
+#
+# The hosted control planes and OpenShift Virtualization have since moved to
+# TNF, so the hub no longer comes near the default. This stays as headroom: it
+# costs nothing, and the ceiling is the kind of thing that is invisible until
+# something is already failing against it for reasons that look unrelated.
 
 - name: Raise the maximum pods per node on the ACM hub
   kubernetes.core.k8s:
@@ -31,8 +36,9 @@
   register: max_pods
 
 # The MCO reboots the node to apply it, and on a single-node cluster that takes
-# the API with it for as long as the machine takes to come back -- on m5zn.metal
-# that is a bare-metal POST, ten minutes and more.
+# the API with it for as long as the machine takes to come back. That was ten
+# minutes and more when this node was bare metal and had a POST to get through;
+# an ordinary instance is quicker, but the API still goes away entirely.
 #
 # Waiting on the MachineConfigPool is the obvious thing and it is wrong here: the
 # pool is asked immediately after the KubeletConfig is created, before the MCO

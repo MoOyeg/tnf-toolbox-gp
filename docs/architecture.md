@@ -211,18 +211,20 @@ inside it; Route53 rejects a record that does not belong to its zone.
 
 ACM does not run on the cluster it manages, and does not run *on* that cluster's
 hardware either. It has its own site: a separate VPC, its own bastion, and its
-own bare-metal node. The two are joined by VPC peering.
+own node. The two are joined by VPC peering.
 
 ```
 ACM site                                TNF site
 VPC 10.1.0.0/16                         VPC 10.0.0.0/16
 ├── bastion  10.1.0.5                   ├── bastion  10.0.0.5
-└── sno-0    10.1.0.10  m5zn.metal      ├── master-0 10.0.0.10  g4dn.metal
-      ACM + MCE + HyperShift            └── master-1 10.0.0.11  g4dn.metal
-      OpenShift Virtualization                MCE, OCP-V, 16x Tesla T4
+└── sno-0    10.1.0.10  m6i.4xlarge     ├── master-0 10.0.0.10  g4dn.metal
+      ACM + MCE                         └── master-1 10.0.0.11  g4dn.metal
+      SiteConfig, GitOps, observability       MCE + HyperShift, OCP-V,
+                    │                         16x Tesla T4, and every guest
+                    │                         cluster's control plane and VMs
                     │                                    ▲
                     └────── VPC peering ─────────────────┘
-                            ACM drives TNF as its KubeVirt infra cluster
+                            The hub manages the fleet; TNF runs it
 ```
 
 **Why a separate site rather than a VM on TNF.** A hub that lives on the cluster
@@ -230,10 +232,14 @@ it manages shares that cluster's failure domain: losing TNF also loses the thing
 that would tell you TNF was gone. A VM on TNF is better than a namespace on TNF
 but has the same property. Its own VPC and its own hardware does not.
 
-**Why bare metal for a single-node cluster.** The ACM cluster runs OpenShift
-Virtualization, which needs KVM, and KVM is not available on a virtualised EC2
-instance. `m5zn.metal` is the cheapest x86 metal that fits. It needs no GPU --
-the GPUs belong to the TNF site, and ACM reaches them by creating VMs there.
+**Why the hub is not bare metal.** It was, and the reason is worth keeping: the
+ACM cluster used to run OpenShift Virtualization to host the guest clusters'
+control planes and worker VMs, and KVM is not available on a virtualised EC2
+instance. Those guests are now created by TNF's own MultiCluster Engine and run
+entirely on TNF, which is where the GPUs are -- so the hub runs no virtual
+machines, needs no KVM, and is an ordinary `m6i.4xlarge`. It still needs no GPU.
+If OpenShift Virtualization ever returns to the hub, `ACM_SNO_INSTANCE_TYPE` has
+to return to a `.metal` shape in the same change.
 
 **The CIDRs must not overlap.** Peering will not route between VPCs whose ranges
 collide, and AWS rejects the connection outright. `create-acm-infra.sh` refuses

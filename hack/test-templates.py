@@ -1810,6 +1810,75 @@ def test_infra_half_of_a_site_carries_no_credential():
           "an http source here would be the ISO URL, which is a bearer token")
 
 
+def test_control_planes_are_hosted_on_tnf():
+    """The guest control planes run on TNF, and the hub is not bare metal.
+
+    These two facts are one change. A hosted control plane is pods, and its
+    workers are KubeVirt VMs; putting both on TNF is what leaves the hub with no
+    virtual machines to run, which is what lets its node stop being a .metal
+    shape. Undoing either half silently re-breaks the other, and neither is
+    visible in a rendered template -- the evidence is in a Makefile target, a
+    play's role list and two instance types.
+    """
+    print("\nwhere the guest control planes run")
+    deploy = f"{ROOT}/deploy"
+    makefile = open(f"{deploy}/Makefile", encoding="utf-8").read()
+
+    # The 'all' target, with its line continuations folded back together.
+    all_target = re.search(r"^all:(.*?)(?=\n\t|\n[^\s#])", makefile,
+                           re.S | re.M)
+    stages = all_target.group(1).replace("\\\n", " ").split() if all_target else []
+    check("'make all' builds the guests on TNF's own MultiCluster Engine",
+          "guests" in stages,
+          f"the all target runs {stages}")
+    check("'make all' does not build them on the hub",
+          "hcp-make-guests-from-acm" not in stages,
+          "the hub-hosted variant puts the control-plane pods on the ACM node")
+
+    # What actually decides it: the play 'guests' runs targets the TNF bastion
+    # and hands hcp no infra kubeconfig, so hcp omits --infra-kubeconfig-file
+    # and both the control-plane pods and the worker VMs land on TNF.
+    guests_play = open(f"{deploy}/openshift-clusters/40-hcp-guests.yml",
+                       encoding="utf-8").read()
+    play = yaml.safe_load(guests_play)[0]
+    check("the guest play runs against the TNF bastion",
+          play["hosts"] == "bastion",
+          f"it targets {play['hosts']}")
+    check("it hands hcp no infra kubeconfig, so the VMs stay where it runs",
+          "guest_infra_kubeconfig" not in guests_play,
+          "setting it would send the worker VMs to another cluster")
+
+    # The hub keeps its storage -- the MultiClusterHub's search component and
+    # observability both want PVCs -- but not virtualization.
+    acm_site = open(f"{deploy}/openshift-clusters/36-acm-site.yml",
+                    encoding="utf-8").read()
+    roles = re.findall(r"^\s*name:\s*(\S+)\s*$", acm_site, re.M)
+    check("the hub does not install OpenShift Virtualization",
+          "cnv" not in roles,
+          "the hub runs no VMs, and CNV there would need bare metal again")
+    check("the hub still installs LVM Storage",
+          "lvm-storage" in roles,
+          "search and observability request PVCs on the hub itself")
+
+    # Bare metal was for KVM. With KVM gone the shape is ordinary, and a .metal
+    # default here is roughly ten times the cost for nothing.
+    env_template = open(f"{ROOT}/config/instance.env.template",
+                        encoding="utf-8").read()
+    declared = re.search(r"^export ACM_SNO_INSTANCE_TYPE=(\S+)", env_template, re.M)
+    check("the hub's instance type is declared",
+          declared is not None)
+    if declared:
+        check("the hub is not a bare-metal shape",
+              not declared.group(1).endswith(".metal"),
+              f"ACM_SNO_INSTANCE_TYPE is {declared.group(1)}")
+
+    stack = _cfn_load(f"{deploy}/aws-infra/templates/sno-compute-stack.yaml")
+    default = stack["Parameters"]["SnoInstanceType"]["Default"]
+    check("the stack's own default is not bare metal either",
+          not str(default).endswith(".metal"),
+          f"SnoInstanceType defaults to {default}")
+
+
 def main():
     test_every_template_renders()
     test_install_config()
@@ -1836,6 +1905,7 @@ def main():
     test_infra_half_of_a_site_carries_only_its_namespace()
     test_site_agnostic_roles_name_no_single_site()
     test_fetched_credentials_are_gitignored()
+    test_control_planes_are_hosted_on_tnf()
 
     print()
     if FAILURES:

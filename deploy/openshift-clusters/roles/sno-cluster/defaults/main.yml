@@ -20,12 +20,15 @@ acm_install_timeout: 5400
 # in group_vars, because hcp-guest needs it too.
 infra_kubeconfig_secret: tnf-infra-kubeconfig
 
-# Pods per node on the hub. The default 250 is not enough for ACM plus MCE plus
-# OpenShift Virtualization plus a hosted control plane for every guest cluster.
+# Pods per node on the hub. The default 250 was not enough when the hub also ran
+# OpenShift Virtualization and a hosted control plane for every guest cluster.
+# Those have moved to TNF and the hub is well under the default now, so this is
+# headroom rather than a requirement -- kept because it costs nothing and the
+# ceiling is invisible until something hits it.
 acm_max_pods: 500
 
 # How long to wait for the node to come back after the KubeletConfig rollout.
-# It is a reboot of a bare-metal machine, and m5zn.metal POSTs slowly: the first
-# time this was tried the budget was ten minutes and the node returned about two
-# minutes later, which failed the stage over nothing.
+# Sized for the bare-metal node this used to be, where a POST took ten minutes
+# and more; an ordinary instance reboots in two or three. Left generous because
+# it is a ceiling on waiting, not time spent.
 acm_pod_capacity_timeout: 2400

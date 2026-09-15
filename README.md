@@ -16,9 +16,10 @@ devices on the OpenShift nodes.
 
 ![Architecture](docs/architecture.drawio.svg)
 
-Two peered AWS sites and one guest cluster that straddles them: its control
-plane runs as pods on the ACM hub, its worker VMs run on TNF with real T4s
-passed into them, and the inspection app runs inside the guest on those GPUs.
+Two peered AWS sites. TNF carries the whole guest cluster -- its control plane
+as pods, its worker VMs with real T4s passed into them -- and the inspection app
+runs inside that guest on those GPUs. The ACM site manages the fleet and runs
+none of it.
 The file is an editable draw.io diagram as well as an image — open
 [docs/architecture.drawio.svg](docs/architecture.drawio.svg) in
 [diagrams.net](https://app.diagrams.net) or the VS Code draw.io extension.
@@ -31,20 +32,24 @@ ACM site  VPC 10.1.0.0/16              TNF site  VPC 10.0.0.0/16
 │                                      │     ├── haproxy      api / api-int / *.apps
 │                                      │     ├── redfish-ec2  Redfish → EC2 Stop/Start
 │                                      │     └── ignition server
-└── sno-0  m5zn.metal  10.1.0.10       ├── master-0  g4dn.metal  8× T4 → vfio-pci
+└── sno-0  m6i.4xlarge  10.1.0.10      ├── master-0  g4dn.metal  8× T4 → vfio-pci
       single-node OpenShift            └── master-1  g4dn.metal  8× T4 → vfio-pci
-      ├── ACM + MCE + HyperShift             TNF 4.22, platform:none
-      └── OpenShift Virtualization           ├── NFD + NVIDIA GPU Operator
-                  │                          ├── LVM Storage on EBS gp3
+      ├── ACM + MCE                          TNF 4.22, platform:none
+      ├── SiteConfig + GitOps                ├── NFD + NVIDIA GPU Operator
+      └── Observability                      ├── LVM Storage on EBS gp3
                   │                          ├── OpenShift Virtualization
-                  │                          └── MultiCluster Engine
+                  │                          ├── MCE + HyperShift
+                  │                          └── guest control planes + VMs
                   │                                    ▲
                   └────────── VPC peering ─────────────┘
-                    ACM drives TNF as its KubeVirt infra cluster:
-                    HostedCluster + control-plane pods on the ACM cluster,
-                    worker VMs and their GPUs on TNF. TNF is also imported
-                    into the hub as a managed cluster, so ACM sees the
+                    The hub manages; TNF runs. TNF's own MultiCluster Engine
+                    creates each HostedCluster, so both the control-plane pods
+                    and the worker VMs with the GPUs are on TNF. TNF is
+                    imported into the hub as a managed cluster, so ACM sees the
                     infrastructure and not just the clusters on it.
+
+                    The hub runs no virtual machines, which is why its node is
+                    an ordinary instance rather than bare metal.
 ```
 
 No nested virtualization anywhere. OpenShift Virtualization runs on the metal,
@@ -101,27 +106,34 @@ of `make acm-site` is the same two waits for the ACM cluster.
 time if you are in a hurry; `make acm-site` waits for TNF's kubeconfig at the one
 point it needs it.
 
+`make all` runs **`make guests`**, which creates each guest through TNF's own
+MultiCluster Engine: the control plane is pods on TNF and the workers are
+KubeVirt VMs on TNF, so the whole guest sits on the cluster that has the GPUs.
+The hub manages it and runs none of it.
+
 Two other guest targets exist and are not in `make all`:
 
-- **`make guests`** — the same hosted topology, but created by TNF's own
-  MultiCluster Engine instead of by ACM. `make all` uses the ACM one, because
-  keeping the hub off the cluster it manages is the point of the two-site layout.
+- **`make hcp-make-guests-from-acm`** — the same hosted topology built the other
+  way round, with the control-plane pods on the ACM hub and only the worker VMs
+  on TNF. It needs OpenShift Virtualization and a data volume on the hub, which
+  a non-metal hub no longer has, so running it means changing
+  `ACM_SNO_INSTANCE_TYPE` back to a `.metal` shape first.
 - **`make vcp-make-guests-from-acm`** — a *standalone* cluster whose every node
   is a VM, control plane included. Different topology and different mechanism:
   ACM installs it with the assisted installer rather than HyperShift, so the VMs
-  boot a discovery ISO and are installed the way bare metal would be, and
-  nothing of the cluster runs on the hub afterwards.
+  boot a discovery ISO and are installed the way bare metal would be.
 
-The two are worth telling apart:
+The three are worth telling apart:
 
 | | control plane | workers | built by |
 |---|---|---|---|
-| `hcp-make-guests-from-acm` | pods on the ACM hub | KubeVirt VMs on TNF | HyperShift |
+| `guests` | pods on TNF | KubeVirt VMs on TNF | HyperShift, TNF's MCE |
+| `hcp-make-guests-from-acm` | pods on the ACM hub | KubeVirt VMs on TNF | HyperShift, ACM's MCE |
 | `vcp-make-guests-from-acm` | KubeVirt VMs on TNF | KubeVirt VMs on TNF | assisted installer |
 
-A hosted control plane is cheaper — it is pods, and it shares the hub's etcd
-machinery. A standalone one costs three more VMs before a single workload runs,
-and in exchange it survives the hub going away.
+A hosted control plane is cheaper — it is pods, and it shares the hosting
+cluster's etcd machinery. A standalone one costs three more VMs before a single
+workload runs, and in exchange it survives its host going away.
 
 ## Building clusters from Git
 
@@ -461,10 +473,16 @@ Bare metal is the entire bill for practical purposes:
 | | |
 |---|---|
 | 2 x `g4dn.metal` (TNF) | ~$15.70/hour |
-| 1 x `m5zn.metal` (ACM site) | ~$4.00/hour |
+| 1 x `m6i.4xlarge` (ACM site) | ~$0.77/hour |
 | 2 x `m5.large` bastions | ~$0.20/hour |
 
-Roughly **$20/hour on demand** before storage and transfer, for both sites.
+Roughly **$17/hour on demand** before storage and transfer, for both sites.
+
+The hub was a `m5zn.metal` at about $4.00/hour while it ran OpenShift
+Virtualization. The guest control planes and their worker VMs moved to TNF,
+which left the hub with no virtual machines and so no need for KVM; an ordinary
+instance is about a fifth of the price. Putting virtualization back on the hub
+means putting metal back with it.
 
 `make destroy` removes the TNF site and `make destroy-acm` the ACM one — run
 both. `make clean` keeps the network and bastion, and therefore the fencing

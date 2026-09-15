@@ -11,7 +11,7 @@ ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 # before anything reboots it, and its credentials must be on your workstation
 # before the one stage that can break it.
 all: keypair infra acm-infra peering tnf kubeconfig iommu gpu virt-mce acm-site \
-     hcp-make-guests-from-acm guest-gpu
+     guests guest-gpu
 	@echo ""
 	@echo "Everything is up. 'make status' for a summary."
 
@@ -89,12 +89,21 @@ guest-lb:
 acm-site: observability-bucket
 	@$(ANSIBLE) 36-acm-site.yml $(EXTRA_ARGS)
 
-# Guests hosted by TNF's own MultiCluster Engine.
+# Guests hosted by TNF's own MultiCluster Engine: the control plane runs as
+# pods on TNF and its workers are KubeVirt VMs on TNF, so the whole guest is on
+# the cluster that has the GPUs. This is what 'make all' uses.
+#
+# The hub is left as a management hub -- ACM, observability, SiteConfig, GitOps
+# -- with no workload of its own, which is why it no longer needs OpenShift
+# Virtualization and no longer needs to be bare metal.
 guests:
 	@$(ANSIBLE) 40-hcp-guests.yml $(EXTRA_ARGS)
 
-# Hosted control planes: the guest's control plane runs as pods on the ACM hub
-# and only its workers are KubeVirt VMs on TNF. This is what 'make all' uses.
+# The same guest, hosted the other way round: its control plane runs as pods on
+# the ACM hub and only its workers are KubeVirt VMs on TNF. Kept because it is
+# the topology the SiteConfig template set renders, but not part of 'make all'
+# -- running it needs OpenShift Virtualization and a data volume on the hub,
+# which a non-metal hub no longer has.
 hcp-make-guests-from-acm:
 	@$(ANSIBLE) 40-hcp-guests-from-acm.yml $(EXTRA_ARGS)
 

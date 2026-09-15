@@ -38,10 +38,12 @@
       ansible.builtin.include_role:
         name: sno-cluster
 
-    # Before CNV and ACM, both of which want PVCs: the MultiClusterHub's search
-    # component, and every hosted control plane's etcd, which is created on the
-    # hub with --etcd-storage-class. Without a default storage class here the
-    # hub never reaches Running and no guest cluster can be created.
+    # Before ACM, which wants PVCs: the MultiClusterHub's search component, and
+    # observability, whose Thanos compactor and receivers are provisioned from
+    # obs_storage_class. Without a default storage class here the hub never
+    # reaches Running. Still needed even though the hosted control planes and
+    # their etcd have moved to TNF -- the hub's own components are enough to
+    # require it.
     - name: Install LVM Storage on the ACM node's data volume
       ansible.builtin.include_role:
         name: lvm-storage
@@ -49,24 +51,27 @@
         op_kubeconfig: "{{ acm_kubeconfig }}"
         control_plane_nodes: "{{ acm_control_plane_nodes }}"
 
-    - name: Install OpenShift Virtualization on the ACM cluster
-      ansible.builtin.include_role:
-        name: cnv
-      vars:
-        op_kubeconfig: "{{ acm_kubeconfig }}"
-        # No GPUs at this site; the permitted host device would match nothing.
-        cnv_permit_gpu: false
-
+    # Deliberately no OpenShift Virtualization here. It was installed on this
+    # hub to run guest worker VMs; those, and the hosted control planes that
+    # own them, are now created by TNF's own MultiCluster Engine and run on
+    # TNF, which is where the GPUs are. The hub manages the fleet and runs no
+    # virtual machines, which is also what lets its node be an ordinary EC2
+    # instance rather than bare metal.
+    #
+    # If virtualization is ever wanted here again, ACM_SNO_INSTANCE_TYPE has to
+    # go back to a .metal shape in the same change: KVM needs the hardware
+    # extensions, and a nested hypervisor is not available on EC2.
     - name: Install ACM
       ansible.builtin.include_role:
         name: acm
       vars:
         op_kubeconfig: "{{ acm_kubeconfig }}"
 
-    # OpenShift Virtualization is installed on this hub above, which gives its
-    # own console a Virtualization section. The *fleet* view is a different
-    # thing and depends on Search, so that is made explicit rather than left to
-    # a default.
+    # The fleet view lists VirtualMachines that managed clusters report through
+    # Search, so it works without OpenShift Virtualization on the hub -- what
+    # the hub loses by not having it is the Virtualization section in its own
+    # console, which described nothing, because the hub runs no VMs. Search is
+    # made explicit rather than left to a default.
     - name: Make sure the fleet virtualization view will work
       ansible.builtin.include_role:
         name: acm

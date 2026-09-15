@@ -1,12 +1,17 @@
 ---
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  The single bare-metal node that runs the ACM cluster.
+  The single node that runs the ACM cluster.
 
-  Bare metal rather than a normal instance because this cluster runs OpenShift
-  Virtualization, which needs KVM -- not available on a virtualised EC2 instance.
-  No GPU is required here: the GPUs belong to the TNF site, and the ACM cluster
-  reaches them through the peering connection by creating VMs there.
+  An ordinary EC2 instance, not bare metal. It was metal while this cluster ran
+  OpenShift Virtualization, which needs KVM and so cannot run on a virtualised
+  instance; the guest control planes and their worker VMs are now created by
+  TNF's own MultiCluster Engine and run on TNF, so the hub runs no virtual
+  machines and needs no hardware virtualization. Putting OpenShift
+  Virtualization back here means putting bare metal back with it.
+
+  No GPU is required here either: the GPUs belong to the TNF site, and the hub
+  manages them across the peering connection rather than using them.
 
   Single-node OpenShift installs via bootstrap-in-place: the node boots the RHCOS
   AMI with an ignition config that installs a full control plane onto itself, so
@@ -26,7 +31,10 @@ Parameters:
     Type: AWS::EC2::Image::Id
   SnoInstanceType:
     Type: String
-    Default: m5zn.metal
+    # Not a .metal shape. The hub stopped running OpenShift Virtualization when
+    # the hosted control planes moved to TNF, and KVM was the only thing metal
+    # was for here.
+    Default: m6i.4xlarge
   SshKeyName:
     Type: AWS::EC2::KeyPair::KeyName
   SnoPrivateIp:

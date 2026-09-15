@@ -25,10 +25,10 @@ bastions.
 | `16-tnf-recover.yml` | `bastion` | `tnf-recover` |
 | `20-base-gpu.yml` | `bastion` | `nfd`, `gpu-operator` |
 | `30-virt-mce.yml` | `bastion` | `lvm-storage`, `common`, `cnv`, `acm` (MCE only) |
-| `36-acm-site.yml` | `acm_bastion` | `common`, `loadbalancer`, `sno-cluster`, `lvm-storage`, `cnv`, `acm`, `observability` |
+| `36-acm-site.yml` | `acm_bastion` | `common`, `loadbalancer`, `sno-cluster`, `lvm-storage`, `acm`, `observability` |
 | `37-siteconfig.yml` | `acm_bastion` | `siteconfig`, `vcp-cluster`, `common`, `hcp-guest`, `gitops` |
-| `40-hcp-guests.yml` | `bastion` | `common`, `hcp-guest` — TNF's own MultiCluster Engine |
-| `40-hcp-guests-from-acm.yml` | `acm_bastion` | `common`, `hcp-guest` — the same topology, from the hub |
+| `40-hcp-guests.yml` | `bastion` | `common`, `hcp-guest` — TNF's own MultiCluster Engine, used by `make all` |
+| `40-hcp-guests-from-acm.yml` | `acm_bastion` | `common`, `hcp-guest` — the same topology hosted on the hub instead; needs a metal hub |
 | `41-vcp-clusters-from-acm.yml` | `acm_bastion` | `common`, `vcp-cluster` |
 | `42-sites.yml` | `acm_bastion` | `hcp-guest`, `vcp-cluster`, `acm` |
 | `50-guest-gpu.yml` | both | `nfd`, `gpu-operator` — against each guest kubeconfig |

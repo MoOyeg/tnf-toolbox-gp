@@ -4,9 +4,9 @@
 # The view is not powered by OpenShift Virtualization on the hub. Per the ACM
 # documentation it needs the operator on the clusters you want to *manage*, and
 # the hub's Search service to list the VirtualMachine resources it finds there.
-# CNV is installed on this hub as well, which is what puts the Virtualization
-# section in its own console, but the hub runs no virtual machines -- there is
-# nothing here to run them on.
+# The hub does not have CNV and does not need it: it runs no virtual machines,
+# and the only thing it loses by not having the operator is a Virtualization
+# section in its own console that would have described nothing.
 #
 # So what this does is make the two things the view actually depends on explicit
 # rather than incidental: Search on the hub, and the search collector on every
