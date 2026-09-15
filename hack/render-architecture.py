@@ -55,6 +55,13 @@ NODES = [
     ("tnfb", 55, 105, 300, 50, "infra", [
         "bastion 10.0.0.5",
         "haproxy · Redfish shim · ignition"]),
+    # Small, and inside the site box beside the bastion, because that is the
+    # scale of it: the fencing "BMC" is a shim on the bastion turning Redfish
+    # calls into EC2 Stop/Start. Drawn in the AWS palette because the endpoint
+    # is a regional service, not something running in this VPC.
+    ("ec2api", 470, 105, 235, 50, "aws", [
+        "AWS EC2 API",
+        "Stop / Start — the fencing BMC"]),
     ("m0", 55, 170, 315, 60, "compute", [
         "master-0 · g4dn.metal",
         "8× T4 → vfio-pci"]),
@@ -132,7 +139,8 @@ NODES = [
 # run so it leaves and arrives under the same point rather than slanting.
 EDGES = [
     ("tnfb", "b", "m0", "t", "", False, {"sx": 205, "ex": 205}),
-    ("tnfb", "r", "m1", "t", "", False, {}),
+    ("tnfb", "b", "m1", "t", "", False, {"sx": 300}),
+    ("tnfb", "r", "ec2api", "l", "Redfish", True, {}),
     ("m0", "b", "tnfc", "t", "", False, {"ex": 212}),
     ("m1", "b", "tnfc", "t", "", False, {"ex": 547}),
     ("tnfc", "b", "hcp", "t", "hosts", False, {}),
