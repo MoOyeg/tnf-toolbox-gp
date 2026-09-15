@@ -1,0 +1,42 @@
+#
+# Ansible managed -- roles/hcp-guest/templates/extra-manifests.yaml.j2
+#
+# Install-time node configuration for hcp-1, referenced from the
+# NodePool via spec.config.
+#
+# Deliberately not spec.extraManifestsRefs, which is what the all-VM profile
+# uses. That field becomes the AgentClusterInstall's manifestsConfigMapRefs, and
+# a hosted cluster has no AgentClusterInstall -- setting it here would be
+# accepted by the ClusterInstance CRD and render into nothing at all. HyperShift
+# carries day-1 machine configuration on the NodePool instead.
+#
+# The shape differs too: a NodePool config entry is a ConfigMap holding exactly
+# one manifest under the key 'config', where the assisted installer's takes many
+# keyed by filename. One ConfigMap per manifest is the cost of that.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hcp-1-chrony
+  namespace: hcp-1
+  labels:
+    # Backed up and restored with the rest of the site definition.
+    cluster.open-cluster-management.io/backup: cluster-activation
+data:
+  config: |
+    apiVersion: machineconfiguration.openshift.io/v1
+    kind: MachineConfig
+    metadata:
+      name: 99-chrony-site
+      labels:
+        machineconfiguration.openshift.io/role: worker
+    spec:
+      config:
+        ignition:
+          version: 3.2.0
+        storage:
+          files:
+            - path: /etc/chrony.conf
+              mode: 420
+              overwrite: true
+              contents:
+                source: data:text/plain;charset=utf-8;base64,c2VydmVyIDIucmhlbC5wb29sLm50cC5vcmcgaWJ1cnN0CmRyaWZ0ZmlsZSAvdmFyL2xpYi9jaHJvbnkvZHJpZnQKbWFrZXN0ZXAgMS4wIDMKcnRjc3luYwpsb2dkaXIgL3Zhci9sb2cvY2hyb255Cg==

@@ -15,7 +15,7 @@ metadata:
   namespace: vcp-1
 spec:
   clusterName: vcp-1
-  baseDomain: sandbox2765.opentlc.com
+  baseDomain: sandbox750.opentlc.com
   # Three control-plane VMs carrying their own etcd quorum. Not SNO, and not a
   # hosted control plane: nothing of this cluster runs on the hub.
   clusterType: HighlyAvailable
@@ -32,6 +32,17 @@ spec:
   templateRefs:
     - name: vcp-cluster-templates-v1
       namespace: open-cluster-management
+  # Install-time node configuration, applied by the assisted installer while the
+  # cluster is built. The ConfigMap is the extra-manifests.yaml beside this file,
+  # resolved in this cluster's own namespace.
+  extraManifestsRefs:
+    - name: vcp-1-extra-manifests
+  # The same time source again, for the phase before those manifests exist. An
+  # agent validates its clock against the hub before installation starts, so a
+  # VM that booted with a skewed clock sits in 'insufficient' and never reaches
+  # the point where the chrony MachineConfig would have fixed it.
+  additionalNTPSources:
+    - 2.rhel.pool.ntp.org
   # Every node has to be listed, and the operator's own validation is why:
   #
   #   controlPlaneCount < 1 && clusterType != HostedControlPlane
