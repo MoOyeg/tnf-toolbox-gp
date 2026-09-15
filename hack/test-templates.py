@@ -8,6 +8,7 @@ the CloudFormation parameter limit, a CloudFormation !Ref to a parameter nobody
 declared.
 """
 
+import base64
 import glob
 import json
 import os
@@ -152,9 +153,41 @@ def extra_vars_from_wrapper():
 
 def render(template_path, **overrides):
     directory, name = os.path.split(template_path)
-    env = Environment(loader=FileSystemLoader(directory), undefined=StrictUndefined)
+    # trim_blocks matches ansible.builtin.template, whose default is yes. Jinja's
+    # own default is no, and the difference is not cosmetic: with it on, the
+    # newline after a block tag is eaten, so a `---` on the line after an
+    # {% endraw %} joins the previous line and two YAML documents silently
+    # become one. Rendering here with Jinja's defaults meant this harness could
+    # pass a template that Ansible renders differently -- which is the one thing
+    # it exists to prevent.
+    env = Environment(loader=FileSystemLoader(directory), undefined=StrictUndefined,
+                      trim_blocks=True)
+    # Ansible's filter set, not Jinja's. A template is rendered by Ansible in
+    # anger, so anything it is allowed to use has to exist here too -- otherwise
+    # this harness fails a template that works, and the fix would be to make the
+    # template worse.
+    env.filters["b64encode"] = lambda s: base64.b64encode(
+        (s if isinstance(s, bytes) else str(s).encode())).decode()
     return env.get_template(name).render(
         **{**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT, **overrides})
+
+
+def vcp_policy():
+    """The vcp Policy file, as (all documents, the ConfigurationPolicy's objects).
+
+    object-templates-raw is a Go template producing the object list, so it is run
+    through strip_go() before parsing -- the same treatment the SiteConfig
+    template ConfigMaps get, and for the same reason.
+    """
+    path = (f"{ROOT}/deploy/openshift-clusters/roles/vcp-cluster"
+            "/templates/policy-virtualmachines.yaml.j2")
+    rendered = render(path)
+    docs = [d for d in yaml.safe_load_all(rendered) if d]
+    policy = next(d for d in docs if d["kind"] == "Policy")
+    raw = policy["spec"]["policy-templates"][0]["objectDefinition"]["spec"][
+        "object-templates-raw"]
+    objects = [i["objectDefinition"] for i in yaml.safe_load(strip_go(raw))]
+    return rendered, docs, objects
 
 
 def test_every_template_renders():
@@ -874,8 +907,8 @@ def test_guest_vms_are_spread_across_the_infra_cluster():
     print("\nspreading guest VMs")
     roles = f"{ROOT}/deploy/openshift-clusters/roles"
 
-    vms = [d for d in yaml.safe_load_all(render(
-        f"{roles}/vcp-cluster/templates/sites-infra-virtualmachines.yaml.j2")) if d]
+    _, _, objects = vcp_policy()
+    vms = [o for o in objects if o["kind"] == "VirtualMachine"]
     for vm in vms:
         tsc = vm["spec"]["template"]["spec"].get("topologySpreadConstraints", [])
         check(f"{vm['metadata']['name']}: asks to be spread by hostname",
@@ -946,6 +979,616 @@ def test_site_definitions():
               == ns["metadata"]["name"])
 
 
+def test_guest_time_is_configured_at_install_time():
+    """Each ACM-built site carries a chrony MachineConfig, by its own mechanism.
+
+    The two profiles reach the node by different routes and a reference that
+    misses is silent in both: the manifest simply never applies and the cluster
+    comes up with whatever chrony the image shipped. So the name on the
+    ConfigMap and the name in the thing that points at it are checked against
+    each other rather than each being checked alone.
+    """
+    print("\nguest node time")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    defaults = {**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT}
+
+    def chrony_of(cm, key):
+        """The MachineConfig under one ConfigMap key, and its decoded chrony.conf."""
+        mc = yaml.safe_load(cm["data"][key])
+        source = mc["spec"]["config"]["storage"]["files"][0]["contents"]["source"]
+        _, _, encoded = source.partition(";base64,")
+        return mc, base64.b64decode(encoded).decode()
+
+    # --- the all-VM profile: spec.extraManifestsRefs -> manifestsConfigMapRefs
+    vcp = yaml.safe_load(render(f"{roles}/vcp-cluster/templates/extra-manifests.yaml.j2"))
+    vcp_ci = yaml.safe_load(render(f"{roles}/vcp-cluster/templates/clusterinstance.yaml.j2"))
+    check("vcp: the site definition references the ConfigMap beside it",
+          [r["name"] for r in vcp_ci["spec"]["extraManifestsRefs"]]
+          == [vcp["metadata"]["name"]])
+    # The operator resolves the reference in the ClusterInstance's namespace, so
+    # a ConfigMap written anywhere else is invisible to it.
+    check("vcp: the ConfigMap lands in the cluster's own namespace",
+          vcp["metadata"]["namespace"] == vcp_ci["metadata"]["namespace"])
+    check("vcp: its keys are filenames, which is how they are ordered",
+          all(k.endswith(".yaml") for k in vcp["data"]), list(vcp["data"]))
+    key = f"{defaults['guest_chrony_machine_config_name']}.yaml"
+    mc, conf = chrony_of(vcp, key)
+    check("vcp: the embedded manifest is a MachineConfig", mc["kind"] == "MachineConfig")
+    # vcp-1 is three control-plane VMs and no workers, so master is the only
+    # pool a MachineConfig can land in.
+    check("vcp: it targets the pool this profile actually has",
+          mc["metadata"]["labels"]["machineconfiguration.openshift.io/role"] == "master")
+    check("vcp: the decoded file is a chrony config",
+          "server " in conf and "driftfile" in conf, conf)
+    # The clock has to be right before the manifest exists: an agent validates
+    # skew against the hub before installation starts.
+    check("vcp: the discovery phase gets the same time source",
+          vcp_ci["spec"]["additionalNTPSources"] == defaults["guest_ntp_sources"])
+
+    # --- the hosted profile: NodePool.spec.config, a different shape entirely
+    hcp = yaml.safe_load(render(f"{roles}/hcp-guest/templates/extra-manifests.yaml.j2"))
+    check("hcp: a NodePool config ConfigMap holds exactly one manifest",
+          list(hcp["data"]) == ["config"], list(hcp["data"]))
+    mc, conf = chrony_of(hcp, "config")
+    check("hcp: the embedded manifest is a MachineConfig", mc["kind"] == "MachineConfig")
+    # A hosted cluster's control plane is pods on the hub; its NodePool makes
+    # workers. A MachineConfig labelled master here would apply to nothing.
+    check("hcp: it targets worker, because that is all a NodePool makes",
+          mc["metadata"]["labels"]["machineconfiguration.openshift.io/role"] == "worker")
+    check("hcp: the decoded file is a chrony config",
+          "server " in conf and "driftfile" in conf, conf)
+    # The NodePool names the ConfigMap through a Go template the SiteConfig
+    # operator expands, so only the suffix can be compared here -- but that is
+    # the half that drifts.
+    nodepool = yaml.safe_load(render(
+        f"{roles}/hcp-guest/templates/hcp-kubevirt-cluster-templates.yaml.j2"
+    ))["data"]["NodePool"]
+    suffix = hcp["metadata"]["name"].replace(defaults["guest_name"], "")
+    check("hcp: the NodePool references the ConfigMap the site writes",
+          f'"{{{{ .Spec.ClusterName }}}}{suffix}"' in nodepool, suffix)
+
+    # Both profiles write the same bytes, and the point of holding the body in
+    # group_vars is that they keep doing so.
+    check("both sites are given the same time configuration",
+          chrony_of(vcp, key)[1] == chrony_of(hcp, "config")[1])
+
+
+def test_virtual_machines_are_an_acm_policy():
+    """The all-VM cluster's machines are created by a Policy, not committed YAML.
+
+    Two values in a VirtualMachine here are only knowable on the clusters: the
+    GPU device name, which is derived from the card's model string, and the
+    discovery ISO's URL, which is a bearer token. Resolving them when this file
+    is written gets the first wrong silently and the second unpublishable, so
+    both are resolved when the Policy enforces instead.
+    """
+    print("\nvirtual machines by policy")
+    rendered, docs, objects = vcp_policy()
+    kinds = {d["kind"]: d for d in docs}
+
+    # A Policy nothing binds is propagated nowhere, and reports no error for it.
+    binding = kinds["PlacementBinding"]
+    check("the binding names the Policy that is here",
+          [sub["name"] for sub in binding["subjects"]]
+          == [kinds["Policy"]["metadata"]["name"]])
+    check("the binding names the Placement that is here",
+          binding["placementRef"]["name"] == kinds["Placement"]["metadata"]["name"])
+    check("the Placement selects the infra cluster by name",
+          kinds["Placement"]["spec"]["predicates"][0]["requiredClusterSelector"]
+          ["labelSelector"]["matchLabels"] == {"name": CONTEXT["cluster_name"]})
+    # A Placement may only select from a set its own namespace is bound to, and
+    # the gitops role's binding lives in openshift-gitops.
+    check("its namespace is bound to the cluster set it selects from",
+          kinds["ManagedClusterSetBinding"]["metadata"]["namespace"]
+          == kinds["Placement"]["metadata"]["namespace"])
+
+    # inform would report the machines missing and create nothing, which looks
+    # exactly like a working policy until no cluster appears.
+    config = kinds["Policy"]["spec"]["policy-templates"][0]["objectDefinition"]
+    check("it enforces rather than informs",
+          kinds["Policy"]["spec"]["remediationAction"] == "enforce"
+          and config["spec"]["remediationAction"] == "enforce")
+    # Deleting the policy must not take a running cluster's nodes with it.
+    check("deleting it leaves the machines running",
+          config["spec"]["pruneObjectBehavior"] == "None")
+
+    # Reading the hub's ingress cert is the one lookup outside the policy's own
+    # namespace, and it is the only reason a service account is needed.
+    check("hub templates run as a service account",
+          kinds["Policy"]["spec"]["hubTemplateOptions"]["serviceAccountName"]
+          == kinds["ServiceAccount"]["metadata"]["name"])
+    check("that account's extra access is a Role, not a ClusterRole",
+          kinds["Role"]["kind"] == "Role"
+          and kinds["Role"]["metadata"]["namespace"] == "openshift-config-managed")
+    check("scoped to the one ConfigMap it reads",
+          kinds["Role"]["rules"][0]["resourceNames"] == ["default-ingress-cert"])
+    # watch, not just read: it is what lets a changed value re-render.
+    check("with watch, so a change re-renders",
+          "watch" in kinds["Role"]["rules"][0]["verbs"])
+
+    by_kind = {o["kind"]: o for o in objects}
+    vms = [o for o in objects if o["kind"] == "VirtualMachine"]
+    check("one VirtualMachine per planned node",
+          len(vms) == len(CONTEXT["vcp_nodes"]),
+          f"{len(vms)} for {len(CONTEXT['vcp_nodes'])} nodes")
+    # CDI verifies the hub's image service against this; named wrong, the import
+    # fails with "certificate signed by unknown authority".
+    check("the DataVolume verifies against the CA the policy creates",
+          by_kind["DataVolume"]["spec"]["source"]["http"]["certConfigMap"]
+          == by_kind["ConfigMap"]["metadata"]["name"])
+    check("every machine boots the DataVolume the policy creates",
+          all(any(v.get("dataVolume", {}).get("name")
+                  == by_kind["DataVolume"]["metadata"]["name"]
+                  for v in vm["spec"]["template"]["spec"]["volumes"]) for vm in vms))
+    # An assisted install reboots each node to write the image to disk. Without
+    # this KubeVirt calls that a crash and restarts it from the ISO, forever.
+    check("every machine survives the install reboot",
+          all(vm["spec"]["template"]["spec"].get("terminationGracePeriodSeconds")
+              for vm in vms))
+
+    # The two lookups, checked on the text: their whole value is that they are
+    # unresolved here.
+    check("the ISO URL is a hub lookup, not a literal",
+          "isoDownloadURL" in rendered and "https://" not in rendered)
+    # Resolved hub output lands in a replicated Policy on the hub, readable by
+    # anyone who can read policies and not covered by etcd encryption.
+    check("and only its ciphertext is allowed to travel",
+          "| protect hub}}" in rendered)
+    check("the GPU name is looked up on the infra cluster",
+          'lookup "v1" "Node"' in rendered)
+    # nvidia.com/gpu is the time-sliced resource; a passed-through card
+    # advertises the model-derived name beside it.
+    check("excluding the time-sliced resource",
+          'ne $name "nvidia.com/gpu"' in rendered)
+    check("nothing in the file is a credential",
+          not [w for w in ("byapikey", "dockerconfigjson", "BEGIN RSA",
+                           "BEGIN OPENSSH", "password") if w in rendered])
+
+
+def test_infra_half_of_a_site_carries_only_its_namespace():
+    """What is left in sites-infra/ once the Policy owns the machines.
+
+    The virtual machines, the DataVolume they boot and the CA that verifies it
+    all moved into the Policy, which resolves what it cannot know. The namespace
+    stays: a ConfigurationPolicy creates namespaced objects, not the namespace
+    they go in.
+    """
+    print("\nthe infra half of a site")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    ns = yaml.safe_load(render(f"{roles}/vcp-cluster/templates/sites-infra-namespace.yaml.j2"))
+    check("it is a Namespace", ns["kind"] == "Namespace")
+    defaults = {**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT}
+    check("and it is the one the machines are created in",
+          ns["metadata"]["name"] == defaults["vcp_vm_namespace"])
+    _, _, objects = vcp_policy()
+    check("which is where the policy puts every object",
+          {o["metadata"]["namespace"] for o in objects} == {ns["metadata"]["name"]})
+
+
+def test_site_agnostic_roles_name_no_single_site():
+    """Roles that run at either site must not name one site's variables.
+
+    Its templates are rendered on TNF's bastion and on the ACM site's. A
+    variable like bastion_private_ip always holds TNF's address, so on the ACM
+    bastion the ignition server bound to an address the host does not have,
+    exited 1 on every restart, and the nodes booted with nothing to fetch --
+    surfacing twenty minutes later as a bootstrap timeout blamed on the
+    bootstrap host. Site-specific values must arrive as role variables the
+    caller sets, or be derived from the host being configured.
+    """
+    print("\nsite-agnostic roles")
+    # Extra vars outrank include_role parameters, so a template that names one
+    # can never be pointed at the other site: the caller's override is accepted
+    # silently and then ignored. That is how the ACM haproxy came to health-check
+    # TNF's bootstrap address across the peering connection and time out on every
+    # probe. Any name run-playbook.sh supplies is therefore unusable here.
+    banned = tuple(extra_vars_from_wrapper()) + (
+        "cluster_domain", "cluster_name", "install_dir", "acm_install_dir")
+    # hcp-guest runs against whichever hub hosts the control planes, so the
+    # names that differ between sites are off limits there too -- publishing the
+    # guest API on TNF's wildcard while the control plane runs on the ACM hub
+    # yields a route ACM's router never answers for.
+    site_specific = ("cluster_domain", "cluster_name", "bastion_private_ip",
+                     "bootstrap_private_ip", "install_dir", "kubeconfig",
+                     "ignition_base_url", "fencing_base_url")
+    roles = {"loadbalancer": banned, "hcp-guest": site_specific}
+    for role_name, forbidden in roles.items():
+        _check_role_names(role_name, forbidden)
+
+
+def _check_role_names(role_name, banned):
+    role = f"{ROOT}/deploy/openshift-clusters/roles/{role_name}"
+    for sub in ("templates", "tasks"):
+        for path in sorted(glob.glob(f"{role}/{sub}/*")):
+            text = open(path, encoding="utf-8").read()
+            # only what the templates actually interpolate, not comments
+            used = set()
+            for a, b in re.findall(r"\{\{(.*?)\}\}|\{%(.*?)%\}", text, re.S):
+                used |= set(re.findall(r"(?<![\w.])([a-z_][a-z0-9_]*)", a or b))
+            named = sorted(used & set(banned))
+            check(f"{role_name}/{os.path.basename(path)} names no single site",
+                  not named, f"references {named}")
+
+
+def test_fetched_credentials_are_gitignored():
+    """Whatever path fetch-kubeconfig writes to must be gitignored.
+
+    The rule used to name deploy/openshift-clusters/clusters/, a directory
+    nothing ever wrote to, while the playbook fetched into deploy/clusters/ --
+    so kubeconfigs and the kubeadmin password sat untracked-but-visible, one
+    `git add -A` from being committed. Reading the destination out of the
+    playbook keeps the two from drifting apart again.
+    """
+    print("\ncredential paths")
+    playbook = f"{ROOT}/deploy/openshift-clusters/fetch-kubeconfig.yml"
+    content = open(playbook, encoding="utf-8").read()
+
+    destinations = set(
+        re.findall(r'dest:\s*"\{\{\s*repo_root\s*\}\}/([^/"]+/[^/"{]+)', content)
+    )
+    check("fetch-kubeconfig declares a destination", bool(destinations),
+          "no dest: found")
+
+    ignored = open(f"{ROOT}/.gitignore", encoding="utf-8").read().splitlines()
+    for destination in sorted(destinations):
+        prefix = destination.rstrip("/") + "/"
+        check(
+            f"{prefix} is gitignored",
+            any(line.strip().rstrip("/") + "/" == prefix for line in ignored),
+            f"add '{prefix}' to .gitignore",
+        )
+
+
+def test_siteconfig_install_templates():
+    """The install templates the SiteConfig operator renders our clusters from.
+
+    These are Go templates wrapped in Jinja, which is an easy thing to get
+    subtly wrong, and the cost of getting it wrong is high: a ClusterInstance
+    naming a template that does not exist sits Failed on the hub, and a
+    HostedCluster with one Route-strategy service left in it brings back the
+    private router and its LoadBalancer, which on platform:none never gets an
+    address. Both surface long after the commit that caused them.
+    """
+    print("\nSiteConfig install templates")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    # The same merged context render() uses: some of these live in role
+    # defaults, some are supplied by the run-playbook.sh wrapper.
+    defaults = {**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT}
+
+    vcp = yaml.safe_load(render(f"{roles}/vcp-cluster/templates/vcp-cluster-templates.yaml.j2"))
+    hcp = yaml.safe_load(render(f"{roles}/hcp-guest/templates/hcp-kubevirt-cluster-templates.yaml.j2"))
+
+    # The generator writes templateRefs by name; the installer creates a
+    # ConfigMap by name. Nothing joins the two but these strings agreeing.
+    check("the all-VM template is named what the site definition asks for",
+          vcp["metadata"]["name"] == defaults["siteconfig_vcp_cluster_template"])
+    check("the hosted template is named what the site definition asks for",
+          hcp["metadata"]["name"] == defaults["siteconfig_hcp_cluster_template"])
+
+    # The whole reason for a custom set rather than ai-cluster-templates-v1:
+    # the shipped InfraEnv is per node and names itself after one, which would
+    # build a discovery ISO per VM.
+    check("the all-VM set carries its own cluster-scoped InfraEnv",
+          "InfraEnv" in vcp["data"])
+    check("that InfraEnv is named for the cluster, not for a node",
+          ".SpecialVars.CurrentNode" not in vcp["data"]["InfraEnv"])
+
+    aci = yaml.safe_load(strip_go(vcp["data"]["AgentClusterInstall"]))
+    # Under spec.networking, not beside it. AgentClusterInstall has no
+    # spec.userManagedNetworking; a structural schema prunes what it does not
+    # know, so one level up the field is accepted, dropped, and never applied.
+    check("the all-VM install is user-managed networking",
+          aci["spec"]["networking"].get("userManagedNetworking") is True)
+    check("and says so where the CRD actually has the field",
+          "userManagedNetworking" not in aci["spec"],
+          "spec.userManagedNetworking is pruned by the API server")
+    check("and claims no VIPs, which a pod network cannot provide",
+          "apiVIPs" not in aci["spec"] and "ingressVIPs" not in aci["spec"])
+    # A compact cluster has no workers, so unless the control-plane nodes are
+    # schedulable there is nowhere for a workload to land. The CRD has no
+    # default for this, so silence means "not schedulable".
+    check("a cluster with no workers makes its control plane schedulable",
+          int(defaults["vcp_worker_replicas"]) != 0
+          or aci["spec"].get("mastersSchedulable") is True)
+    # Counted from spec.nodes by the operator rather than restated here. The
+    # site definition has to populate spec.nodes anyway -- validation rejects an
+    # empty list for any cluster type but HostedControlPlane -- so restating the
+    # counts would be a second place for them to disagree.
+    raw = vcp["data"]["AgentClusterInstall"]
+    check("it waits for as many agents as spec.nodes describes",
+          ".SpecialVars.ControlPlaneAgents" in raw
+          and ".SpecialVars.WorkerAgents" in raw)
+
+    hosted = yaml.safe_load(strip_go(hcp["data"]["HostedCluster"]))
+    strategies = {s["service"]: s["servicePublishingStrategy"]["type"]
+                  for s in hosted["spec"]["services"]}
+    check("every hosted service is published on a NodePort",
+          set(strategies.values()) == {"NodePort"},
+          f"found {sorted(set(strategies.values()))}")
+    check("all four services a hosted cluster needs are published",
+          set(strategies) == {"APIServer", "OAuthServer", "Ignition", "Konnectivity"},
+          f"found {sorted(strategies)}")
+    check("the workers are KubeVirt, not Agent",
+          hosted["spec"]["platform"]["type"] == "KubeVirt")
+
+    # With the public entry point on, only the two services a human touches move
+    # to the load balancer. Publishing the other two there as well would send the
+    # worker VMs' own traffic out through the internet and back rather than
+    # across the peering, and spec.services is immutable once the cluster exists
+    # so there is no correcting it afterwards.
+    public = yaml.safe_load(strip_go(yaml.safe_load(render(
+        f"{roles}/hcp-guest/templates/hcp-kubevirt-cluster-templates.yaml.j2",
+        guest_public_control_plane=True,
+        guest_public_address="lb.example.com"))["data"]["HostedCluster"]))
+    published = {s["service"]: s["servicePublishingStrategy"]["nodePort"]
+                 for s in public["spec"]["services"]}
+    check("a public guest puts its API and OAuth on the load balancer",
+          published["APIServer"]["address"] == "lb.example.com"
+          and published["OAuthServer"]["address"] == "lb.example.com")
+    check("and pins the ports the load balancer was built for",
+          published["APIServer"]["port"] == defaults["guest_api_nodeport"]
+          and published["OAuthServer"]["port"] == defaults["guest_oauth_nodeport"])
+    check("while the services only the worker VMs speak stay private",
+          published["Ignition"]["address"] == CONTEXT["guest_api_address"]
+          and published["Konnectivity"]["address"] == CONTEXT["guest_api_address"])
+
+    pool = yaml.safe_load(strip_go(hcp["data"]["NodePool"]))
+    check("the node pool is KubeVirt too",
+          pool["spec"]["platform"]["type"] == "KubeVirt")
+    check("it asks for as many workers as the profile is configured for",
+          pool["spec"]["replicas"] == defaults["guest_nodepool_replicas"])
+
+
+def test_agent_cluster_install_networking_is_nested():
+    """The same field, in the role that creates an AgentClusterInstall directly.
+
+    vcp-cluster/tasks/install.yml builds this object without SiteConfig, and had
+    userManagedNetworking one level too high for as long as it has existed --
+    accepted by the API server, pruned on write, and never applied. It worked
+    only because platformType: None makes the installer infer user-managed
+    networking anyway. Both paths are checked so they cannot drift apart again.
+    """
+    print("\nAgentClusterInstall networking")
+    path = f"{ROOT}/deploy/openshift-clusters/roles/vcp-cluster/tasks/install.yml"
+    tasks = yaml.safe_load(open(path, encoding="utf-8"))
+    aci = next(t["kubernetes.core.k8s"]["definition"] for t in tasks
+               if t.get("kubernetes.core.k8s", {}).get("definition", {}).get("kind")
+               == "AgentClusterInstall")
+    check("the role agrees about a compact cluster's schedulable control plane",
+          str(aci["spec"].get("mastersSchedulable", "")).lower().find("worker_replicas") != -1
+          or aci["spec"].get("mastersSchedulable") is True,
+          f"install.yml has mastersSchedulable={aci['spec'].get('mastersSchedulable')!r}")
+    check("the role nests userManagedNetworking under networking",
+          aci["spec"]["networking"].get("userManagedNetworking") is True)
+    check("and does not leave a copy where it would be pruned",
+          "userManagedNetworking" not in aci["spec"])
+
+
+def test_both_vcp_paths_approve_their_agents():
+    """An agent nobody approves is a cluster that never installs.
+
+    Approval is manual by design in the assisted installer, and both ways of
+    building an all-VM cluster have to do it: the machines register themselves
+    and then wait. The GitOps path had no approval at all, so its
+    AgentClusterInstall would sit waiting for a count of approved agents that
+    never arrived, reporting only "insufficient agents".
+    """
+    print("\nagent approval")
+    tasks = f"{ROOT}/deploy/openshift-clusters/roles/vcp-cluster/tasks"
+    shared = "approve-agents.yml"
+    check("there is one definition of what approval means",
+          os.path.exists(f"{tasks}/{shared}"))
+    for path, name in ((f"{tasks}/install.yml", "the direct path"),
+                       (f"{tasks}/siteconfig-site.yml", "the GitOps path")):
+        body = open(path, encoding="utf-8").read()
+        check(f"{name} approves its agents", shared in body,
+              f"{os.path.basename(path)} never includes {shared}")
+    body = open(f"{tasks}/{shared}", encoding="utf-8").read()
+    check("approval is scoped to this cluster's own namespace",
+          "-n {{ vcp_cluster_name }}" in body)
+    check("and it assigns a role rather than approving blind",
+          '\\"role\\"' in body or '"role"' in body)
+
+
+def test_app_instances_are_independent():
+    """Two instances of the app, not one scaled up.
+
+    Each is a whole pipeline in its own namespace and takes two GPUs, so the
+    GPU precondition has to scale with the count -- otherwise a second instance
+    is admitted onto a guest that cannot schedule it and its pods sit Pending on
+    nvidia.com/gpu, which reads as a broken GPU stage rather than as arithmetic.
+    """
+    print("\napp instances")
+    tasks = f"{ROOT}/deploy/openshift-clusters/roles/app/tasks"
+    defaults = role_defaults()
+    main = open(f"{tasks}/main.yml", encoding="utf-8").read()
+    instance = open(f"{tasks}/instance.yml", encoding="utf-8").read()
+
+    # The assertion itself, not the message beside it -- the message mentions
+    # the same arithmetic, so matching the file would pass on a hardcoded check.
+    assertion = [l for l in main.splitlines() if l.strip().startswith("that:")
+                 and "app_gpu_total" in l]
+    check("the GPU check scales with the number of instances",
+          any("app_instances" in l for l in assertion),
+          f"assertion is {assertion or 'missing'} -- a second instance would be "
+          "admitted onto a guest that cannot schedule it")
+    check("each instance gets its own namespace",
+          "app_namespace_base }}-{{ app_instance }}" in instance)
+    check("the images are built once, by the first instance",
+          "app_instance | int == 1" in instance)
+    check("and the others are allowed to pull them",
+          "system:image-puller" in instance)
+    # The app's own Makefile applied a hardcoded namespace whatever NAMESPACE
+    # said, which put a second instance's components in a namespace nothing had
+    # created.
+    makefile = open(f"{ROOT}/app/Makefile", encoding="utf-8").read()
+    check("the app Makefile creates the namespace it was asked for",
+          "name: visual-inspection|name: $(NAMESPACE)" in makefile,
+          "00-namespace.yaml is applied verbatim, so NAMESPACE is ignored")
+    check("one instance is still the default",
+          int(defaults["app_instances"]) == 1)
+
+
+def test_guest_vms_are_spread_across_the_infra_cluster():
+    """Both kinds of guest ask to be spread over the infra cluster's nodes.
+
+    Left alone they pile onto whichever node has room first, which on a two-node
+    infra cluster means one node can end up carrying a whole guest -- and losing
+    that node then takes the guest with it rather than half of it.
+
+    ScheduleAnyway rather than DoNotSchedule on purpose: an unbalanced VM is
+    better than a Pending one, which is the trade that matters when a node is
+    down and the remaining one is the only place anything can run.
+    """
+    print("\nspreading guest VMs")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+
+    _, _, objects = vcp_policy()
+    vms = [o for o in objects if o["kind"] == "VirtualMachine"]
+    for vm in vms:
+        tsc = vm["spec"]["template"]["spec"].get("topologySpreadConstraints", [])
+        check(f"{vm['metadata']['name']}: asks to be spread by hostname",
+              any(c["topologyKey"] == "kubernetes.io/hostname" for c in tsc))
+        check(f"{vm['metadata']['name']}: as evenly as the nodes allow",
+              any(c.get("maxSkew") == 1 for c in tsc))
+        check(f"{vm['metadata']['name']}: but is still schedulable when it cannot be",
+              all(c.get("whenUnsatisfiable") == "ScheduleAnyway" for c in tsc))
+
+    # HyperShift owns the NodePool's VM template, so the only lever is the
+    # annotation that opts it into spread constraints instead of the weaker
+    # preferred anti-affinity it uses by default.
+    cm = yaml.safe_load(render(
+        f"{roles}/hcp-guest/templates/hcp-kubevirt-cluster-templates.yaml.j2"))
+    pool = yaml.safe_load(strip_go(cm["data"]["NodePool"]))
+    check("a hosted guest's node pool opts into topology spread constraints",
+          "hypershift.openshift.io/nodepool-supports-kubevirt-topology-spread-constraints"
+          in pool["metadata"]["annotations"])
+
+
+def test_site_definitions():
+    """One ClusterInstance per cluster, and what has to be true of every one.
+
+    spec.nodes is empty in both profiles on purpose. A NodeSpec requires a BMC
+    address, a boot MAC and a credentials Secret that the operator's validator
+    checks for before rendering -- none of which exists for a KubeVirt VM. An
+    entry here would mean three fabrications per node and a dummy Secret on the
+    hub, for fields no rendered manifest would ever read.
+    """
+    print("\nsite definitions")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    defaults = {**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT}
+    sites = {
+        "vcp-cluster": defaults["siteconfig_vcp_cluster_template"],
+        "hcp-guest": defaults["siteconfig_hcp_cluster_template"],
+    }
+    for role, template_name in sites.items():
+        ci = yaml.safe_load(render(f"{roles}/{role}/templates/clusterinstance.yaml.j2"))
+        name = os.path.basename(role)
+        check(f"{name}: it is a ClusterInstance", ci["kind"] == "ClusterInstance")
+        check(f"{name}: it points at the template its role creates",
+              [r["name"] for r in ci["spec"]["templateRefs"]] == [template_name])
+        check(f"{name}: the template namespace agrees with where it is created",
+              all(r["namespace"] == defaults["siteconfig_template_namespace"]
+                  for r in ci["spec"]["templateRefs"]))
+        # The operator's own rule, and it runs opposite ways for the two
+        # profiles: a hosted control plane must have no control-plane agents,
+        # and anything else must have at least one. An empty list on the wrong
+        # profile is accepted by the CRD and rejected at reconcile, which is a
+        # quiet way to never get a cluster.
+        masters = [n for n in ci["spec"]["nodes"] if n.get("role") == "master"]
+        if ci["spec"]["clusterType"] == "HostedControlPlane":
+            check(f"{name}: a hosted control plane claims no control-plane agents",
+                  not masters, f"found {len(masters)}")
+        else:
+            check(f"{name}: it declares at least one control-plane agent",
+                  len(masters) >= 1, "spec.nodes has no role: master")
+            check(f"{name}: every node names a template and BMC credentials",
+                  all(n.get("templateRefs") and n.get("bmcCredentialsName")
+                      and n.get("bmcAddress") and n.get("bootMACAddress")
+                      for n in ci["spec"]["nodes"]))
+        # The install templates hardcode namespace: .Spec.ClusterName, so a
+        # namespace that disagrees renders manifests into a namespace that does
+        # not exist.
+        ns = yaml.safe_load(render(f"{roles}/{role}/templates/site-namespace.yaml.j2"))
+        check(f"{name}: cluster name, namespace and folder all agree",
+              ci["metadata"]["namespace"] == ci["spec"]["clusterName"]
+              == ns["metadata"]["name"])
+
+
+def test_guest_time_is_configured_at_install_time():
+    """Each ACM-built site carries a chrony MachineConfig, by its own mechanism.
+
+    The two profiles reach the node by different routes and a reference that
+    misses is silent in both: the manifest simply never applies and the cluster
+    comes up with whatever chrony the image shipped. So the name on the
+    ConfigMap and the name in the thing that points at it are checked against
+    each other rather than each being checked alone.
+    """
+    print("\nguest node time")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    defaults = {**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT}
+
+    def chrony_of(cm, key):
+        """The MachineConfig under one ConfigMap key, and its decoded chrony.conf."""
+        mc = yaml.safe_load(cm["data"][key])
+        source = mc["spec"]["config"]["storage"]["files"][0]["contents"]["source"]
+        _, _, encoded = source.partition(";base64,")
+        return mc, base64.b64decode(encoded).decode()
+
+    # --- the all-VM profile: spec.extraManifestsRefs -> manifestsConfigMapRefs
+    vcp = yaml.safe_load(render(f"{roles}/vcp-cluster/templates/extra-manifests.yaml.j2"))
+    vcp_ci = yaml.safe_load(render(f"{roles}/vcp-cluster/templates/clusterinstance.yaml.j2"))
+    check("vcp: the site definition references the ConfigMap beside it",
+          [r["name"] for r in vcp_ci["spec"]["extraManifestsRefs"]]
+          == [vcp["metadata"]["name"]])
+    # The operator resolves the reference in the ClusterInstance's namespace, so
+    # a ConfigMap written anywhere else is invisible to it.
+    check("vcp: the ConfigMap lands in the cluster's own namespace",
+          vcp["metadata"]["namespace"] == vcp_ci["metadata"]["namespace"])
+    check("vcp: its keys are filenames, which is how they are ordered",
+          all(k.endswith(".yaml") for k in vcp["data"]), list(vcp["data"]))
+    key = f"{defaults['guest_chrony_machine_config_name']}.yaml"
+    mc, conf = chrony_of(vcp, key)
+    check("vcp: the embedded manifest is a MachineConfig", mc["kind"] == "MachineConfig")
+    # vcp-1 is three control-plane VMs and no workers, so master is the only
+    # pool a MachineConfig can land in.
+    check("vcp: it targets the pool this profile actually has",
+          mc["metadata"]["labels"]["machineconfiguration.openshift.io/role"] == "master")
+    check("vcp: the decoded file is a chrony config",
+          "server " in conf and "driftfile" in conf, conf)
+    # The clock has to be right before the manifest exists: an agent validates
+    # skew against the hub before installation starts.
+    check("vcp: the discovery phase gets the same time source",
+          vcp_ci["spec"]["additionalNTPSources"] == defaults["guest_ntp_sources"])
+
+    # --- the hosted profile: NodePool.spec.config, a different shape entirely
+    hcp = yaml.safe_load(render(f"{roles}/hcp-guest/templates/extra-manifests.yaml.j2"))
+    check("hcp: a NodePool config ConfigMap holds exactly one manifest",
+          list(hcp["data"]) == ["config"], list(hcp["data"]))
+    mc, conf = chrony_of(hcp, "config")
+    check("hcp: the embedded manifest is a MachineConfig", mc["kind"] == "MachineConfig")
+    # A hosted cluster's control plane is pods on the hub; its NodePool makes
+    # workers. A MachineConfig labelled master here would apply to nothing.
+    check("hcp: it targets worker, because that is all a NodePool makes",
+          mc["metadata"]["labels"]["machineconfiguration.openshift.io/role"] == "worker")
+    check("hcp: the decoded file is a chrony config",
+          "server " in conf and "driftfile" in conf, conf)
+    # The NodePool names the ConfigMap through a Go template the SiteConfig
+    # operator expands, so only the suffix can be compared here -- but that is
+    # the half that drifts.
+    nodepool = yaml.safe_load(render(
+        f"{roles}/hcp-guest/templates/hcp-kubevirt-cluster-templates.yaml.j2"
+    ))["data"]["NodePool"]
+    suffix = hcp["metadata"]["name"].replace(defaults["guest_name"], "")
+    check("hcp: the NodePool references the ConfigMap the site writes",
+          f'"{{{{ .Spec.ClusterName }}}}{suffix}"' in nodepool, suffix)
+
+    # Both profiles write the same bytes, and the point of holding the body in
+    # group_vars is that they keep doing so.
+    check("both sites are given the same time configuration",
+          chrony_of(vcp, key)[1] == chrony_of(hcp, "config")[1])
+
+
 def test_infra_half_of_a_site_carries_no_credential():
     """The virtual machines are committed; what they boot from is not.
 
@@ -998,7 +1641,9 @@ def main():
     test_app_instances_are_independent()
     test_guest_vms_are_spread_across_the_infra_cluster()
     test_site_definitions()
-    test_infra_half_of_a_site_carries_no_credential()
+    test_guest_time_is_configured_at_install_time()
+    test_virtual_machines_are_an_acm_policy()
+    test_infra_half_of_a_site_carries_only_its_namespace()
     test_site_agnostic_roles_name_no_single_site()
     test_fetched_credentials_are_gitignored()
 

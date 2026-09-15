@@ -32,6 +32,19 @@ spec:
   templateRefs:
     - name: {{ siteconfig_vcp_cluster_template }}
       namespace: {{ siteconfig_template_namespace }}
+  # Install-time node configuration, applied by the assisted installer while the
+  # cluster is built. The ConfigMap is the extra-manifests.yaml beside this file,
+  # resolved in this cluster's own namespace.
+  extraManifestsRefs:
+    - name: {{ vcp_cluster_name }}-extra-manifests
+  # The same time source again, for the phase before those manifests exist. An
+  # agent validates its clock against the hub before installation starts, so a
+  # VM that booted with a skewed clock sits in 'insufficient' and never reaches
+  # the point where the chrony MachineConfig would have fixed it.
+  additionalNTPSources:
+{% for source in guest_ntp_sources %}
+    - {{ source }}
+{% endfor %}
   # Every node has to be listed, and the operator's own validation is why:
   #
   #   controlPlaneCount < 1 && clusterType != HostedControlPlane

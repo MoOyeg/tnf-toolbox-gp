@@ -111,6 +111,7 @@
   loop:
     - {src: site-namespace.yaml.j2, dest: namespace.yaml}
     - {src: clusterinstance.yaml.j2, dest: clusterinstance.yaml}
+    - {src: extra-manifests.yaml.j2, dest: extra-manifests.yaml}
   loop_control:
     label: "{{ item.dest }}"
   delegate_to: localhost

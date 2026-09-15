@@ -173,6 +173,13 @@ data:
       arch: amd64
       release:
         image: "{{ .SpecialVars.ReleaseImage }}"
+      # Day-1 machine configuration for the workers, as ConfigMaps in this
+      # cluster's namespace on the hub. Written by the site definition, so the
+      # name is predictable and the ConfigMap arrives with the rest of the
+      # folder; a reference to one that does not exist leaves the NodePool
+      # degraded rather than quietly unconfigured.
+      config:
+        - name: "{{ .Spec.ClusterName }}-chrony"
 {% endraw %}
       replicas: {{ guest_nodepool_replicas }}
       management:

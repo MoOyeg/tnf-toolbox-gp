@@ -1,0 +1,294 @@
+#
+# Ansible managed -- roles/vcp-cluster/templates/policy-virtualmachines.yaml.j2
+#
+# {{ vcp_cluster_name }}'s virtual machines, placed on the infra cluster by an
+# ACM Policy rather than by a second Argo CD Application.
+#
+# Two values in a VirtualMachine here can only be known on the clusters
+# themselves, and committing either to Git gets them wrong:
+#
+#   The GPU device name is derived from the card's model string and has been
+#   re-cased between operator versions. 'make sites' does not run the discovery
+#   task, so a generated manifest carries the group_vars default rather than
+#   what the infra cluster advertises -- right only by luck, and wrong silently:
+#   the VM stays Pending with nothing saying why.
+#
+#   The discovery ISO's URL carries a signed token that does not expire, and the
+#   ISO holds this cluster's pull secret and SSH key. Committing it would publish
+#   a permanent credential to both.
+#
+# A Policy resolves both when it enforces, not when Ansible renders: the GPU name
+# from the infra cluster's own nodes, the ISO URL from the InfraEnv on the hub.
+# The framework re-resolves when a watched resource changes, so the machines
+# appear on their own once the SiteConfig operator has rendered the InfraEnv --
+# where the generated-YAML path needed 'make sites' run a second time.
+#
+# Everything here is a hub object, so this file belongs to sites/ and is synced
+# by the fleet-sites ApplicationSet. Only the namespace is left in sites-infra/.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ vcp_cluster_name }}-policy-templates
+  namespace: {{ vcp_cluster_name }}
+---
+# A hub template may read namespaced objects in the Policy's own namespace and
+# nothing else. The InfraEnv is in this namespace and so needs no permission at
+# all; the hub's ingress certificate is not, and this is the whole of the extra
+# access granted for it -- one verb set, one ConfigMap, in one namespace. A
+# ClusterRole would have been fewer objects and considerably more permission.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ vcp_cluster_name }}-read-ingress-cert
+  namespace: openshift-config-managed
+rules:
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [default-ingress-cert]
+    # watch as well as read: it is what lets the resolver notice a change and
+    # re-render, rather than holding the value it first saw.
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ vcp_cluster_name }}-read-ingress-cert
+  namespace: openshift-config-managed
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ vcp_cluster_name }}-read-ingress-cert
+subjects:
+  - kind: ServiceAccount
+    name: {{ vcp_cluster_name }}-policy-templates
+    namespace: {{ vcp_cluster_name }}
+---
+# A Placement may only select from cluster sets its namespace is bound to, and
+# the binding is per namespace -- the one the gitops role creates lives in
+# openshift-gitops and does not reach here.
+apiVersion: cluster.open-cluster-management.io/v1beta2
+kind: ManagedClusterSetBinding
+metadata:
+  name: {{ gitops_cluster_set }}
+  namespace: {{ vcp_cluster_name }}
+spec:
+  clusterSet: {{ gitops_cluster_set }}
+---
+apiVersion: cluster.open-cluster-management.io/v1beta1
+kind: Placement
+metadata:
+  name: {{ vcp_cluster_name }}-infra
+  namespace: {{ vcp_cluster_name }}
+spec:
+  clusterSets:
+    - {{ gitops_cluster_set }}
+  predicates:
+    - requiredClusterSelector:
+        labelSelector:
+          matchLabels:
+            # By name, deliberately, and for the reason infra-destination.yml
+            # gives: an attribute label would quietly widen to any cluster that
+            # later grew it, and start placing virtual machines on the hub.
+            name: {{ cluster_name }}
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: Policy
+metadata:
+  name: {{ vcp_cluster_name }}-virtual-machines
+  namespace: {{ vcp_cluster_name }}
+  annotations:
+    policy.open-cluster-management.io/categories: CM Configuration Management
+    policy.open-cluster-management.io/controls: CM-2 Baseline Configuration
+    policy.open-cluster-management.io/standards: NIST SP 800-53
+spec:
+  disabled: false
+  # enforce, not inform. An informing policy reports that the machines are
+  # missing and creates nothing, which looks identical to a working policy right
+  # up until no cluster appears.
+  remediationAction: enforce
+  hubTemplateOptions:
+    serviceAccountName: {{ vcp_cluster_name }}-policy-templates
+  policy-templates:
+    - objectDefinition:
+        apiVersion: policy.open-cluster-management.io/v1
+        kind: ConfigurationPolicy
+        metadata:
+          name: {{ vcp_cluster_name }}-virtual-machines
+        spec:
+          remediationAction: enforce
+          severity: high
+          # The machines outlive the policy. Deleting it must not take a running
+          # cluster's nodes with it, the same reason the infra ApplicationSet
+          # sets preserveResourcesOnDeletion.
+          pruneObjectBehavior: None
+          # raw rather than object-templates, because the whole list is
+          # conditional: until the SiteConfig operator has rendered the InfraEnv
+          # there is no ISO to boot, and a DataVolume pointing at an empty URL
+          # fails its import and leaves the machines in DataVolumeError. The
+          # if is evaluated on the hub, so nothing is propagated at all until
+          # there is something to propagate.
+          # Note the + on every endraw below. Ansible renders with
+          # trim_blocks on, which eats the newline after a block tag -- and
+          # the newline after these is YAML structure, not decoration. Without
+          # it the document separator joins the previous line and the Policy
+          # and the PlacementBinding silently merge into one object.
+          object-templates-raw: |
+            {% raw %}{{hub if (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" .PolicyMetadata.namespace .PolicyMetadata.namespace).status.isoDownloadURL hub}}{% endraw +%}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: v1
+                kind: ConfigMap
+                metadata:
+                  name: {{ vcp_cluster_name }}-hub-ca
+                  namespace: {{ vcp_vm_namespace }}
+                data:
+                  # CDI verifies the image service it downloads from, and the
+                  # hub presents an ingress certificate signed by its own CA.
+                  # Without this the import fails with "certificate signed by
+                  # unknown authority" and the machines wait on a PVC that never
+                  # populates. autoindent is what makes a multi-line PEM survive
+                  # being substituted into a block scalar.
+                  ca.pem: |
+                    {% raw %}{{hub fromConfigMap "openshift-config-managed" "default-ingress-cert" "ca-bundle.crt" | autoindent hub}}{% endraw +%}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: cdi.kubevirt.io/v1beta1
+                kind: DataVolume
+                metadata:
+                  name: {{ vcp_cluster_name }}-discovery
+                  namespace: {{ vcp_vm_namespace }}
+                spec:
+                  source:
+                    http:
+                      # protect, not a bare substitution. Resolved hub-template
+                      # output is written into the replicated Policy in the
+                      # managed cluster's namespace on the hub, where anyone who
+                      # can read policies can read it and etcd encryption does
+                      # not cover it. This URL is a permanent credential to the
+                      # cluster's pull secret and SSH key, so only ciphertext is
+                      # allowed to travel.
+                      {% raw %}url: '{{hub (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" .PolicyMetadata.namespace .PolicyMetadata.namespace).status.isoDownloadURL | protect hub}}'{% endraw +%}
+                      certConfigMap: {{ vcp_cluster_name }}-hub-ca
+                  storage:
+                    accessModes: [ReadWriteOnce]
+                    resources:
+                      requests:
+                        storage: 8Gi
+                    storageClassName: {{ storage_class }}
+{% for vm in vcp_nodes %}
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: kubevirt.io/v1
+                kind: VirtualMachine
+                metadata:
+                  name: {{ vm.name }}
+                  namespace: {{ vcp_vm_namespace }}
+                  labels:
+                    tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+                    tnf-toolbox-gp/role: {{ vm.role }}
+                spec:
+                  running: true
+                  dataVolumeTemplates:
+                    - metadata:
+                        name: {{ vm.name }}-root
+                      spec:
+                        storage:
+                          accessModes: [ReadWriteOnce]
+                          resources:
+                            requests:
+                              storage: {{ vcp_root_disk }}
+                          storageClassName: {{ storage_class }}
+                        source:
+                          blank: {}
+                  template:
+                    metadata:
+                      labels:
+                        kubevirt.io/domain: {{ vm.name }}
+                        tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+                    spec:
+                      # Spread these across the infra cluster's nodes rather than
+                      # letting them pile onto whichever one has room first.
+                      # maxSkew 1 asks for as even a distribution as the node
+                      # count allows -- three machines over two nodes becomes two
+                      # and one -- and ScheduleAnyway keeps it a preference: a VM
+                      # that cannot be placed evenly is still placed, which
+                      # matters on a two-node cluster where losing a node would
+                      # otherwise leave VMs Pending rather than merely unbalanced.
+                      topologySpreadConstraints:
+                        - maxSkew: 1
+                          topologyKey: kubernetes.io/hostname
+                          whenUnsatisfiable: ScheduleAnyway
+                          labelSelector:
+                            matchLabels:
+                              tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+                      domain:
+                        cpu:
+                          cores: {{ vm.cores }}
+                        memory:
+                          guest: {{ vm.memory }}
+                        devices:
+                          disks:
+                            - name: root
+                              bootOrder: 1
+                              disk:
+                                bus: virtio
+                            # Second, and it matters: a node that reboots into
+                            # its installed disk must not be handed the discovery
+                            # ISO again, or the cluster installs and then
+                            # rediscovers itself forever.
+                            - name: discovery
+                              bootOrder: 2
+                              cdrom:
+                                bus: sata
+                                readonly: true
+                          interfaces:
+                            - name: default
+                              masquerade: {}
+{% if vm.gpus | int > 0 %}
+                          hostDevices:
+{% for i in range(vm.gpus | int) %}
+                            # Read from the infra cluster when the policy
+                            # enforces, not guessed when this file is written.
+                            # nvidia.com/gpu is excluded on purpose: that is the
+                            # time-sliced resource, and what a passed-through
+                            # card advertises is the model-derived name beside
+                            # it. The node is selected by the label this repo
+                            # sets itself, so it cannot drift with a
+                            # feature-discovery rename.
+                            - name: gpu{{ i + 1 }}
+                              {% raw %}deviceName: '{{- $node := index (lookup "v1" "Node" "" "" "nvidia.com/gpu.workload.config=vm-passthrough").items 0 -}}
+                                {{- range $name, $quantity := $node.status.allocatable -}}
+                                {{- if and (hasPrefix "nvidia.com/" $name) (ne $name "nvidia.com/gpu") }}{{ $name }}{{ end -}}
+                                {{- end -}}'{% endraw +%}
+{% endfor %}
+{% endif %}
+                      networks:
+                        - name: default
+                          pod: {}
+                      volumes:
+                        - name: root
+                          dataVolume:
+                            name: {{ vm.name }}-root
+                        - name: discovery
+                          dataVolume:
+                            name: {{ vcp_cluster_name }}-discovery
+                      # An assisted install reboots each node when it writes the
+                      # image to disk; without this KubeVirt treats the reboot as
+                      # a crash and restarts the VM from the ISO instead.
+                      terminationGracePeriodSeconds: 180
+{% endfor %}
+            {% raw %}{{hub end hub}}{% endraw +%}
+---
+apiVersion: policy.open-cluster-management.io/v1
+kind: PlacementBinding
+metadata:
+  name: {{ vcp_cluster_name }}-virtual-machines
+  namespace: {{ vcp_cluster_name }}
+placementRef:
+  apiGroup: cluster.open-cluster-management.io
+  kind: Placement
+  name: {{ vcp_cluster_name }}-infra
+subjects:
+  - apiGroup: policy.open-cluster-management.io
+    kind: Policy
+    name: {{ vcp_cluster_name }}-virtual-machines

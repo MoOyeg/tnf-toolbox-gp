@@ -27,5 +27,7 @@ gitops_controller_sa: openshift-gitops-argocd-application-controller
 # secrets: a Placement picks the managed clusters and a GitOpsCluster hands them
 # to Argo, which is tidier than minting a cluster secret from a kubeconfig and
 # then having to rotate it.
-gitops_cluster_set: default
+# gitops_cluster_set is not here: vcp-cluster's Policy needs the same set name
+# for its own Placement, and a role's defaults are invisible to every other
+# role. It lives in group_vars/all.yml.
 gitops_infra_placement: fleet-infra

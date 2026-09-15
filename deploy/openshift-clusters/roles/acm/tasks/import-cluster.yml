@@ -129,6 +129,24 @@
   delay: 20
   until: search_addon.stdout == "True"
 
+# The addon that enforces a ConfigurationPolicy on this cluster. policyController
+# is enabled above, but enabling it and it being ready are different things, and
+# the gap is silent: a Policy the hub considers propagated does nothing at all
+# until this is Available, with no event on either side saying why. The all-VM
+# cluster's virtual machines are created by exactly such a Policy.
+- name: "Wait for {{ import_cluster_name }}'s config policy controller to be available"
+  ansible.builtin.command: >-
+    oc get managedclusteraddon config-policy-controller -n {{ import_cluster_name }}
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: policy_addon
+  changed_when: false
+  failed_when: false
+  retries: 30
+  delay: 20
+  until: policy_addon.stdout == "True"
+
 - name: "Report {{ import_cluster_name }}"
   ansible.builtin.debug:
     msg:
@@ -138,3 +156,8 @@
         fleet virtualization view' if search_addon.stdout == 'True'
         else 'is not available yet; its VMs will not show in the fleet view
         until it is' }}.
+      - >-
+        config-policy-controller {{ 'is available, so Policies targeting this
+        cluster will be enforced' if policy_addon.stdout == 'True'
+        else 'is NOT available; Policies targeting this cluster will be
+        propagated and then quietly do nothing' }}.

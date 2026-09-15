@@ -94,6 +94,8 @@
   loop:
     - {src: site-namespace.yaml.j2, dest: namespace.yaml}
     - {src: clusterinstance.yaml.j2, dest: clusterinstance.yaml}
+    - {src: extra-manifests.yaml.j2, dest: extra-manifests.yaml}
+    - {src: policy-virtualmachines.yaml.j2, dest: policy-virtualmachines.yaml}
   loop_control:
     label: "{{ item.dest }}"
   delegate_to: localhost
@@ -105,42 +107,30 @@
     mode: '0755'
   delegate_to: localhost
 
-- name: Write the virtual machines Argo CD places on the infra cluster
+# Only the namespace now. The virtual machines, the DataVolume they boot and the
+# CA that verifies it are all created by the Policy written above, which resolves
+# the ISO URL and the GPU device name when it enforces rather than when this
+# renders -- neither is knowable here.
+- name: Write the namespace Argo CD places on the infra cluster
   ansible.builtin.template:
     src: "{{ item.src }}"
     dest: "{{ site_infra_repo_dir }}/{{ vcp_cluster_name }}/{{ item.dest }}"
     mode: '0644'
   loop:
     - {src: sites-infra-namespace.yaml.j2, dest: namespace.yaml}
-    - {src: sites-infra-virtualmachines.yaml.j2, dest: virtualmachines.yaml}
   loop_control:
     label: "{{ item.dest }}"
   delegate_to: localhost
 
-# Not committed, for the same reason the pull secret is not: the URL the image
-# service issues carries a signed token that does not expire, and the ISO it
-# fetches contains this cluster's pull secret and SSH key. Committing it would
-# publish a permanent credential to whoever can read the repository.
+# The Policy creates the DataVolume and the machines, but not the namespace they
+# go in -- a ConfigurationPolicy creates namespaced objects, not the namespace.
+# Argo CD syncs it too, from sites-infra/; creating it here as well means the
+# Policy can enforce without waiting on that Application, and Argo re-asserting
+# it afterwards is a no-op.
 #
-# It is also only knowable once the ClusterInstance has been synced and the
-# operator has rendered the InfraEnv, so a first run writes the site definitions
-# and finds nothing here. Running the stage again once Argo CD has caught up is
-# what creates it.
-- name: Look for the discovery ISO this cluster's VMs boot
-  ansible.builtin.command: >-
-    oc get infraenv {{ vcp_cluster_name }} -n {{ vcp_cluster_name }}
-    -o jsonpath={.status.isoDownloadURL}
-  environment:
-    KUBECONFIG: "{{ op_kubeconfig }}"
-  register: site_iso_url
-  changed_when: false
-  failed_when: false
-
-# Created here as well as committed, for the same reason the hub's site
-# namespace is: the DataVolume below goes in before Argo CD has synced anything,
-# and a Secret or a DataVolume cannot be created in a namespace that does not
-# exist yet. Argo CD re-asserting it afterwards is a no-op, and keeps the
-# Application self-contained rather than depending on this stage having run.
+# Unconditional now. It used to be gated on the discovery ISO existing, because
+# the only reason to have the namespace early was to put a DataVolume in it; the
+# Policy resolves that URL itself, so there is nothing left here to wait for.
 - name: Create the VM namespace on the infra cluster
   kubernetes.core.k8s:
     kubeconfig: "{{ vcp_infra_kubeconfig }}"
@@ -152,21 +142,14 @@
         name: "{{ vcp_vm_namespace }}"
         labels:
           tnf-toolbox-gp/owner: acm-vcp
-  when: site_iso_url.stdout | default('') | length > 0
 
-- name: Import the discovery ISO onto the infra cluster
-  ansible.builtin.include_tasks: discovery-iso.yml
-  vars:
-    discovery_iso_url: "{{ site_iso_url.stdout }}"
-  when: site_iso_url.stdout | default('') | length > 0
-
-- name: Say whether the VMs have an ISO to boot yet
+- name: Say where the virtual machines come from now
   ansible.builtin.debug:
     msg: >-
-      {{ ('discovery ISO imported; Argo CD can start the VMs'
-          if site_iso_url.stdout | default('') | length > 0
-          else vcp_cluster_name ~ ' has no InfraEnv yet -- run this stage again once
-               Argo CD has synced its ClusterInstance, or the VMs will have nothing to boot') }}
+      {{ vcp_cluster_name }}'s machines are created by the
+      {{ vcp_cluster_name }}-virtual-machines Policy once its ClusterInstance is
+      synced and the InfraEnv has an ISO. Nothing to re-run: the policy resolves
+      the ISO URL and the GPU device name itself, and enforces when they appear.
 
 # The machines are created by Argo CD from the manifests written above, boot the
 # discovery ISO, and register themselves -- and then wait to be approved, which

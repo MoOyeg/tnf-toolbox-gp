@@ -138,6 +138,12 @@ site_infra_repo_dir: "{{ repo_root }}/{{ site_infra_repo_path }}"
 # by the role that creates them and again by the ApplicationSet that places
 # them, so it is shared rather than owned by either.
 vcp_vm_namespace: acm-vcp-vms
+
+# The ManagedClusterSet a Placement may select from. Named by the gitops role,
+# which binds it in openshift-gitops for Argo CD, and again by vcp-cluster's
+# Policy, which binds it in the site namespace for the policy framework -- the
+# binding is per namespace, so both are needed and both must name the same set.
+gitops_cluster_set: default
 site_repo_dir: "{{ repo_root }}/{{ site_repo_path }}"
 site_repo_url: ""
 site_repo_revision: main
@@ -166,6 +172,39 @@ iommu_kernel_args:
 # TNF has one pool and both nodes are in it.
 iommu_target_mcp: master
 storage_class: "lvms-vg1"
+
+# ------------------------------------------------------------ guest node time
+# Site configuration for the clusters ACM builds, carried as an install-time
+# MachineConfig rather than applied afterwards: a node that has already joined
+# with the wrong clock is the case this exists to avoid.
+#
+# Deliberately not 169.254.169.123. Amazon's link-local time service is the
+# right source for anything running *as* an EC2 instance, and unreachable from
+# these nodes -- they are KubeVirt VMs on the pod network behind a masquerade
+# interface, where 169.254.0.0/16 is directly-connected scope, so the guest ARPs
+# for the address on its own link instead of routing it to the gateway. Egress
+# NAT is what these VMs do have, and it demonstrably works because they pull
+# their release images through it, so a public pool is the source they can
+# actually reach.
+#
+# Held here as plain text and base64-encoded at render time, so the file stays
+# greppable rather than becoming an opaque data URL in two templates.
+guest_chrony_conf: |
+  server 2.rhel.pool.ntp.org iburst
+  driftfile /var/lib/chrony/drift
+  makestep 1.0 3
+  rtcsync
+  logdir /var/log/chrony
+# Pool-agnostic on purpose. The two profiles put this in different pools --
+# master for the all-VM cluster, worker for a hosted one whose control plane
+# is pods on the hub -- and the label is what decides that. A name carrying
+# the wrong pool is the kind of thing that gets believed.
+guest_chrony_machine_config_name: 99-chrony-site
+# The same pool, given to the assisted installer for the discovery phase. An
+# agent validates clock skew before install begins, so a guest whose VM booted
+# with a bad clock fails validation long before the MachineConfig above applies.
+guest_ntp_sources:
+  - 2.rhel.pool.ntp.org
 
 # ------------------------------------------------------------------ timeouts
 # Generous, because these run against two-node clusters where a rollout that

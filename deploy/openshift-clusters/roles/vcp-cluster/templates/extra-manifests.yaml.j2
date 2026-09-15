@@ -1,0 +1,39 @@
+#
+# Ansible managed -- roles/vcp-cluster/templates/extra-manifests.yaml.j2
+#
+# Install-time manifests for {{ vcp_cluster_name }}, referenced from the
+# ClusterInstance via spec.extraManifestsRefs. The install template turns that
+# reference into the AgentClusterInstall's manifestsConfigMapRefs, and the
+# assisted installer applies everything here while the cluster is being built --
+# so a node arrives already configured rather than being corrected afterwards.
+#
+# The data keys are filenames by convention. Each holds one complete manifest,
+# and the assisted installer applies them in name order, which is why the
+# MachineConfigs carry the usual numeric prefix.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ vcp_cluster_name }}-extra-manifests
+  namespace: {{ vcp_cluster_name }}
+  labels:
+    # Backed up and restored with the rest of the site definition.
+    cluster.open-cluster-management.io/backup: cluster-activation
+data:
+  {{ guest_chrony_machine_config_name }}.yaml: |
+    apiVersion: machineconfiguration.openshift.io/v1
+    kind: MachineConfig
+    metadata:
+      name: {{ guest_chrony_machine_config_name }}
+      labels:
+        machineconfiguration.openshift.io/role: master
+    spec:
+      config:
+        ignition:
+          version: 3.2.0
+        storage:
+          files:
+            - path: /etc/chrony.conf
+              mode: 420
+              overwrite: true
+              contents:
+                source: data:text/plain;charset=utf-8;base64,{{ guest_chrony_conf | b64encode }}
