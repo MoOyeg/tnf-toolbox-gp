@@ -1,0 +1,38 @@
+---
+# Import the guest clusters into the ACM hub, and nothing else.
+#
+# The same play 40-hcp-guests.yml ends with and 42-sites.yml repeats, on its
+# own. Both of those do other work first -- creating guests, rendering every
+# site definition -- and there are times when the only thing wanted is for the
+# hub to start managing a guest that already exists: a guest built from Git by
+# Argo CD, or one whose import did not finish because it was still installing
+# when the stage that creates it ran.
+#
+# Safe to re-run. A guest already reporting Available is left alone, and one
+# that is not built yet is reported and skipped.
+- name: Import the guest clusters into the ACM hub
+  hosts: acm_bastion
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ acm_kubeconfig }}"
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+
+  tasks:
+    - name: Confirm the ACM hub exists
+      ansible.builtin.stat:
+        path: "{{ acm_kubeconfig }}"
+      register: hub_kubeconfig
+
+    - name: Fail if there is no hub to import into
+      ansible.builtin.assert:
+        that: hub_kubeconfig.stat.exists
+        fail_msg: >-
+          No ACM kubeconfig at {{ acm_kubeconfig }}. Run 'make acm-site' first --
+          it builds the hub these clusters are imported into.
+
+    - name: Import each guest
+      ansible.builtin.include_tasks: tasks/import-guest.yml
+      loop: "{{ range(1, (guest_cluster_count | int) + 1) | list }}"
+      loop_control:
+        loop_var: guest_index
+        label: "{{ guest_cluster_prefix }}-{{ guest_index }}"

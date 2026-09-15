@@ -3,7 +3,7 @@ ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 .PHONY: all keypair infra acm-infra peering siteconfig sites tnf kubeconfig iommu gpu virt-mce \
         tnf-recover \
         acm-site guests hcp-make-guests-from-acm vcp-make-guests-from-acm \
-        guest-gpu app observability-bucket guest-lb guest-lbs doctor ssh acm-ssh status \
+        guest-gpu import-guests app observability-bucket guest-lb guest-lbs doctor ssh acm-ssh status \
         inventory clean clean-guests destroy destroy-acm help
 
 # ---------------------------------------------------------------- end to end
@@ -133,6 +133,13 @@ hcp-make-guests-from-acm:
 # ACM happens to have created, not a hosted one.
 vcp-make-guests-from-acm:
 	@$(ANSIBLE) 41-vcp-clusters-from-acm.yml $(EXTRA_ARGS)
+
+# Hand the guests to the hub, without doing anything else. 'make guests' and
+# 'make sites' both end by importing, so this is for the case where a guest
+# exists and the hub does not know about it yet -- one built from Git by Argo
+# CD, or one that was still installing when its stage finished.
+import-guests:
+	@$(ANSIBLE) 43-import-guests.yml $(EXTRA_ARGS)
 
 guest-gpu:
 	@$(ANSIBLE) 50-guest-gpu.yml $(EXTRA_ARGS)
