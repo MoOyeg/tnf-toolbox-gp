@@ -1,0 +1,47 @@
+---
+# Import one guest cluster into the ACM hub.
+#
+# The guest's admin kubeconfig is a secret on TNF, not a file on either bastion,
+# so it is read from there and written here before import-cluster.yml can use
+# it. Same shape as sno-cluster/tasks/infra-credentials.yml, which moves TNF's
+# own kubeconfig the other way for the same reason.
+
+- name: "{{ guest_name }}: read its admin kubeconfig from TNF"
+  ansible.builtin.command: >-
+    oc --kubeconfig {{ kubeconfig }}
+    get secret {{ guest_name }}-admin-kubeconfig
+    -n {{ hcp_namespace }} -o jsonpath={.data.kubeconfig}
+  delegate_to: "{{ groups['bastion'][0] }}"
+  register: guest_admin_kubeconfig
+  changed_when: false
+  failed_when: false
+  vars:
+    guest_name: "{{ guest_cluster_prefix }}-{{ guest_index }}"
+
+- name: "{{ guest_cluster_prefix }}-{{ guest_index }}: fail if it has no kubeconfig yet"
+  ansible.builtin.assert:
+    that:
+      - guest_admin_kubeconfig.rc == 0
+      - guest_admin_kubeconfig.stdout | length > 0
+    fail_msg: >-
+      No {{ guest_cluster_prefix }}-{{ guest_index }}-admin-kubeconfig secret in
+      {{ hcp_namespace }} on TNF. The guest has to exist before the hub can be
+      told about it -- run 'make guests' first.
+
+# Written through a temporary file and installed, so a failed read can never
+# truncate a kubeconfig that was working.
+- name: "{{ guest_cluster_prefix }}-{{ guest_index }}: stage it on the ACM bastion"
+  ansible.builtin.copy:
+    content: "{{ guest_admin_kubeconfig.stdout | b64decode }}"
+    dest: "{{ acm_install_dir }}/{{ guest_cluster_prefix }}-{{ guest_index }}-kubeconfig"
+    mode: '0600'
+
+- name: "{{ guest_cluster_prefix }}-{{ guest_index }}: import it into the hub"
+  ansible.builtin.include_role:
+    name: acm
+    tasks_from: import-cluster
+  vars:
+    op_kubeconfig: "{{ acm_kubeconfig }}"
+    import_cluster_name: "{{ guest_cluster_prefix }}-{{ guest_index }}"
+    import_cluster_kubeconfig: >-
+      {{ acm_install_dir }}/{{ guest_cluster_prefix }}-{{ guest_index }}-kubeconfig

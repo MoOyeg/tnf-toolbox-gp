@@ -76,3 +76,59 @@
 
 - name: Turn on hosted control planes
   ansible.builtin.include_tasks: hypershift.yml
+
+# Let this MCE host hosted clusters without also claiming them.
+#
+# The hypershift addon auto-imports every HostedCluster into the hub that
+# created it. Here that hub is TNF, which is not the hub that manages anything:
+# ACM is. What auto-import produces on TNF is a ManagedCluster nobody finishes
+# -- accepted, klusterlet never installed in the guest, Available=Unknown for
+# good -- while ACM, the cluster that should have it, never hears of the guest.
+#
+# So it is switched off, and 40-hcp-guests.yml imports the guests into ACM
+# instead. TNF keeps hosting them; the HostedCluster CR is what does that, and
+# it is unaffected.
+#
+# Read-modify-write rather than a plain patch: customizedVariables is a list,
+# and MCE ships it carrying hcMaxNumber and hcThresholdNumber. Writing the
+# field whole would silently drop whichever of those this version set.
+- name: Stop this MCE auto-importing the clusters it hosts
+  ansible.builtin.shell: |
+    set -o pipefail
+    current=$(oc get addondeploymentconfig hypershift-addon-deploy-config       -n {{ mce_namespace }} -o json 2>/dev/null) || exit 0
+    echo "${current}"       | jq '.spec.customizedVariables =
+            ((.spec.customizedVariables // [])
+             | map(select(.name != "autoImportDisabled"))
+             + [{"name": "autoImportDisabled", "value": "true"}])'       | oc apply -f -
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: mce_auto_import
+  changed_when: "'configured' in mce_auto_import.stdout"
+
+# A stub left by an earlier run, before auto-import was turned off. Harmless in
+# itself and misleading in the console: a cluster listed as managed here that is
+# in fact managed by ACM.
+- name: Find hosted clusters this MCE imported before that was set
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get managedcluster -o json
+    | jq -r '.items[] | select(.metadata.name != "local-cluster")
+      | select([.status.conditions[]? | select(.type == "ManagedClusterConditionAvailable")
+                | .status] | first != "True")
+      | .metadata.name'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: mce_stub_clusters
+  changed_when: false
+  failed_when: false
+
+- name: Remove them
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: absent
+    api_version: cluster.open-cluster-management.io/v1
+    kind: ManagedCluster
+    name: "{{ item }}"
+  loop: "{{ mce_stub_clusters.stdout_lines | default([]) }}"
+  loop_control:
+    label: "{{ item }}"

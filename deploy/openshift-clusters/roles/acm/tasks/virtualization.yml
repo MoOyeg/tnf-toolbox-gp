@@ -17,7 +17,7 @@
 # feature to switch on. The toggle was deprecated in ACM 2.14 in favour of
 # fine-grained RBAC, so there is nothing to enable here for them.
 
-- name: Ensure the Search service is enabled on the hub
+- name: Enable the hub components the fleet virtualization view needs
   kubernetes.core.k8s:
     kubeconfig: "{{ op_kubeconfig }}"
     state: patched
@@ -29,12 +29,44 @@
       spec:
         overrides:
           components:
+            # What the list of VirtualMachines is actually built from.
             - name: search
+              enabled: true
+            # Ships disabled, and it is the half that turns a list of resources
+            # into the console's virtualization experience -- the per-VM views
+            # and the migration integration. Search alone gives a fleet
+            # inventory; this is what makes it a virtualization view.
+            - name: "{{ acm_virtualization_component }}"
               enabled: true
   register: mch_search
   retries: 20
   delay: 15
   until: mch_search is not failed
+
+# The component has to be one this hub knows about. A name MCH does not
+# recognise is accepted into spec.overrides and silently ignored, so the page
+# stays missing and the override looks applied.
+- name: Confirm the hub accepted the virtualization component
+  ansible.builtin.command: >-
+    oc get multiclusterhub {{ multiclusterhub_name }} -n {{ acm_namespace }}
+    -o jsonpath={.spec.overrides.components[?(@.name=="{{ acm_virtualization_component }}")].enabled}
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: mch_virt_component
+  changed_when: false
+  retries: 20
+  delay: 15
+  until: mch_virt_component.stdout | trim == "true"
+
+- name: Fail if it never took
+  ansible.builtin.assert:
+    that: mch_virt_component.stdout | trim == "true"
+    fail_msg: >-
+      {{ acm_virtualization_component }} is not enabled on
+      {{ multiclusterhub_name }}. Without it the console lists virtual machines
+      but offers none of the virtualization views over them. 'oc get mch
+      {{ multiclusterhub_name }} -n {{ acm_namespace }} -o yaml' shows which
+      component names this ACM version knows.
 
 - name: Wait for Search to be running
   ansible.builtin.shell: >-
@@ -62,5 +94,7 @@
   ansible.builtin.debug:
     msg:
       - "Search is running: the console can list VirtualMachines across managed clusters."
+      - "{{ acm_virtualization_component }} is enabled: those VMs get the console's"
+      - "virtualization views rather than appearing as bare search results."
       - "Each managed cluster needs OpenShift Virtualization and the search-collector"
       - "addon -- import-cluster.yml enables the addon, and TNF is where the VMs run."

@@ -1853,12 +1853,24 @@ def test_control_planes_are_hosted_on_tnf():
     acm_site = open(f"{deploy}/openshift-clusters/36-acm-site.yml",
                     encoding="utf-8").read()
     roles = re.findall(r"^\s*name:\s*(\S+)\s*$", acm_site, re.M)
-    check("the hub does not install OpenShift Virtualization",
-          "cnv" not in roles,
-          "the hub runs no VMs, and CNV there would need bare metal again")
     check("the hub still installs LVM Storage",
           "lvm-storage" in roles,
           "search and observability request PVCs on the hub itself")
+
+    # The hub keeps OpenShift Virtualization for ACM's virtualization views,
+    # which come from the operator's console plugin and CRDs. The coupling that
+    # matters is with the instance type: virt-handler needs /dev/kvm, an EC2
+    # instance that is not .metal does not have it, so CNV on a non-metal hub
+    # has to run emulated or HyperConverged never reaches Available.
+    if "cnv" in roles:
+        hub_cnv = re.search(r"name: cnv\n(.*?)(?=\n    - name:|\Z)", acm_site, re.S)
+        block = hub_cnv.group(1) if hub_cnv else ""
+        check("the hub's OpenShift Virtualization runs emulated",
+              "cnv_use_emulation: true" in block,
+              "a non-metal node has no /dev/kvm, so virt-handler cannot start")
+        check("and permits no host devices",
+              "cnv_permit_gpu: false" in block,
+              "there are no GPUs at the ACM site to permit")
 
     # Bare metal was for KVM. With KVM gone the shape is ordinary, and a .metal
     # default here is roughly ten times the cost for nothing.
@@ -1871,6 +1883,17 @@ def test_control_planes_are_hosted_on_tnf():
         check("the hub is not a bare-metal shape",
               not declared.group(1).endswith(".metal"),
               f"ACM_SNO_INSTANCE_TYPE is {declared.group(1)}")
+
+    cnv_defaults = open(f"{deploy}/openshift-clusters/roles/cnv/defaults/main.yml",
+                        encoding="utf-8").read()
+    check("emulation is off by default",
+          re.search(r"^cnv_use_emulation:\s*false", cnv_defaults, re.M) is not None,
+          "TNF is bare metal and every VM that matters runs there")
+    virt_mce = open(f"{deploy}/openshift-clusters/30-virt-mce.yml",
+                    encoding="utf-8").read()
+    check("TNF does not run KubeVirt emulated",
+          "cnv_use_emulation: true" not in virt_mce,
+          "emulating on the nodes holding the T4s would defeat the whole point")
 
     stack = _cfn_load(f"{deploy}/aws-infra/templates/sno-compute-stack.yaml")
     default = stack["Parameters"]["SnoInstanceType"]["Default"]

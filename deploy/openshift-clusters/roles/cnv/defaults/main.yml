@@ -10,3 +10,20 @@ hco_timeout: 1800
 # itself, which is only useful if something other than the operator did the
 # binding.
 cnv_external_gpu_provider: true
+
+# Run KubeVirt without hardware virtualization.
+#
+# virt-handler needs /dev/kvm, and an EC2 instance that is not a .metal shape
+# does not have it -- AWS offers no nested virtualization anywhere else. Without
+# this, HyperConverged never reaches Available on such a node and the install
+# hangs until it times out.
+#
+# True puts KubeVirt into software emulation (QEMU TCG), which is what the ACM
+# hub uses: it wants the operator for the console plugin and the CRDs that ACM's
+# virtualization integration reads, and it runs no virtual machines of its own.
+# A VM that did run there would be extremely slow, which is a fine trade for a
+# cluster that has none.
+#
+# False everywhere there is real hardware. TNF is bare metal and every VM in
+# this toolbox runs there, one passthrough hop from a real T4.
+cnv_use_emulation: false

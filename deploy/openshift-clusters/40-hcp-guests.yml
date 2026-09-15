@@ -55,3 +55,52 @@
         name: hcp-guest
       vars:
         op_kubeconfig: "{{ kubeconfig }}"
+
+# ---------------------------------------------------------------------------
+# Stage 4b: hand the guests to the ACM hub.
+#
+# TNF hosts them; ACM manages them. Those are different jobs and, until this
+# play, only the first was being done.
+#
+# The hub used to get this for free. While the HostedCluster was created on the
+# ACM cluster, MCE's hypershift addon auto-imported it into the hub that created
+# it. Creating it on TNF moves that auto-import to TNF's own MCE, which produces
+# a ManagedCluster nothing ever finishes -- accepted by the hub, klusterlet
+# never installed, Available=Unknown forever -- and leaves ACM with no knowledge
+# of the cluster at all. The console then shows no GPUs for a guest that has
+# six, and a fleet Placement selecting on tnf-toolbox-gp/fleet does not reach it.
+#
+# So auto-import on TNF is switched off in mce-only.yml, and the guests are
+# imported here into the hub that is actually meant to manage them.
+- name: Import the guest clusters into the ACM hub
+  hosts: acm_bastion
+  gather_facts: false
+  environment:
+    KUBECONFIG: "{{ acm_kubeconfig }}"
+    PATH: "{{ bin_dir }}:{{ ansible_env.PATH | default('/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin') }}"
+
+  tasks:
+    - name: Check whether the ACM hub exists
+      ansible.builtin.stat:
+        path: "{{ acm_kubeconfig }}"
+      register: hub_kubeconfig
+
+    # Not a failure. 'make guests' is usable on its own against a TNF site with
+    # no ACM site beside it, and a guest that nothing manages is still a working
+    # guest -- so this reports and stops rather than failing a build that did
+    # everything it was asked to.
+    - name: Report that there is no hub to import into
+      ansible.builtin.debug:
+        msg: >-
+          No ACM kubeconfig at {{ acm_kubeconfig }}, so the guest clusters are
+          not being imported. They are running on TNF regardless; run
+          'make acm-site' and then this stage again to have the hub manage them.
+      when: not hub_kubeconfig.stat.exists
+
+    - name: Import each guest
+      ansible.builtin.include_tasks: tasks/import-guest.yml
+      loop: "{{ range(1, (guest_cluster_count | int) + 1) | list }}"
+      loop_control:
+        loop_var: guest_index
+        label: "{{ guest_cluster_prefix }}-{{ guest_index }}"
+      when: hub_kubeconfig.stat.exists

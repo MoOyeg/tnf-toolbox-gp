@@ -7,3 +7,9 @@ mch_timeout: 2400
 # How long to wait for an imported cluster's klusterlet to come up and report
 # back to the hub.
 managed_cluster_timeout: 900
+
+# The MultiClusterHub component carrying the console's virtualization and
+# migration integration. Ships disabled; virtualization.yml turns it on. Named
+# here because the name is version-specific and belongs with the other ACM
+# names rather than buried in a patch.
+acm_virtualization_component: cnv-mtv-integrations

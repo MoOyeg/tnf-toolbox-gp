@@ -51,27 +51,38 @@
         op_kubeconfig: "{{ acm_kubeconfig }}"
         control_plane_nodes: "{{ acm_control_plane_nodes }}"
 
-    # Deliberately no OpenShift Virtualization here. It was installed on this
-    # hub to run guest worker VMs; those, and the hosted control planes that
-    # own them, are now created by TNF's own MultiCluster Engine and run on
-    # TNF, which is where the GPUs are. The hub manages the fleet and runs no
-    # virtual machines, which is also what lets its node be an ordinary EC2
-    # instance rather than bare metal.
+    # OpenShift Virtualization on the hub, for the integration rather than for
+    # the virtual machines. ACM's console reads the KubeVirt CRDs and ships its
+    # virtualization views through the operator's console plugin, so without the
+    # operator installed here those views are simply absent from the hub.
     #
-    # If virtualization is ever wanted here again, ACM_SNO_INSTANCE_TYPE has to
-    # go back to a .metal shape in the same change: KVM needs the hardware
-    # extensions, and a nested hypervisor is not available on EC2.
+    # In emulation, because this node is no longer bare metal. The guest worker
+    # VMs it used to run moved to TNF along with the control planes that own
+    # them, so the hub runs none -- and virt-handler needs /dev/kvm, which an
+    # EC2 instance that is not a .metal shape does not have. Software emulation
+    # makes the operator healthy on the hardware the hub actually has; a VM
+    # started here would crawl, and none is.
+    - name: Install OpenShift Virtualization on the ACM cluster
+      ansible.builtin.include_role:
+        name: cnv
+      vars:
+        op_kubeconfig: "{{ acm_kubeconfig }}"
+        # No GPUs at this site; the permitted host device would match nothing.
+        cnv_permit_gpu: false
+        cnv_use_emulation: true
+
     - name: Install ACM
       ansible.builtin.include_role:
         name: acm
       vars:
         op_kubeconfig: "{{ acm_kubeconfig }}"
 
-    # The fleet view lists VirtualMachines that managed clusters report through
-    # Search, so it works without OpenShift Virtualization on the hub -- what
-    # the hub loses by not having it is the Virtualization section in its own
-    # console, which described nothing, because the hub runs no VMs. Search is
-    # made explicit rather than left to a default.
+    # Two different things, and only one of them is the operator above. The
+    # *fleet* view lists VirtualMachines that managed clusters report through
+    # Search -- that is where TNF's VMs show up, and it depends on Search here
+    # and the search-collector there, not on CNV being installed on the hub.
+    # Made explicit rather than left to a default, because the symptom of
+    # losing it is an empty page rather than an error.
     - name: Make sure the fleet virtualization view will work
       ansible.builtin.include_role:
         name: acm

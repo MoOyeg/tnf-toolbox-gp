@@ -29,6 +29,18 @@
       metadata:
         name: "{{ hco_name }}"
         namespace: "{{ cnv_namespace }}"
+        # HyperConverged has no field for emulation -- it is a KubeVirt
+        # developer setting, and HCO's supported way to reach one is this
+        # annotation, which it applies to the KubeVirt CR it owns. Set through
+        # HCO rather than on the KubeVirt CR directly because HCO reconciles
+        # that object and would revert an edit made behind it.
+        annotations: >-
+          {{
+            {
+              "kubevirt.kubevirt.io/jsonpatch":
+                '[{"op":"add","path":"/spec/configuration/developerConfiguration/useEmulation","value":true}]'
+            } if (cnv_use_emulation | default(false) | bool) else {}
+          }}
       # permittedHostDevices only where there are GPUs. The ACM site has none, and
       # naming a device nothing advertises would leave HyperConverged permitting
       # a resource that can never be satisfied.
