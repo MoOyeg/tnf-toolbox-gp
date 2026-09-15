@@ -9,14 +9,26 @@ Which is exactly why it is generated. Hand-editing that file means editing the
 drawing and the embedded XML in step, and the two silently drift -- the picture
 says one thing and anyone who opens it to edit gets another. Here the boxes and
 arrows are data, both outputs come from it, and changing the architecture is an
-edit to NODES and EDGES.
+edit to CONTAINERS, NODES and EDGES.
 
     python3 hack/render-architecture.py            # write the SVG
     python3 hack/render-architecture.py --check    # fail if it is out of date
 
-Coordinates are absolute, in the same 1400-wide space draw.io uses, with y
-growing downward. Boxes are placed in rows by hand because the diagram is small
-enough to read and a layout engine would be more machinery than the problem.
+The diagram nests three kinds of boundary, and telling them apart is most of
+what it is for:
+
+    site      a VPC, dashed -- an AWS network boundary, not a cluster
+      cluster an OpenShift cluster, solid blue
+        guest a cluster hosted *by* the cluster it is drawn inside, solid green
+
+hcp-1 is drawn inside the TNF cluster because that is where it runs: its control
+plane is pods on TNF's two nodes and its workers are KubeVirt VMs on the same
+two nodes. Drawing it as a peer of TNF -- which this diagram used to do -- is the
+picture of the old topology, where the control plane lived on the ACM hub.
+
+Coordinates are absolute, in the same space draw.io uses, with y growing
+downward. Boxes are placed by hand because the diagram is small enough to read
+and a layout engine would be more machinery than the problem.
 """
 
 import argparse
@@ -27,12 +39,11 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "docs", "architecture.drawio.svg")
 
-WIDTH, HEIGHT = 1400, 860
+WIDTH, HEIGHT = 1400, 930
 
 # fill, stroke. Named for what the box *is*, not what colour it happens to be,
 # so a box moving between sites keeps its meaning.
 PALETTE = {
-    "site":    ("#f4f7fb", "#8fa3bf"),   # the dashed container for a whole site
     "infra":   ("#dde8f5", "#5b7fa6"),   # bastions and cluster-level facts
     "compute": ("#e6f2e2", "#5f9150"),   # things that run on the metal
     "hub":     ("#efe6f5", "#8a6aa8"),   # the management hub's own components
@@ -41,130 +52,203 @@ PALETTE = {
     "note":    ("#ffffff", "#9aa5b1"),   # an annotation, not a component
 }
 
-# The two dashed site containers and the guest cluster, drawn first and behind.
+# fill, stroke, dashed, stroke width, title colour. The whole point of this
+# table is that a reader can tell a VPC from a cluster at a glance.
+BOUNDARY = {
+    "site":    ("#f7f9fc", "#9fb0c9", True,  1.2, "#5a6b82"),
+    "cluster": ("#eaf1f9", "#3f6390", False, 2.2, "#2b4a70"),
+    "guest":   ("#edf6ea", "#4a7c3f", False, 2.2, "#35602b"),
+}
+
+# id, x, y, w, h, kind, label. Outermost first -- they are drawn in this order
+# so an inner boundary paints over the one containing it.
 CONTAINERS = [
-    ("tnf",   30,  60,  700, 450, "TNF site — VPC 10.0.0.0/16"),
-    ("acm",   760, 60,  600, 450, "ACM site — VPC 10.1.0.0/16"),
-    ("guest", 30,  540, 1330, 300,
-     "Guest cluster hcp-1 — control plane and workers both on TNF"),
+    ("tnfsite", 30, 60, 900, 760, "site", "TNF site — VPC 10.0.0.0/16"),
+    ("acmsite", 960, 60, 410, 760, "site", "ACM site — VPC 10.1.0.0/16"),
+    ("tnfcluster", 55, 175, 850, 621, "cluster",
+     "TNF cluster — two-node OpenShift 4.22 with fencing"),
+    ("hcp1", 75, 367, 810, 409, "guest",
+     "Guest cluster hcp-1 — hosted by TNF, namespace clusters-hcp-1"),
+    ("acmcluster", 985, 175, 360, 368, "cluster",
+     "ACM hub — single-node OpenShift"),
 ]
 
 # id, x, y, w, h, palette, lines. First line is the heading.
 NODES = [
-    # ---------------------------------------------------------------- TNF site
-    ("tnfb", 55, 105, 300, 50, "infra", [
+    # --------------------------------------------------- TNF site, outside the cluster
+    ("tnfb", 55, 105, 345, 50, "infra", [
         "bastion 10.0.0.5",
         "haproxy · Redfish shim · ignition"]),
-    # Small, and inside the site box beside the bastion, because that is the
-    # scale of it: the fencing "BMC" is a shim on the bastion turning Redfish
-    # calls into EC2 Stop/Start. Drawn in the AWS palette because the endpoint
-    # is a regional service, not something running in this VPC.
-    ("ec2api", 470, 105, 235, 50, "aws", [
+    # The fencing "BMC": a shim on the bastion turning Redfish into EC2
+    # Stop/Start. AWS palette because the endpoint is a regional service.
+    ("ec2api", 470, 105, 270, 50, "aws", [
         "AWS EC2 API",
         "Stop / Start — the fencing BMC"]),
-    ("m0", 55, 170, 315, 60, "compute", [
+    # ------------------------------------------------------------- the TNF cluster
+    ("m0", 75, 215, 395, 60, "compute", [
         "master-0 · g4dn.metal",
         "8× T4 → vfio-pci"]),
-    ("m1", 390, 170, 315, 60, "compute", [
+    ("m1", 490, 215, 395, 60, "compute", [
         "master-1 · g4dn.metal",
         "8× T4 → vfio-pci"]),
-    ("tnfc", 55, 246, 650, 58, "infra", [
-        "Two-node OpenShift with fencing",
+    ("tnfsvc", 75, 295, 810, 52, "infra", [
         "Pacemaker + etcd · LVM Storage · OpenShift Virtualization · MCE + HyperShift"]),
-    # The change this diagram exists to show: the control plane is here, on the
-    # metal, not across the peering connection.
-    ("hcp", 55, 320, 650, 68, "compute", [
-        "Hosted control plane — namespace clusters-hcp-1",
-        "etcd · kube-apiserver · konnectivity, as pods on these two nodes",
-        "created by TNF's own MultiCluster Engine"]),
-    ("vms", 55, 414, 650, 68, "compute", [
-        "KubeVirt worker VMs — namespace clusters-hcp-1",
-        "3 × guest worker · 2 T4 passed through each · 200Gi root",
-        "the same namespace as the control plane that owns them"]),
-    # ---------------------------------------------------------------- ACM site
-    ("acmb", 785, 105, 300, 50, "infra", [
-        "bastion 10.1.0.5",
-        "haproxy · ignition"]),
-    ("sno", 785, 170, 550, 68, "hub", [
-        "sno-0 · m6i.4xlarge — single-node OpenShift",
-        "ACM 2.17 hub · MultiCluster Engine · LVM Storage",
-        "SiteConfig operator · OpenShift GitOps"]),
-    ("fleet", 785, 254, 550, 68, "hub", [
-        "Fleet — managed clusters",
-        "tnf-gp (imported) · hcp-1 · vcp-1",
-        "cluster definitions from Git · Argo CD pull model"]),
-    ("s3", 785, 338, 245, 58, "aws", [
-        "AWS S3",
-        "long-term metrics"]),
-    ("mco", 1090, 338, 245, 58, "hub", [
-        "MultiCluster Observability",
-        "Thanos · right-sizing · Perses"]),
-    # Narrower than the boxes above it on purpose: it leaves a clear corridor
-    # down the right-hand side for the guest's metrics to reach the hub.
-    ("hubnote", 785, 412, 430, 68, "note", [
-        "No OpenShift Virtualization here",
-        "The hub runs no VMs, so it needs no KVM —",
-        "which is why this node is not bare metal."]),
-    # ------------------------------------------------------- the inspection app
-    ("cam", 60, 585, 220, 78, "app", [
+    # ------------------------------------- hcp-1, inside TNF because that is where it runs
+    ("cp", 95, 412, 770, 56, "compute", [
+        "Hosted control plane — pods on the two nodes above",
+        "etcd · kube-apiserver · konnectivity · ignition"]),
+    ("vm1", 95, 488, 250, 56, "compute", [
+        "worker-1 · KubeVirt VM",
+        "2 × T4 passed through"]),
+    ("vm2", 365, 488, 250, 56, "compute", [
+        "worker-2 · KubeVirt VM",
+        "2 × T4 passed through"]),
+    ("vm3", 635, 488, 250, 56, "compute", [
+        "worker-3 · KubeVirt VM",
+        "2 × T4 passed through"]),
+    ("cam", 95, 576, 160, 76, "app", [
         "camera-sim",
         "VisA stills → looping line",
         "per-camera offsets"]),
-    ("rtsp", 340, 585, 180, 78, "app", [
+    ("rtsp", 301, 576, 130, 76, "app", [
         "rtsp-server",
         "mediamtx",
         "rtsp://…/camN"]),
-    ("an", 580, 573, 260, 104, "compute", [
+    ("an", 477, 566, 230, 96, "compute", [
         "analyzer  ·  T4 #1",
         "EfficientAD every frame",
         "CUDA-event GPU accounting",
         "~20.6 ms · fitted threshold"]),
-    ("dash", 900, 585, 200, 78, "app", [
+    ("dash", 753, 576, 130, 76, "app", [
         "dashboard",
         "per-camera card",
         "node · gpu · share"]),
-    ("vllm", 580, 725, 260, 96, "compute", [
+    ("vllm", 477, 680, 230, 76, "compute", [
         "vLLM  ·  T4 #2",
         "Qwen2.5-VL-3B (RHAIIS)",
         "only on flagged frames"]),
-    ("gmet", 900, 730, 200, 62, "note", [
+    ("gmet", 753, 680, 130, 76, "note", [
         "/metrics",
-        "inspection_* · DCGM"]),
-    ("obs", 1160, 730, 190, 62, "note", [
-        "observability addon",
-        "allowlisted only"]),
+        "inspection_* · DCGM",
+        "→ observability addon"]),
+    # ---------------------------------------------------------------- the ACM site
+    ("acmb", 985, 105, 360, 50, "infra", [
+        "bastion 10.1.0.5",
+        "haproxy · ignition"]),
+    ("sno", 1005, 215, 320, 56, "hub", [
+        "sno-0 · m6i.4xlarge",
+        "16 vCPU · 64 GiB · no virtualization"]),
+    ("acmhub", 1005, 291, 320, 68, "hub", [
+        "ACM 2.17 hub · MultiCluster Engine",
+        "SiteConfig operator · OpenShift GitOps",
+        "LVM Storage"]),
+    ("fleet", 1005, 379, 320, 68, "hub", [
+        "Fleet — managed clusters",
+        "tnf-gp (imported) · hcp-1 · vcp-1",
+        "cluster definitions from Git · Argo CD pull"]),
+    ("mco", 1005, 467, 320, 56, "hub", [
+        "MultiCluster Observability",
+        "Thanos · right-sizing · Perses"]),
+    # Outside the cluster boundary on purpose: it is an AWS service, not
+    # something running on the hub.
+    ("s3", 985, 575, 360, 56, "aws", [
+        "AWS S3",
+        "long-term metrics"]),
+    ("hubnote", 985, 655, 360, 68, "note", [
+        "No OpenShift Virtualization here",
+        "the hub runs no VMs, so it needs no KVM,",
+        "and so does not need to be bare metal"]),
 ]
 
-# src, src side, dst, dst side, label, dashed. sx/ex pin the x of a vertical
-# run so it leaves and arrives under the same point rather than slanting.
+# src, src side, dst, dst side, label, dashed, pins. sx/sy/ex/ey pin a
+# coordinate so a run leaves and arrives where it should rather than slanting.
 EDGES = [
-    ("tnfb", "b", "m0", "t", "", False, {"sx": 205, "ex": 205}),
+    ("tnfb", "b", "m0", "t", "", False, {"sx": 200, "ex": 200}),
     ("tnfb", "b", "m1", "t", "", False, {"sx": 300}),
     ("tnfb", "r", "ec2api", "l", "Redfish", True, {}),
-    ("m0", "b", "tnfc", "t", "", False, {"ex": 212}),
-    ("m1", "b", "tnfc", "t", "", False, {"ex": 547}),
-    ("tnfc", "b", "hcp", "t", "hosts", False, {}),
-    ("hcp", "b", "vms", "t", "NodePool → KubeVirt", False, {}),
-    ("acmb", "b", "sno", "t", "", False, {"sx": 935, "ex": 935}),
-    ("sno", "b", "fleet", "t", "", False, {"sx": 1060, "ex": 1060}),
-    ("fleet", "b", "mco", "t", "", False, {"sx": 1212, "ex": 1212}),
-    ("mco", "l", "s3", "r", "blocks", False, {}),
-    # The one link between the sites. Dashed, because it is management traffic
-    # over VPC peering and not something running across the two.
-    ("sno", "l", "tnfc", "r", "manages · VPC peering", True, {}),
+    ("m0", "b", "tnfsvc", "t", "", False, {"ex": 272}),
+    ("m1", "b", "tnfsvc", "t", "", False, {"ex": 687}),
+    ("tnfsvc", "b", "cp", "t", "hosts", False, {"sx": 760, "ex": 760}),
+    ("cp", "b", "vm2", "t", "NodePool → 3 × KubeVirt VM", False,
+     {"sx": 490, "ex": 490}),
+    ("vm2", "b", "an", "t", "workloads run on the VMs", True,
+     {"sx": 560, "ex": 560}),
     ("cam", "r", "rtsp", "l", "publish", False, {}),
     ("rtsp", "r", "an", "l", "consume", False, {}),
     ("an", "r", "dash", "l", "state", False, {}),
     ("an", "b", "vllm", "t", "flagged frame → report", False, {}),
-    ("an", "r", "gmet", "l", "", False, {"sy": 625, "ey": 761}),
-    ("gmet", "r", "obs", "l", "scraped", False, {}),
-    ("obs", "t", "mco", "b", "to hub", True, {"sx": 1255, "ex": 1255}),
-    ("vms", "b", "guest", "t", "the guest cluster runs on these VMs", True,
-     {"sx": 380, "ex": 380}),
+    ("an", "r", "gmet", "l", "", False, {"sy": 645, "ey": 700}),
+    ("acmb", "b", "sno", "t", "", False, {"sx": 1165, "ex": 1165}),
+    ("sno", "b", "acmhub", "t", "", False, {"sx": 1165, "ex": 1165}),
+    ("acmhub", "b", "fleet", "t", "", False, {"sx": 1165, "ex": 1165}),
+    ("fleet", "b", "mco", "t", "", False, {"sx": 1165, "ex": 1165}),
+    ("mco", "b", "s3", "t", "blocks", False, {"sx": 1165, "ex": 1165}),
+    # The one link between the sites, and it is management only.
+    ("sno", "l", "tnfcluster", "r", "manages · VPC peering", True, {"ey": 300}),
+    ("gmet", "r", "mco", "l", "to hub", True, {}),
 ]
 
 BOX = {n[0]: n[1:5] for n in NODES}
 BOX.update({c[0]: c[1:5] for c in CONTAINERS})
+
+LEGEND_Y = 848
+LEGEND = [
+    (30, "site", "VPC / site boundary"),
+    (300, "cluster", "OpenShift cluster"),
+    (560, "guest", "cluster hosted by the cluster it sits inside"),
+]
+
+
+# Which box must sit geometrically inside which. The nesting *is* the argument
+# the diagram makes -- hcp-1 running on TNF rather than beside it -- so a box
+# nudged out of its boundary is a wrong diagram, not a cosmetic slip.
+CONTAINMENT = [
+    ("tnfcluster", "tnfsite"),
+    ("hcp1", "tnfcluster"),
+    ("acmcluster", "acmsite"),
+    ("cp", "hcp1"), ("vm1", "hcp1"), ("vm2", "hcp1"), ("vm3", "hcp1"),
+    ("cam", "hcp1"), ("rtsp", "hcp1"), ("an", "hcp1"), ("dash", "hcp1"),
+    ("vllm", "hcp1"), ("gmet", "hcp1"),
+    ("m0", "tnfcluster"), ("m1", "tnfcluster"), ("tnfsvc", "tnfcluster"),
+    ("sno", "acmcluster"), ("acmhub", "acmcluster"),
+    ("fleet", "acmcluster"), ("mco", "acmcluster"),
+]
+
+# And which must NOT: the bastion is not part of the cluster it installs, and
+# S3 is not part of the hub.
+EXCLUSION = [
+    ("tnfb", "tnfcluster"),
+    ("ec2api", "tnfcluster"),
+    ("acmb", "acmcluster"),
+    ("s3", "acmcluster"),
+    ("hubnote", "acmcluster"),
+]
+
+
+def _inside(inner, outer):
+    ax, ay, aw, ah = BOX[inner]
+    bx, by, bw, bh = BOX[outer]
+    return bx <= ax and by <= ay and ax + aw <= bx + bw and ay + ah <= by + bh
+
+
+def validate():
+    """Fail on a layout that draws something the architecture does not do."""
+    problems = []
+    for inner, outer in CONTAINMENT:
+        if not _inside(inner, outer):
+            problems.append(f"{inner} must be drawn inside {outer}")
+    for inner, outer in EXCLUSION:
+        if _inside(inner, outer):
+            problems.append(f"{inner} must NOT be drawn inside {outer}")
+    for box in BOX:
+        x, y, w, h = BOX[box]
+        if x < 0 or y < 0 or x + w > WIDTH or y + h > HEIGHT:
+            problems.append(f"{box} falls outside the {WIDTH}x{HEIGHT} canvas")
+    for src, _, dst, _, _, _, _ in EDGES:
+        for end in (src, dst):
+            if end not in BOX:
+                problems.append(f"edge endpoint {end} is not a box")
+    return problems
 
 
 def anchor(node_id, side, override_x=None, override_y=None):
@@ -198,12 +282,15 @@ def render_svg():
         'Segoe UI,Roboto,sans-serif}</style>',
     ]
 
-    for _, x, y, w, h, title in CONTAINERS:
-        fill, stroke = PALETTE["site"]
+    for _, x, y, w, h, kind, title in CONTAINERS:
+        fill, stroke, dashed, stroke_w, title_fill = BOUNDARY[kind]
+        dash = ' stroke-dasharray="7 5"' if dashed else ""
         out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" rx="10" '
-                   f'fill="{fill}" stroke="{stroke}" stroke-dasharray="7 5"/>')
+                   f'fill="{fill}" stroke="{stroke}" '
+                   f'stroke-width="{stroke_w}"{dash}/>')
         out.append(f'<text x="{x + 14}" y="{y + 24}" font-size="13" '
-                   f'font-weight="600" fill="#33445c">{html.escape(title)}</text>')
+                   f'font-weight="600" fill="{title_fill}">'
+                   f'{html.escape(title)}</text>')
 
     # Edges before boxes, so a line never sits on top of a shape.
     for src, s_side, dst, d_side, text, dashed, pin in EDGES:
@@ -239,6 +326,16 @@ def render_svg():
                        f'{html.escape(line)}</text>')
             offset += 13
 
+    # Three boundary styles is two more than a reader should have to infer.
+    for x, kind, text in LEGEND:
+        fill, stroke, dashed, stroke_w, _ = BOUNDARY[kind]
+        dash = ' stroke-dasharray="7 5"' if dashed else ""
+        out.append(f'<rect x="{x}" y="{LEGEND_Y}" width="34" height="20" rx="5" '
+                   f'fill="{fill}" stroke="{stroke}" '
+                   f'stroke-width="{stroke_w}"{dash}/>')
+        out.append(f'<text x="{x + 44}" y="{LEGEND_Y + 14}" font-size="10.5" '
+                   f'fill="#52606d">{html.escape(text)}</text>')
+
     out.append("</svg>")
     return "\n".join(out) + "\n"
 
@@ -247,22 +344,27 @@ def render_mxfile():
     """The diagram's own XML, for whoever opens the SVG in diagrams.net."""
     cells = ['<mxCell id="0"/>', '<mxCell id="1" parent="0"/>']
 
-    def shape(cell_id, x, y, w, h, kind, value, container=False):
-        fill, stroke = PALETTE[kind]
-        style = (f"rounded=1;whiteSpace=wrap;html=1;fillColor={fill};"
-                 f"strokeColor={stroke};align=center;verticalAlign=middle;"
-                 f"fontSize=11;spacing=4;")
-        if container:
-            style += "dashed=1;verticalAlign=top;fontStyle=1;"
+    def shape(cell_id, x, y, w, h, style, value):
         return (f'<mxCell id="{cell_id}" value="{html.escape(value, quote=True)}" '
                 f'style="{style}" vertex="1" parent="1">'
                 f'<mxGeometry x="{x}" y="{y}" width="{w}" height="{h}" '
                 f'as="geometry"/></mxCell>')
 
-    for cid, x, y, w, h, title in CONTAINERS:
-        cells.append(shape(cid, x, y, w, h, "site", title, container=True))
+    for cid, x, y, w, h, kind, title in CONTAINERS:
+        fill, stroke, dashed, stroke_w, _ = BOUNDARY[kind]
+        style = (f"rounded=1;whiteSpace=wrap;html=1;fillColor={fill};"
+                 f"strokeColor={stroke};align=center;verticalAlign=top;"
+                 f"fontSize=11;spacing=4;fontStyle=1;"
+                 f"strokeWidth={stroke_w};dashed={1 if dashed else 0};")
+        cells.append(shape(cid, x, y, w, h, style, title))
+
     for cid, x, y, w, h, kind, lines in NODES:
-        cells.append(shape(cid, x, y, w, h, kind, "\n".join(lines)))
+        fill, stroke = PALETTE[kind]
+        style = (f"rounded=1;whiteSpace=wrap;html=1;fillColor={fill};"
+                 f"strokeColor={stroke};align=center;verticalAlign=middle;"
+                 f"fontSize=11;spacing=4;")
+        cells.append(shape(cid, x, y, w, h, style, "\n".join(lines)))
+
     for i, (src, _, dst, _, text, dashed, _) in enumerate(EDGES):
         style = ("edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;fontSize=10;"
                  "endArrow=block;endFill=1;strokeColor=#5b6b7c;")
@@ -286,6 +388,12 @@ def main():
                         help="fail if the committed SVG is not what this renders")
     args = parser.parse_args()
 
+    problems = validate()
+    if problems:
+        for problem in problems:
+            print(f"layout error: {problem}", file=sys.stderr)
+        return 1
+
     svg = render_svg()
     if args.check:
         with open(OUT, encoding="utf-8") as handle:
@@ -300,7 +408,7 @@ def main():
     with open(OUT, "w", encoding="utf-8") as handle:
         handle.write(svg)
     print(f"wrote {os.path.relpath(OUT, ROOT)} "
-          f"({len(CONTAINERS)} containers, {len(NODES)} boxes, {len(EDGES)} edges)")
+          f"({len(CONTAINERS)} boundaries, {len(NODES)} boxes, {len(EDGES)} edges)")
     return 0
 
 
