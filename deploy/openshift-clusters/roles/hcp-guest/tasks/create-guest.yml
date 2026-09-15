@@ -197,26 +197,50 @@
 
 # Every service, not just the API: one Route-strategy service left behind is
 # enough to bring the private router and its LoadBalancer back.
+#
+# The invariant is the *strategy*, not one address. This used to require every
+# service to be NodePort on guest_api_address, which contradicted the feature it
+# shipped with: guest_public_control_plane deliberately rewrites APIServer and
+# OAuthServer to the public load balancer, so switching it on made this fail on
+# the two services it had just corrected. Both addresses are legitimate, and
+# which one a service gets is the point -- what must never appear is a strategy
+# other than NodePort, or a NodePort with no address at all.
+#
+# Validated in the script rather than by a Jinja filter so the output is the
+# offending lines and nothing else: a failure names the service that is wrong
+# instead of printing all four and leaving the reader to work out which.
 - name: "{{ guest_name }}: confirm no service still wants a load balancer"
+  # Re-derived from the recorded name rather than read back from
+  # guest_service_addresses: checking the rewrite against the values the rewrite
+  # used would pass whatever it wrote. guest_lb_dns is scoped to the task that
+  # applied it, so it has to be derived again here anyway.
+  vars:
+    guest_lb_dns: "{{ guest_lb_state.content | default('') | b64decode | trim }}"
   ansible.builtin.command:
     argv:
       - python3
       - -c
       - |
         import sys, yaml
-        for d in yaml.safe_load_all(open(sys.argv[1])):
+        path, *allowed = sys.argv[1:]
+        allowed = [a for a in allowed if a]
+        for d in yaml.safe_load_all(open(path)):
             if not d or d.get("kind") != "HostedCluster":
                 continue
             for s in d["spec"]["services"]:
                 st = s["servicePublishingStrategy"]
-                print(f'{s["service"]}={st["type"]}:'
-                      f'{st.get("nodePort", {}).get("address", "NO-ADDRESS")}')
+                addr = st.get("nodePort", {}).get("address", "")
+                if st["type"] != "NodePort" or addr not in allowed:
+                    print(f'{s["service"]}={st["type"]}:{addr or "NO-ADDRESS"}')
       - "{{ guest_workdir }}/guest-manifests/{{ guest_name }}.yaml"
+      - "{{ guest_api_address }}"
+      # Empty unless the public control plane is on, and dropped by the script
+      # when it is empty -- so the allowed set is exactly the addresses this
+      # guest was actually rendered with.
+      - "{{ guest_lb_dns | default('') }}"
   register: apiserver_publishing
   changed_when: false
-  failed_when: >-
-    apiserver_publishing.stdout_lines | reject('search', '=NodePort:' ~ guest_api_address)
-    | list | length > 0
+  failed_when: apiserver_publishing.stdout != ""
   when: guest_exists.rc != 0
 
 - name: "{{ guest_name }}: confirm the rendered manifests carry their secrets"
