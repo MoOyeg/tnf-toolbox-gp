@@ -18,6 +18,10 @@
   vars:
     guest_name: "{{ guest_cluster_prefix }}-{{ guest_index }}"
 
+# Whether a missing kubeconfig is a problem depends on who is asking. The stage
+# that just created the guest requires one; the stage that renders site
+# definitions does not, because a guest committed a minute ago has not been
+# built yet and re-running is how it gets picked up.
 - name: "{{ guest_cluster_prefix }}-{{ guest_index }}: fail if it has no kubeconfig yet"
   ansible.builtin.assert:
     that:
@@ -25,8 +29,17 @@
       - guest_admin_kubeconfig.stdout | length > 0
     fail_msg: >-
       No {{ guest_cluster_prefix }}-{{ guest_index }}-admin-kubeconfig secret in
-      {{ hcp_namespace }} on TNF. The guest has to exist before the hub can be
-      told about it -- run 'make guests' first.
+      {{ hcp_namespace }} on the infra cluster. The guest has to exist before
+      the hub can be told about it.
+  when: guest_import_required | default(false) | bool
+
+- name: "{{ guest_cluster_prefix }}-{{ guest_index }}: note that it is not built yet"
+  ansible.builtin.debug:
+    msg: >-
+      {{ guest_cluster_prefix }}-{{ guest_index }} has no admin kubeconfig on
+      the infra cluster yet, so there is nothing to import. Argo CD may still be
+      building it; re-run this stage once it is up.
+  when: guest_admin_kubeconfig.stdout | default('') | length == 0
 
 # Written through a temporary file and installed, so a failed read can never
 # truncate a kubeconfig that was working.
@@ -35,8 +48,33 @@
     content: "{{ guest_admin_kubeconfig.stdout | b64decode }}"
     dest: "{{ acm_install_dir }}/{{ guest_cluster_prefix }}-{{ guest_index }}-kubeconfig"
     mode: '0600'
+  no_log: true
+  when: guest_admin_kubeconfig.stdout | default('') | length > 0
+
+# Where 50-guest-gpu.yml and 60-app.yml look. They glob this directory on both
+# bastions, and a cluster built from Git is never touched by the stage that
+# creates guests directly -- so without this it exists, is reachable, and no
+# later stage can see it.
+- name: "{{ guest_cluster_prefix }}-{{ guest_index }}: make somewhere for guest kubeconfigs"
+  ansible.builtin.file:
+    path: "{{ guest_kubeconfig_dir }}"
+    state: directory
+    mode: '0700'
+  delegate_to: "{{ groups['bastion'][0] }}"
+  when: guest_admin_kubeconfig.stdout | default('') | length > 0
+
+- name: "{{ guest_cluster_prefix }}-{{ guest_index }}: stage it where later stages look"
+  ansible.builtin.copy:
+    content: "{{ guest_admin_kubeconfig.stdout | b64decode }}"
+    dest: >-
+      {{ guest_kubeconfig_dir }}/{{ guest_cluster_prefix }}-{{ guest_index }}.kubeconfig
+    mode: '0600'
+  delegate_to: "{{ groups['bastion'][0] }}"
+  no_log: true
+  when: guest_admin_kubeconfig.stdout | default('') | length > 0
 
 - name: "{{ guest_cluster_prefix }}-{{ guest_index }}: import it into the hub"
+  when: guest_admin_kubeconfig.stdout | default('') | length > 0
   ansible.builtin.include_role:
     name: acm
     tasks_from: import-cluster

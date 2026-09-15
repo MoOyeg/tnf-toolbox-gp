@@ -99,6 +99,10 @@
 
     - name: Import each guest
       ansible.builtin.include_tasks: tasks/import-guest.yml
+      vars:
+        # This stage created the guests a moment ago, so a missing kubeconfig
+        # is a real failure rather than "not built yet".
+        guest_import_required: true
       loop: "{{ range(1, (guest_cluster_count | int) + 1) | list }}"
       loop_control:
         loop_var: guest_index

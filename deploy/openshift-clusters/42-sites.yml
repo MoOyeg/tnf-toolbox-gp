@@ -133,6 +133,22 @@
         label: "{{ item.item }}"
       when: item.rc | default(1) == 0
 
+    # The guests built from sites-infra/ rather than from a ClusterInstance.
+    # 'oc get clusterinstance' above cannot see them -- their HostedCluster and
+    # NodePool are applied to the infra cluster by Argo CD, and nothing on the
+    # hub represents them until they are imported. Which is what this does:
+    # reads each one's admin kubeconfig off the cluster hosting it, stages it
+    # where the later stages glob, and registers it with the hub.
+    #
+    # Skipped quietly for a guest Argo CD has not finished building: that is a
+    # normal state a minute after committing, and re-running picks it up.
+    - name: Import the hosted guests into the hub
+      ansible.builtin.include_tasks: tasks/import-guest.yml
+      loop: "{{ range(1, (guest_cluster_count | int) + 1) | list }}"
+      loop_control:
+        loop_var: guest_index
+        label: "{{ guest_cluster_prefix }}-{{ guest_index }}"
+
     # find, not ls. A glob that matches nothing makes ls exit 2, and
     # 2>/dev/null hides the message but not the status -- with pipefail set the
     # pipeline then fails even though wc counted correctly. That is exactly the
