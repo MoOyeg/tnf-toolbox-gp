@@ -106,7 +106,16 @@
 
 # Available means the klusterlet came up on the target and is talking back to
 # the hub. Joined alone only means the registration was accepted.
+#
+# Three waits follow, and together they can block for over half an hour. That is
+# right for a stage whose job is to import a cluster and wrong for one that
+# renders site definitions and imports as a follow-on -- there, a guest that is
+# still installing would stop the run before it reaches the steps the *other*
+# clusters need, which is how 'make sites' came to leave an all-VM cluster
+# without its DNS records. Callers that only want the import started set
+# import_wait_online false and read the result from the hub later.
 - name: "Wait for {{ import_cluster_name }} to come online in the hub"
+  when: import_wait_online | default(true) | bool
   ansible.builtin.command: >-
     oc get managedcluster {{ import_cluster_name }}
     -o jsonpath='{.status.conditions[?(@.type=="ManagedClusterConditionAvailable")].status}'
@@ -122,6 +131,7 @@
 # to the hub's Search. Without it the cluster is managed but its VMs are
 # invisible, which looks like a console fault rather than a missing addon.
 - name: "Wait for {{ import_cluster_name }}'s search collector to be available"
+  when: import_wait_online | default(true) | bool
   ansible.builtin.command: >-
     oc get managedclusteraddon search-collector -n {{ import_cluster_name }}
     -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
@@ -140,6 +150,7 @@
 # until this is Available, with no event on either side saying why. The all-VM
 # cluster's virtual machines are created by exactly such a Policy.
 - name: "Wait for {{ import_cluster_name }}'s config policy controller to be available"
+  when: import_wait_online | default(true) | bool
   ansible.builtin.command: >-
     oc get managedclusteraddon config-policy-controller -n {{ import_cluster_name }}
     -o jsonpath='{.status.conditions[?(@.type=="Available")].status}'
@@ -152,7 +163,15 @@
   delay: 20
   until: policy_addon.stdout == "True"
 
+- name: "{{ import_cluster_name }}: import started, not waited on"
+  ansible.builtin.debug:
+    msg: >-
+      {{ import_cluster_name }}'s klusterlet has been installed. Not waiting for
+      it to report Available -- it will once the cluster finishes coming up.
+  when: not (import_wait_online | default(true) | bool)
+
 - name: "Report {{ import_cluster_name }}"
+  when: import_wait_online | default(true) | bool
   ansible.builtin.debug:
     msg:
       - "{{ import_cluster_name }} is imported into the hub and reporting Available."

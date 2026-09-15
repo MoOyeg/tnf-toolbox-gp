@@ -1592,6 +1592,52 @@ def test_applicationset_templates_match_their_template_engine():
               f"{offenders} should be dotted, e.g. {{{{.name}}}}")
 
 
+def test_a_site_folder_creates_its_namespace_first():
+    """Every namespace a site folder ships must sync before what goes in it.
+
+    Argo CD reconciles RBAC with `kubectl auth reconcile`, which resolves the
+    Role and RoleBinding's namespace up front. Without an explicit wave that can
+    run before the namespace exists and fail the *entire* sync, not just the
+    RBAC -- so a rebuild that removed the namespace could never recreate it.
+    """
+    print("\nsite folder ordering")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    for path in sorted(glob.glob(f"{roles}/*/templates/*namespace*.yaml.j2")):
+        doc = yaml.safe_load(render(path, guest_name="hcp-1"))
+        if not doc or doc.get("kind") != "Namespace":
+            continue
+        name = os.path.basename(path)
+        wave = (doc["metadata"].get("annotations") or {}).get(
+            "argocd.argoproj.io/sync-wave")
+        check(f"{name}: syncs before the objects placed in it",
+              wave is not None and int(wave) < 0,
+              f"sync-wave={wave}")
+
+
+def test_rendering_sites_does_not_block_on_one_guest():
+    """'make sites' renders the whole fleet; one guest must not stall it.
+
+    Importing a cluster waits for it to report Available and for two addons --
+    over half an hour between them. That belongs in the stage whose job is the
+    import. In the stage that renders site definitions it stands between the
+    other clusters and the steps they need, which is how an all-VM cluster came
+    to sit installing with no DNS records published for it.
+    """
+    print("\nthe sites stage")
+    pb = f"{ROOT}/deploy/openshift-clusters"
+    sites = open(f"{pb}/42-sites.yml", encoding="utf-8").read()
+    check("it starts the guest import without waiting on it",
+          "import_wait_online: false" in sites,
+          "a guest still installing would stop the run before the rest")
+    # The dedicated stage keeps waiting -- that is what it is for.
+    dedicated = open(f"{pb}/43-import-guests.yml", encoding="utf-8").read()
+    check("the dedicated import stage still waits",
+          "import_wait_online: false" not in dedicated)
+    guests = open(f"{pb}/40-hcp-guests.yml", encoding="utf-8").read()
+    check("and so does the stage that creates the guests",
+          "import_wait_online: false" not in guests)
+
+
 def test_the_guest_is_built_from_git_onto_its_host():
     """hcp-1's definition is delivered to the cluster that runs it.
 
@@ -1725,6 +1771,8 @@ def main():
     test_control_planes_are_hosted_on_tnf()
     test_the_guest_entry_point_follows_the_control_plane()
     test_applicationset_templates_match_their_template_engine()
+    test_a_site_folder_creates_its_namespace_first()
+    test_rendering_sites_does_not_block_on_one_guest()
     test_the_guest_is_built_from_git_onto_its_host()
 
     print()

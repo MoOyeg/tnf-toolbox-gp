@@ -7,6 +7,18 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: {{ vcp_cluster_name }}
+  annotations:
+    # Before everything else in this folder. Argo CD reconciles RBAC with
+    # `kubectl auth reconcile`, which resolves the Role and RoleBinding's
+    # namespace up front -- so without an explicit wave it can run before the
+    # namespace exists and fail the *whole* sync:
+    #
+    #   error running kubectl auth reconcile: error getting namespace vcp-1:
+    #   namespaces "vcp-1" not found (retried 5 times)
+    #
+    # Nothing in the folder is applied after that, so a rebuild that removed
+    # the namespace could never recreate it without a hand-created one first.
+    argocd.argoproj.io/sync-wave: "-1"
   labels:
     # Lets the hub back this site definition up and restore it.
     cluster.open-cluster-management.io/backup: cluster-activation

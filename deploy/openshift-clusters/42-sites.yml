@@ -144,6 +144,11 @@
     # normal state a minute after committing, and re-running picks it up.
     - name: Import the hosted guests into the hub
       ansible.builtin.include_tasks: tasks/import-guest.yml
+      vars:
+        # Start the import and move on. This stage still has the all-VM
+        # cluster's agents to approve and its DNS records to publish, and a
+        # guest that is still installing must not stand between them.
+        import_wait_online: false
       loop: "{{ range(1, (guest_cluster_count | int) + 1) | list }}"
       loop_control:
         loop_var: guest_index
