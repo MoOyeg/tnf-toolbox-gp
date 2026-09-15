@@ -97,6 +97,15 @@ data:
         # silently dropped when it is put one level up -- leaving the installer
         # to infer it from platformType rather than being told.
         userManagedNetworking: true
+{% endraw %}
+        # The network the nodes are actually on. Without it the installer picks
+        # a node address itself, and a VM attached to a primary UDN has more
+        # than one to choose from. Not from the site definition: the
+        # ClusterInstance API has no machineNetwork, and the value describes the
+        # infra cluster's layout rather than the guest's.
+        machineNetwork:
+          - cidr: {{ vcp_node_network_cidr }}
+{% raw %}
     {{ if .Spec.ClusterNetwork }}
         clusterNetwork:
     {{ .Spec.ClusterNetwork | toYaml | indent 6 }}
@@ -183,6 +192,13 @@ data:
         enabled: false
       policyController:
         enabled: true
+      # On, for the same reason it is on for the infra cluster: the console's
+      # per-cluster view -- node resources, GPU counts, the fleet virtualization
+      # list -- is built from what this addon reports to the hub's Search. A
+      # cluster without it is managed and healthy and reads as zero of
+      # everything, which looks like a console fault rather than a missing
+      # addon. The guest's GPUs are the whole point of the guest, so a fleet
+      # view showing none of them is worse than the cost of running it.
       searchCollector:
-        enabled: false
+        enabled: true
 {% endraw %}
