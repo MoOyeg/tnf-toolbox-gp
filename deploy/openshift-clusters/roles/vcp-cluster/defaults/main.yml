@@ -48,7 +48,7 @@ vcp_worker_memory: 24Gi
 # vLLM and roughly 20GiB of transient space while the analyzer image is built.
 # The volumes are thin-provisioned (lvms thin-pool-1, overprovision 10), so the
 # ceiling costs nothing until it is written into.
-vcp_root_disk: 200Gi
+vcp_root_disk: 180Gi
 
 # Per node, not per worker. In a compact cluster the control-plane nodes are
 # where workloads run, so that is where the GPUs have to go -- the older split,

@@ -43,7 +43,7 @@ guest_oauth_nodeport: 30444
 # vLLM and roughly 20GiB of transient space while the analyzer image is built.
 # The volumes are thin-provisioned (lvms thin-pool-1, overprovision 10), so the
 # ceiling costs nothing until it is written into.
-guest_vm_root_disk: 200Gi
+guest_vm_root_disk: 180Gi
 
 # The node address the guest's control-plane services are published on. It must
 # be a node of the cluster hosting the control plane, reachable from the guest's

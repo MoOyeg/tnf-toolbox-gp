@@ -1620,6 +1620,21 @@ def test_the_guest_is_built_from_git_onto_its_host():
           "credentials" not in kubevirt,
           "a credentials block would put the VMs on another cluster")
 
+    # The guest's networks must not overlap the cluster hosting it. Its worker
+    # VMs sit on the host's pod network and resolve through the host's DNS, so
+    # a guest service network covering that resolver's address is captured by
+    # the guest's own OVN as soon as it starts -- and every image pull in the
+    # guest then fails against a CoreDNS that cannot exist yet.
+    net = hc["spec"]["networking"]
+    guest_svc = net["serviceNetwork"][0]["cidr"]
+    guest_pod = net["clusterNetwork"][0]["cidr"]
+    check("the guest's service network is its own, not the host's",
+          guest_svc != ctx["service_network_cidr"],
+          f"guest {guest_svc} collides with host {ctx['service_network_cidr']}")
+    check("the guest's pod network is its own, not the host's",
+          guest_pod != ctx["cluster_network_cidr"],
+          f"guest {guest_pod} collides with host {ctx['cluster_network_cidr']}")
+
     published = {s["service"]: s["servicePublishingStrategy"]
                  for s in hc["spec"]["services"]}
     check("every service is a NodePort",
