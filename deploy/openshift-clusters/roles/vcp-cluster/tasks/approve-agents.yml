@@ -30,7 +30,12 @@
     for a in $(oc get agent -n {{ vcp_cluster_name }} -o name); do
       approved=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.spec.approved}')
       [ "$approved" = "true" ] && continue
-      host=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.spec.hostname}')
+      # status.inventory.hostname, not spec.hostname. The latter is an override
+      # and is empty unless somebody sets one, so reading it matched nothing and
+      # every agent was approved as a worker -- leaving the cluster reporting
+      # "must have exactly 3 dedicated control plane nodes" with three
+      # control-plane machines sitting in front of it.
+      host=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.status.inventory.hostname}')
       # The name carries the role, which is why the VMs are named for it.
       role=worker
       case "$host" in *-cp-*) role=master ;; esac
