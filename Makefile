@@ -1,5 +1,6 @@
 .PHONY: shellcheck yamlfmt ansible-lint test test-templates test-shim test-common \
-        syntax-check verify install-pre-commit uninstall-pre-commit help
+        test-diagram diagram syntax-check verify install-pre-commit \
+        uninstall-pre-commit help
 
 shellcheck:
 	@./hack/shellcheck.sh
@@ -34,7 +35,15 @@ syntax-check:
 			&& echo OK || exit 1; \
 	done
 
-test: test-templates test-shim test-common syntax-check
+# The architecture diagram is generated, and the editable draw.io XML inside it
+# has to match the picture drawn around it. Regenerating is the fix.
+test-diagram:
+	@python3 hack/render-architecture.py --check
+
+diagram:
+	@python3 hack/render-architecture.py
+
+test: test-templates test-shim test-common test-diagram syntax-check
 
 verify:
 	VALIDATE_ONLY=true $(MAKE) shellcheck
@@ -58,6 +67,8 @@ help:
 	@echo "  ansible-lint        - ansible-lint"
 	@echo "  test                - template checks, shim unit tests, playbook syntax"
 	@echo "  test-templates      - render every Jinja template and assert its shape"
+	@echo "  test-diagram        - check docs/architecture.drawio.svg is up to date"
+	@echo "  diagram             - regenerate docs/architecture.drawio.svg"
 	@echo "  test-shim           - unit tests for the Redfish fencing shim"
 	@echo "  test-common         - unit tests for the deploy/common.sh helpers"
 	@echo "  install-pre-commit  - run 'make verify' automatically before each commit"

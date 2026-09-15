@@ -16,13 +16,32 @@ devices on the OpenShift nodes.
 
 ![Architecture](docs/architecture.drawio.svg)
 
-Two peered AWS sites. TNF carries the whole guest cluster -- its control plane
-as pods, its worker VMs with real T4s passed into them -- and the inspection app
-runs inside that guest on those GPUs. The ACM site manages the fleet and runs
-none of it.
-The file is an editable draw.io diagram as well as an image — open
+Two peered AWS sites, and a clean split between them: **TNF runs everything,
+the ACM site manages it and runs none of it.**
+
+| | runs on | which means |
+|---|---|---|
+| TNF cluster | 2 × `g4dn.metal` | the two-node cluster itself, 16 × Tesla T4 between them |
+| `hcp-1` control plane | **TNF**, as pods | `etcd`, `kube-apiserver`, `konnectivity` in namespace `clusters-hcp-1` |
+| `hcp-1` workers | **TNF**, as KubeVirt VMs | 3 VMs in that same namespace, 2 T4 passed into each |
+| the inspection app | inside `hcp-1`, on its T4s | camera-sim → analyzer → vLLM → dashboard |
+| ACM hub | 1 × `m6i.4xlarge` | ACM, MCE, SiteConfig, GitOps, observability — and no workload |
+
+TNF's own MultiCluster Engine creates the `HostedCluster`, so the control-plane
+pods land beside the worker VMs they own, on the cluster that has the GPUs. The
+hub's job is to manage the fleet: it imports TNF as a managed cluster, holds the
+cluster definitions, and collects metrics. Nothing of the guest runs on it.
+
+That is what lets the hub be an ordinary EC2 instance. It has no virtual
+machines, so it needs no KVM, so it needs no bare metal — and a hub that lives
+outside the failure domain of the cluster it manages is the reason for the
+second site in the first place.
+
+The diagram is an editable draw.io file as well as an image — open
 [docs/architecture.drawio.svg](docs/architecture.drawio.svg) in
-[diagrams.net](https://app.diagrams.net) or the VS Code draw.io extension.
+[diagrams.net](https://app.diagrams.net) or the VS Code draw.io extension. It is
+generated from [hack/render-architecture.py](hack/render-architecture.py); run
+`make diagram` after changing it, and `make test` checks the two agree.
 
 ## What it builds
 
@@ -39,17 +58,14 @@ ACM site  VPC 10.1.0.0/16              TNF site  VPC 10.0.0.0/16
       └── Observability                      ├── LVM Storage on EBS gp3
                   │                          ├── OpenShift Virtualization
                   │                          ├── MCE + HyperShift
-                  │                          └── guest control planes + VMs
+                  │                          └── clusters-hcp-1
+                  │                                ├── control-plane pods
+                  │                                └── 3 worker VMs, 2 T4 each
                   │                                    ▲
                   └────────── VPC peering ─────────────┘
-                    The hub manages; TNF runs. TNF's own MultiCluster Engine
-                    creates each HostedCluster, so both the control-plane pods
-                    and the worker VMs with the GPUs are on TNF. TNF is
-                    imported into the hub as a managed cluster, so ACM sees the
-                    infrastructure and not just the clusters on it.
-
-                    The hub runs no virtual machines, which is why its node is
-                    an ordinary instance rather than bare metal.
+                    management only: TNF is imported into the hub as a managed
+                    cluster, so ACM sees the infrastructure and not just the
+                    clusters on it
 ```
 
 No nested virtualization anywhere. OpenShift Virtualization runs on the metal,
@@ -94,8 +110,8 @@ rather than starting over.
 | `make iommu` | optional — checks the IOMMU and applies nothing on a cluster this repo built | seconds |
 | `make gpu` | NFD + NVIDIA GPU Operator on the base cluster | 10 min |
 | `make virt-mce` | LVM Storage, OpenShift Virtualization, MultiCluster Engine | 15 min |
-| `make acm-site` | single-node OpenShift at the ACM site, then OpenShift Virtualization and ACM on it, then import TNF into the hub | 56 min |
-| `make hcp-make-guests-from-acm` | guest clusters created by ACM: control plane as pods on the hub, worker VMs and GPUs on TNF | 40 min |
+| `make acm-site` | single-node OpenShift at the ACM site, then ACM on it, then import TNF into the hub | 56 min |
+| `make guests` | guest clusters created by TNF's own MCE: control-plane pods and worker VMs both on TNF, with the GPUs | 40 min |
 | `make guest-gpu` | NFD + GPU Operator inside each guest | 33 min |
 
 Timings are measured, from a full run in `eu-west-1`. Most of `make tnf` is
@@ -405,7 +421,8 @@ plain text and is written `0600`.
 
 Guest cluster consoles resolve publicly, on the infra cluster's apps wildcard one
 level down (`...apps.<guest>.apps.<base cluster domain>`). Their APIs do not: they
-are NodePorts on the hub's private address, reachable from the bastions.
+are NodePorts on the hosting cluster's private address — TNF's `master-0`, since
+TNF hosts them — reachable from the bastions.
 
 `make status` summarises stacks, instance power state, bastion services and
 cluster health at any point. `make destroy` removes everything.
@@ -511,7 +528,7 @@ sites-infra/             generated: the VirtualMachines an all-VM cluster's
                          nodes run on, synced to TNF (commit these too)
 docs/                    architecture, fencing, GPU allocation, guest clusters,
                          the app redesign, and the editable diagram
-hack/                    lint and static template checks
+hack/                    lint, static template checks, and the diagram renderer
 tools/redfish-ec2/       the Redfish → EC2 fencing shim, with unit tests
 ```
 
@@ -528,9 +545,17 @@ to be unfinished:
 |---|---|
 | TNF two-node cluster, fencing, GPU passthrough | working |
 | ACM hub (2.17) on its own site, TNF imported | working |
-| Guest cluster `hcp-1` — hosted control plane, 3 worker VMs, 2 T4 each | working |
+| Guest cluster `hcp-1` — hosted control plane, 3 worker VMs, 2 T4 each | working, **but hosted on the hub**; see below |
 | Visual inspection app — real VisA imagery, EfficientAD, per-camera GPU accounting | **working, mis-calibrated** |
 | MultiCluster Observability, right-sizing, Perses, custom dashboard | **written, not deployed** |
+
+**The guest has not yet been built on TNF.** Every run so far created `hcp-1`
+from the hub, with its control-plane pods on the ACM node. `make all` now runs
+`make guests` instead, which creates it through TNF's own MultiCluster Engine so
+the pods land beside the worker VMs — the architecture described at the top of
+this file. The playbook behind it has existed all along but has never completed
+a run, so treat the topology as intended rather than proven until a full
+`make all` has been through it.
 
 **The app runs and the GPU is genuinely loaded** — four cameras at ~20.6 ms a
 frame, each holding roughly a quarter of one T4, the device at ~75-88%. That is
@@ -553,7 +578,7 @@ scrapes the analyzer yet.
 
 Two deliberate departures from the documented path, both recorded where the
 code is: the hub backs Thanos with **real AWS S3** rather than ODF/Noobaa
-(there is no ODF on a single-node hub already carrying ACM, MCE and CNV), and
+(there is no ODF on a single-node hub already carrying ACM and MCE), and
 it uses a **local-volume storage class** for Thanos' own PVCs, which the ACM
 docs advise against — on a single node there is nowhere else to reschedule to.
 
@@ -564,7 +589,7 @@ docs advise against — on a single node there is nowhere else to reschedule to.
 - **19 unit tests** for the Redfish shim — routing, both auth modes, the
   power-state mapping including every transitional EC2 state, and reset-type
   translation. The EC2 layer is stubbed.
-- **165 static checks** over the templates — every Jinja template renders under
+- **237 static checks** over the templates — every Jinja template renders under
   `StrictUndefined`, the rendered `install-config.yaml` has the fencing shape
   TNF requires, the ignition pointers are valid JSON inside the CloudFormation
   parameter limit, haproxy drops bootstrap from the ingress backends, every
@@ -599,20 +624,21 @@ and the NVIDIA GPU Operator inside the guest refuses to start. See
 
 That leaves one thing broken from outside the VPC. The console *page* is served
 through the passthrough route and loads, but it immediately redirects to the
-OAuth server to log in — and OAuth is a NodePort on the hub's private address,
-so the redirect names something a browser cannot reach. `make guest-lb
+OAuth server to log in — and OAuth is a NodePort on a private address inside the
+VPC, so the redirect names something a browser cannot reach. `make guest-lb
 GUEST=<name>` builds an AWS network load balancer in front of the API and OAuth
 NodePorts, and `GUEST_PUBLIC_CONTROL_PLANE=true` publishes the guest against it,
 which is what MetalLB's documentation means by "use the platform's load
 balancer".
 
 Only the two services a human touches move there. Ignition and Konnectivity stay
-on the hub's private address, because those are spoken only by the worker VMs
-and that is the address they can reach across the peering. The API server is the
-exception that has to move: the VMs speak it too, so publishing it sends their
-traffic out through the internet gateway and back rather than across the
-peering. They have egress, so it works; it is the part most likely to need
-revisiting.
+on `master0_private_ip`, because those are spoken only by the worker VMs, which
+now run on TNF alongside the control plane that serves them — the same cluster,
+the same subnet, no peering in the path at all. Hosting the control plane on the
+hub is what used to make this delicate: the API server had to be reachable both
+by a browser outside the VPC and by worker VMs at the other site, and publishing
+it sent their traffic out through the internet gateway and back. With both ends
+on TNF that tension is gone.
 
 Set it in `config/instance.env`. Until recently the Makefile documented the
 variable and the playbook wrapper never passed it, so setting it did nothing at
