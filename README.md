@@ -162,6 +162,8 @@ resources directly:
 make siteconfig    # SiteConfig operator + the install templates + OpenShift GitOps
 make sites         # one folder per cluster, written under sites/ and sites-infra/
 git add sites sites-infra && git commit -m "the fleet" && git push
+make sites         # again, once the all-VM cluster's machines have registered:
+                   # approves its agents and publishes its DNS
 ```
 
 Ansible generates; Git is what the hub reconciles against. An ApplicationSet
@@ -180,6 +182,33 @@ exist yet has no kubeconfig to harvest, no agents to approve and no InfraEnv to
 import an ISO from, so the stage does what it can and says what it skipped.
 Running it again once Argo CD has caught up picks up the rest.
 
+**The all-VM cluster needs a second `make sites` once its machines have booted.**
+Its nodes register themselves with the hub as *agents*, and an agent that is not
+approved is counted by nothing: the `AgentClusterInstall` waits for a number of
+approved agents that never arrives, and the console shows the cluster as
+`Insufficient` with no indication that approval is what is missing. The first
+run cannot approve them because they have not registered yet -- the VMs are
+still booting the discovery ISO it just published.
+
+So the sequence for an all-VM cluster is:
+
+```bash
+make sites     # writes the definition; VMs boot the discovery ISO
+               # wait for the machines to appear as agents (a few minutes)
+make sites     # approves them, then publishes the DNS records their
+               # addresses are needed for
+```
+
+The second run also writes the cluster's DNS, which is why it cannot be skipped:
+with `userManagedNetworking` the installer creates no records of its own, and
+until `api`, `api-int` and `*.apps` resolve, every agent fails validation with
+*"Couldn't resolve domain name api.&lt;cluster&gt;..."* -- which reads as a DNS
+fault rather than as a step not yet run.
+
+Approving from the ACM console does the same thing: **Infrastructure → Host
+inventory**, select the hosts, **Approve**. The records still need `make sites`
+afterwards.
+
 ### Two directories, because the pieces live on two clusters
 
 An Argo CD Application has exactly one destination, and a guest's pieces do not
@@ -187,15 +216,20 @@ all belong in one place:
 
 | | Synced to | Holds |
 |---|---|---|
-| `sites/<cluster>/` | the ACM hub | the namespace and the `ClusterInstance` |
-| `sites-infra/<cluster>/` | the infra cluster (TNF) | the `VirtualMachine`s an all-VM cluster's nodes run on |
+| `sites/<cluster>/` | the ACM hub | an all-VM cluster's namespace and `ClusterInstance` |
+| `sites-infra/<cluster>/` | the infra cluster (TNF) | an all-VM cluster's `VirtualMachine`s, and a hosted cluster's `HostedCluster` and `NodePool` |
 
 Argo CD reaches the infra cluster through ACM's own integration — a `Placement`
 selects it and a `GitOpsCluster` hands it over, so ACM owns and rotates the
 cluster secret rather than a kubeconfig being minted into one by hand.
 
-A hosted cluster has no folder under `sites-infra/`: HyperShift creates its
-worker VMs itself from the NodePool's replica count.
+A hosted cluster has no folder under `sites/` and is not a `ClusterInstance` at
+all. The SiteConfig operator expands a `ClusterInstance` into the cluster it is
+running in, which is the hub -- so that path can only ever put the control plane
+on the hub. These control planes run on TNF, so the `HostedCluster` and
+`NodePool` are written to `sites-infra/` and applied there instead. It needs no
+`VirtualMachine`s of its own: HyperShift creates the workers from the NodePool's
+replica count.
 
 ### What is the *what* and what is the *how*
 
