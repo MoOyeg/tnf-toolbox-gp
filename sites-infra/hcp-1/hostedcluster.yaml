@@ -78,14 +78,12 @@ spec:
       servicePublishingStrategy:
         type: NodePort
         nodePort:
-          address: hcp-1-cp-ab1cd3be62fb9c61.elb.eu-west-1.amazonaws.com
-          port: 30443
+          address: 10.0.0.10
     - service: OAuthServer
       servicePublishingStrategy:
         type: NodePort
         nodePort:
-          address: hcp-1-cp-ab1cd3be62fb9c61.elb.eu-west-1.amazonaws.com
-          port: 30444
+          address: 10.0.0.10
     # Spoken only by the worker VMs, which run on this same cluster -- so this
     # stays the node address even when the two above move to a public name.
     - service: Ignition
