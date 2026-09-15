@@ -1,0 +1,61 @@
+---
+# The namespace the all-VM cluster's nodes live in, on the infra cluster.
+#
+# It carries the label that opts it into a primary user-defined network, and
+# that label is immutable: OVN-Kubernetes installs a ValidatingAdmissionPolicy
+# which refuses to let it be added or removed afterwards --
+#
+#   The 'k8s.ovn.org/primary-user-defined-network' label cannot be
+#   added/removed after the namespace was created
+#
+# -- so it has to be right at creation or not at all. A plain state: present
+# against an existing namespace is a patch, and a patch is what gets refused.
+# Hence looking first: create it when absent, and when it is present but
+# unlabelled say so plainly, rather than failing on a webhook message that
+# mentions neither virtual machines nor why anyone should care.
+#
+# Shared by the direct stage and the GitOps stage, because a second copy of a
+# rule this fiddly is a second chance to get it wrong.
+
+- name: "{{ vcp_vm_namespace }}: look before creating"
+  ansible.builtin.command: >-
+    oc get namespace {{ vcp_vm_namespace }} -o json
+  environment:
+    KUBECONFIG: "{{ vcp_infra_kubeconfig }}"
+  register: vcp_ns
+  changed_when: false
+  failed_when: false
+
+- name: "{{ vcp_vm_namespace }}: create it opted in to a user-defined network"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_infra_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: "{{ vcp_vm_namespace }}"
+        labels:
+          tnf-toolbox-gp/owner: acm-vcp
+          # Empty value on purpose: the label's presence is what opts in, which
+          # is also why this is checked with has() rather than by reading it --
+          # an absent label and one set to "" look identical to jsonpath.
+          k8s.ovn.org/primary-user-defined-network: ""
+  when: vcp_ns.rc != 0
+
+- name: "{{ vcp_vm_namespace }}: refuse to carry on with it unlabelled"
+  ansible.builtin.assert:
+    that:
+      - "'k8s.ovn.org/primary-user-defined-network' in
+         ((vcp_ns.stdout | from_json).metadata.labels | default({}))"
+    fail_msg: >-
+      {{ vcp_vm_namespace }} already exists without the
+      k8s.ovn.org/primary-user-defined-network label, and that label cannot be
+      added to a namespace after it is created. Every virtual machine in it
+      would come up on the pod network behind masquerade, all of them sharing
+      one address, and no cluster would form.
+      Delete the namespace and re-run. Nothing in it is worth keeping: the
+      machines, their disks and the discovery volume are all recreated by the
+      {{ vcp_cluster_name }}-virtual-machines policy.
+    success_msg: "{{ vcp_vm_namespace }} is opted in to a user-defined network"
+  when: vcp_ns.rc == 0

@@ -65,6 +65,23 @@ vcp_install_timeout: 5400
 vcp_cluster_network_cidr: 10.132.0.0/14
 vcp_service_network_cidr: 172.31.0.0/16
 
+# Where the nodes themselves live: a layer2 user-defined network on the infra
+# cluster, which is what gives each VM an address of its own.
+#
+# Masquerade gave every VM the identical 10.0.2.2 -- the fixed guest side of
+# KubeVirt's NAT -- so three agents registered as three copies of one host and
+# no cluster could form from them. A primary UDN hands each VM a real address
+# out of this range, and ipam.lifecycle Persistent keeps it across a reboot,
+# which is the part bridge binding on the pod network could not do: there the
+# address is the pod's, and it changes whenever the VM is recreated, taking
+# etcd's peer URLs and the serving certificates with it.
+#
+# Chosen against everything already allocated: the infra cluster's pod and
+# service networks (10.128.0.0/14, 172.30.0.0/16), this guest's own
+# (10.132.0.0/14, 172.31.0.0/16), and both VPCs (10.0.0.0/16, 10.1.0.0/16).
+vcp_node_network_cidr: 10.200.0.0/16
+vcp_node_network_name: vcp-nodes
+
 # Where this site's policy and the objects that place it live. Deliberately not
 # the site namespace: that name is also a ManagedCluster, and ACM's propagator
 # deletes any root policy it finds in a cluster's namespace.

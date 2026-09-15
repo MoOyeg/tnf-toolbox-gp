@@ -1179,6 +1179,78 @@ def test_virtual_machines_are_an_acm_policy():
                            "BEGIN OPENSSH", "password") if w in rendered])
 
 
+def test_vcp_nodes_get_addresses_of_their_own():
+    """The all-VM cluster's nodes must not share one address.
+
+    Masquerade hands every VM the identical guest-side address of KubeVirt's
+    NAT, so three nodes registered as three copies of 10.0.2.2 and no cluster
+    could form. A primary layer2 UDN gives each one a real address and keeps it
+    across a reboot, which a pod IP does not.
+    """
+    print("\nvcp node network")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles"
+    defaults = {**extra_vars_from_wrapper(), **role_defaults(), **CONTEXT}
+    node_cidr = defaults["vcp_node_network_cidr"]
+
+    # Every range already spoken for. An overlap here is not a render error and
+    # not a validation error -- it is traffic going somewhere unexpected months
+    # later, so it is computed rather than eyeballed.
+    import ipaddress
+    others = {
+        "infra pod network": defaults["cluster_network_cidr"],
+        "infra service network": defaults["service_network_cidr"],
+        "guest pod network": defaults["vcp_cluster_network_cidr"],
+        "guest service network": defaults["vcp_service_network_cidr"],
+        "TNF VPC": "10.0.0.0/16",
+        "ACM VPC": "10.1.0.0/16",
+    }
+    node_net = ipaddress.ip_network(node_cidr)
+    clashes = [n for n, c in others.items()
+               if node_net.overlaps(ipaddress.ip_network(c))]
+    check(f"the node network {node_cidr} overlaps nothing else",
+          not clashes, f"overlaps {clashes}")
+
+    # The UDN has to exist before anything attaches to it, and a
+    # ConfigurationPolicy applies its object-templates in order -- so being
+    # first is the ordering, not a tidiness preference.
+    _, _, objects = vcp_policy()
+    check("the network is created before the machines that attach to it",
+          objects[0]["kind"] == "UserDefinedNetwork",
+          f"first object is {objects[0]['kind']}")
+    udn = objects[0]
+    check("it is a primary layer2 network",
+          udn["spec"]["topology"] == "Layer2"
+          and udn["spec"]["layer2"]["role"] == "Primary")
+    check("on the node network, with addresses that survive a reboot",
+          udn["spec"]["layer2"]["subnets"] == [node_cidr]
+          and udn["spec"]["layer2"]["ipam"]["lifecycle"] == "Persistent")
+
+    # The defect itself: masquerade anywhere means shared addresses again.
+    vms = [o for o in objects if o["kind"] == "VirtualMachine"]
+    direct = yaml.safe_load(render(f"{roles}/vcp-cluster/templates/virtualmachine.yaml.j2"))
+    for name, vm in [("policy", vms[0]), ("direct", direct)]:
+        iface = vm["spec"]["template"]["spec"]["domain"]["devices"]["interfaces"][0]
+        check(f"the {name} path does not put a VM behind NAT",
+              "masquerade" not in iface, str(iface))
+        check(f"the {name} path attaches it to the user-defined network",
+              iface.get("binding", {}).get("name") == "l2bridge", str(iface))
+
+    # A UDN the namespace has not opted into is created and ignored, and the VMs
+    # come up on the pod network with nothing reporting it.
+    ns = yaml.safe_load(render(f"{roles}/vcp-cluster/templates/sites-infra-namespace.yaml.j2"))
+    check("the namespace opts into a primary user-defined network",
+          "k8s.ovn.org/primary-user-defined-network" in ns["metadata"]["labels"])
+
+    # The installer picks a node address itself unless told which network the
+    # nodes are on, and a VM on a UDN has more than one to choose from.
+    acis = yaml.safe_load(strip_go(yaml.safe_load(render(
+        f"{roles}/vcp-cluster/templates/vcp-cluster-templates.yaml.j2"
+    ))["data"]["AgentClusterInstall"]))
+    check("the install template names the network the nodes are on",
+          [m["cidr"] for m in acis["spec"]["networking"]["machineNetwork"]] == [node_cidr],
+          str(acis["spec"]["networking"].get("machineNetwork")))
+
+
 def test_infra_half_of_a_site_carries_only_its_namespace():
     """What is left in sites-infra/ once the Policy owns the machines.
 
@@ -1677,6 +1749,7 @@ def main():
     test_site_definitions()
     test_guest_time_is_configured_at_install_time()
     test_virtual_machines_are_an_acm_policy()
+    test_vcp_nodes_get_addresses_of_their_own()
     test_infra_half_of_a_site_carries_only_its_namespace()
     test_site_agnostic_roles_name_no_single_site()
     test_fetched_credentials_are_gitignored()

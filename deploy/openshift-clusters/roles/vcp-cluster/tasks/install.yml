@@ -71,6 +71,11 @@
           # installer only ever inferred user-managed networking from
           # platformType: None.
           userManagedNetworking: true
+          # The network the nodes are actually on. Without it the installer
+          # picks a node address itself, and a VM attached to a primary UDN has
+          # more than one to choose from.
+          machineNetwork:
+            - cidr: "{{ vcp_node_network_cidr }}"
           clusterNetwork:
             - cidr: "{{ vcp_cluster_network_cidr }}"
               hostPrefix: "{{ cluster_network_host_prefix | int }}"
@@ -95,6 +100,12 @@
 
 - name: Approve the agents and give them their roles
   ansible.builtin.include_tasks: approve-agents.yml
+
+# Before the wait, not after. The installer validates DNS before it installs,
+# so a cluster with no records never leaves 'insufficient' and the wait below
+# would spend its whole timeout on a condition nothing was going to satisfy.
+- name: Publish the cluster's DNS
+  ansible.builtin.include_tasks: dns.yml
 
 - name: Wait for the installation to finish
   ansible.builtin.command: >-

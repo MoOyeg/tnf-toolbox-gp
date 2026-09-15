@@ -186,6 +186,32 @@ spec:
           # and the PlacementBinding silently merge into one object.
           object-templates-raw: |
             {{hub if (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" "vcp-1" "vcp-1").status.isoDownloadURL hub}}
+            # First, and that is the point of putting it here rather than in
+            # sites-infra/: a ConfigurationPolicy applies its object-templates in
+            # order, so one enforcement pass creates the network before anything
+            # attaches to it. Split across two owners there would be no ordering
+            # at all, and a VM that starts before the network exists comes up on
+            # the default pod network and has to be destroyed to fix it.
+            #
+            # Layer2 and Primary: the nodes talk to each other on it, and it
+            # replaces the pod network rather than sitting beside it. Persistent
+            # IPAM is the part that matters after install -- an address that
+            # survives a reboot, where a pod's does not.
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: k8s.ovn.org/v1
+                kind: UserDefinedNetwork
+                metadata:
+                  name: vcp-nodes
+                  namespace: acm-vcp-vms
+                spec:
+                  topology: Layer2
+                  layer2:
+                    role: Primary
+                    subnets:
+                      - 10.200.0.0/16
+                    ipam:
+                      lifecycle: Persistent
             - complianceType: musthave
               objectDefinition:
                 apiVersion: v1
@@ -293,8 +319,15 @@ spec:
                                 bus: sata
                                 readonly: true
                           interfaces:
+                            # The l2bridge binding plugin, not masquerade.
+                            # Masquerade NATs the guest behind the pod and hands
+                            # every VM the same 10.0.2.2, so three nodes became
+                            # three copies of one address. This attaches the VM
+                            # to the primary UDN above, where it gets one of its
+                            # own and keeps it.
                             - name: default
-                              masquerade: {}
+                              binding:
+                                name: l2bridge
                           hostDevices:
                             # Read from the infra cluster when the policy
                             # enforces, not guessed when this file is written.
@@ -389,8 +422,15 @@ spec:
                                 bus: sata
                                 readonly: true
                           interfaces:
+                            # The l2bridge binding plugin, not masquerade.
+                            # Masquerade NATs the guest behind the pod and hands
+                            # every VM the same 10.0.2.2, so three nodes became
+                            # three copies of one address. This attaches the VM
+                            # to the primary UDN above, where it gets one of its
+                            # own and keeps it.
                             - name: default
-                              masquerade: {}
+                              binding:
+                                name: l2bridge
                           hostDevices:
                             # Read from the infra cluster when the policy
                             # enforces, not guessed when this file is written.
@@ -485,8 +525,15 @@ spec:
                                 bus: sata
                                 readonly: true
                           interfaces:
+                            # The l2bridge binding plugin, not masquerade.
+                            # Masquerade NATs the guest behind the pod and hands
+                            # every VM the same 10.0.2.2, so three nodes became
+                            # three copies of one address. This attaches the VM
+                            # to the primary UDN above, where it gets one of its
+                            # own and keeps it.
                             - name: default
-                              masquerade: {}
+                              binding:
+                                name: l2bridge
                           hostDevices:
                             # Read from the infra cluster when the policy
                             # enforces, not guessed when this file is written.

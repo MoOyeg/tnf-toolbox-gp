@@ -46,8 +46,14 @@ spec:
                 bus: sata
                 readonly: true
           interfaces:
+            # The l2bridge binding plugin, not masquerade. Masquerade NATs the
+            # guest behind the pod and hands every VM the same 10.0.2.2, so a
+            # multi-node cluster registers three copies of one address and never
+            # forms. This attaches the VM to the namespace's primary UDN, where
+            # it gets an address of its own and keeps it across a reboot.
             - name: default
-              masquerade: {}
+              binding:
+                name: l2bridge
 {% if vm.gpus | int > 0 %}
           hostDevices:
 {% for i in range(vm.gpus | int) %}

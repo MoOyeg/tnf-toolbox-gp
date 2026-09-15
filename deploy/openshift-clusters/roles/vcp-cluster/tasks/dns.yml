@@ -1,0 +1,72 @@
+---
+# Publish the cluster's own names, once its nodes have addresses.
+#
+# The assisted installer validates DNS before it installs anything, and with
+# userManagedNetworking it creates none itself. Until these records exist every
+# agent sits in 'insufficient' reporting that it cannot resolve api, api-int or
+# *.apps -- which reads like a DNS problem and is really the absence of one.
+#
+# Placed after approve-agents.yml because that is the first point at which there
+# is anything to publish: the addresses come from the agents' own inventory, so
+# they cannot be known before the VMs have booted and registered.
+#
+# Shared by both paths for the same reason discovery-iso.yml is: the direct
+# stage and the GitOps stage need identical records, and a second copy would be
+# a second chance for them to differ.
+
+# The first two octets of the node network, which is what an address on it
+# starts with. Assumes the /16 vcp_node_network_cidr declares; a narrower mask
+# would need matching on the network rather than a string prefix, and this is
+# the one place that assumption lives.
+- name: "{{ vcp_cluster_name }}: work out what an address on the node network looks like"
+  ansible.builtin.set_fact:
+    vcp_node_prefix: "{{ vcp_node_network_cidr.split('/')[0].split('.')[:2] | join('.') }}."
+
+- name: "{{ vcp_cluster_name }}: read the addresses its nodes registered with"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get agents -n {{ vcp_cluster_name }} -o json
+    | jq -r '[.items[].status.inventory.interfaces[]?.ipV4Addresses[]?]
+             | map(split("/")[0])
+             | map(select(startswith("{{ vcp_node_prefix }}")))
+             | unique | .[]'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: vcp_node_addresses
+  changed_when: false
+  failed_when: false
+
+# An empty list here is the masquerade failure returning: every VM reporting the
+# same NAT address means none of them is on the user-defined network, and
+# publishing that address for all three would produce a cluster that resolves
+# but cannot form. Better to say so than to write records that look right.
+- name: "{{ vcp_cluster_name }}: refuse to publish an address the nodes do not have"
+  ansible.builtin.assert:
+    that:
+      - vcp_node_addresses.stdout_lines | length == vcp_nodes | length
+    fail_msg: >-
+      Expected {{ vcp_nodes | length }} node addresses in
+      {{ vcp_node_network_cidr }} but found
+      {{ vcp_node_addresses.stdout_lines | default([]) | length }}:
+      {{ vcp_node_addresses.stdout_lines | default([]) }}.
+      Every VM on the same address means the namespace is missing the
+      k8s.ovn.org/primary-user-defined-network label, or the VMs were created
+      before the UserDefinedNetwork existed and are still on the pod network --
+      relabelling does not move a running pod, so they have to be recreated.
+    success_msg: >-
+      {{ vcp_cluster_name }}: {{ vcp_node_addresses.stdout_lines | length }}
+      distinct node addresses
+
+# delegate_to: localhost because the AWS credentials are on the control host --
+# the bastion's instance profile is deliberately power-only. Same reason
+# tnf-install's launch.yml calls create-compute.sh from here.
+- name: "{{ vcp_cluster_name }}: publish api, api-int and *.apps"
+  ansible.builtin.command:
+    argv: "{{ [repo_root ~ '/deploy/aws-infra/scripts/create-guest-dns.sh', vcp_cluster_name] + vcp_node_addresses.stdout_lines }}"
+  delegate_to: localhost
+  register: vcp_dns
+  changed_when: true
+
+- name: "{{ vcp_cluster_name }}: report what it answers to"
+  ansible.builtin.debug:
+    msg: "{{ vcp_dns.stdout_lines | default([]) }}"

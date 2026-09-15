@@ -132,16 +132,7 @@
 # the only reason to have the namespace early was to put a DataVolume in it; the
 # Policy resolves that URL itself, so there is nothing left here to wait for.
 - name: Create the VM namespace on the infra cluster
-  kubernetes.core.k8s:
-    kubeconfig: "{{ vcp_infra_kubeconfig }}"
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ vcp_vm_namespace }}"
-        labels:
-          tnf-toolbox-gp/owner: acm-vcp
+  ansible.builtin.include_tasks: vm-namespace.yml
 
 - name: Say where the virtual machines come from now
   ansible.builtin.debug:
@@ -159,6 +150,13 @@
 # them, in the same way it harvests a kubeconfig that did not exist before.
 - name: Approve any machines that have registered for this cluster
   ansible.builtin.include_tasks: approve-agents.yml
+
+# Only once the machines have addresses to publish. On the run that first writes
+# a site there are none, and this stage is re-run until there are -- the same
+# shape as approving the agents above and harvesting the kubeconfig later.
+- name: Publish the cluster's DNS once its machines have addresses
+  ansible.builtin.include_tasks: dns.yml
+  when: vcp_agents.stdout_lines | default([]) | select | list | length > 0
 
 - name: Report what to commit
   ansible.builtin.debug:

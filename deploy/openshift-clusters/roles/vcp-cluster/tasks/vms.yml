@@ -6,16 +6,7 @@
 # ISO over the peering connection and register themselves as Agents.
 
 - name: Create the VM namespace on the infra cluster
-  kubernetes.core.k8s:
-    kubeconfig: "{{ vcp_infra_kubeconfig }}"
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: "{{ vcp_vm_namespace }}"
-        labels:
-          tnf-toolbox-gp/owner: acm-vcp
+  ansible.builtin.include_tasks: vm-namespace.yml
 
 - name: Import the discovery ISO
   ansible.builtin.include_tasks: discovery-iso.yml
