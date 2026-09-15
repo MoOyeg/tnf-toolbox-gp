@@ -1598,6 +1598,29 @@ def test_the_guest_is_built_from_git_onto_its_host():
     check("the VMs reach ignition and konnectivity on the hosting node",
           published["Ignition"]["nodePort"]["address"] == CONTEXT["guest_api_address"]
           and published["Konnectivity"]["nodePort"]["address"] == CONTEXT["guest_api_address"])
+    # An address that renders empty is the expensive kind of wrong:
+    # spec.services is immutable, so the cluster has to be destroyed to correct
+    # it. This shipped once, when the task that reads the load balancer's name
+    # was removed along with the template set that used to hold it.
+    for name, strategy in published.items():
+        addr = strategy["nodePort"].get("address")
+        check(f"{name} is published on a real address",
+              bool(addr) and addr not in ("None", "~"), repr(addr))
+
+    # And with the public entry point on, the two a human touches move to the
+    # load balancer while the two only the VMs speak stay on the node.
+    pub = yaml.safe_load(render(
+        f"{tmpl}/sites-infra-hostedcluster.yaml.j2",
+        **{**ctx, "guest_public_control_plane": True,
+           "guest_public_address": "lb.example.com"}))
+    pubs = {s["service"]: s["servicePublishingStrategy"]["nodePort"]
+            for s in pub["spec"]["services"]}
+    check("a public guest still names a real address for every service",
+          all(v.get("address") for v in pubs.values()),
+          str({k: v.get("address") for k, v in pubs.items()}))
+    check("and pins the ports its load balancer was built for",
+          pubs["APIServer"]["port"] == ctx["guest_api_nodeport"]
+          and pubs["OAuthServer"]["port"] == ctx["guest_oauth_nodeport"])
 
     np = yaml.safe_load(render(f"{tmpl}/sites-infra-nodepool.yaml.j2", **ctx))
     check("the NodePool names the same cluster",

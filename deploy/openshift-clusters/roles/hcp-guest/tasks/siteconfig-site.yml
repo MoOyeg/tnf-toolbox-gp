@@ -33,6 +33,34 @@
       metadata:
         name: "{{ hcp_namespace }}"
 
+# Secret.type is immutable, and the two ways of building this guest disagree
+# about it: 'hcp create cluster' leaves an Opaque secret behind, and the
+# manifest here declares a typed one. Patching one into the other fails with
+# "field is immutable", which is what a switch between the two paths looks like.
+#
+# Deleting is safe at this point: it is recreated in the next task, and
+# HyperShift reads the .dockerconfigjson key either way.
+- name: "{{ guest_name }}: read the existing pull secret's type"
+  ansible.builtin.command: >-
+    oc --kubeconfig {{ guest_infra_kubeconfig }}
+    get secret {{ guest_name }}-pull-secret -n {{ hcp_namespace }}
+    -o jsonpath='{.type}'
+  register: existing_pull_secret
+  changed_when: false
+  failed_when: false
+
+- name: "{{ guest_name }}: remove a pull secret of the wrong type"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ guest_infra_kubeconfig }}"
+    state: absent
+    api_version: v1
+    kind: Secret
+    name: "{{ guest_name }}-pull-secret"
+    namespace: "{{ hcp_namespace }}"
+  when:
+    - existing_pull_secret.stdout | default('') | trim | length > 0
+    - existing_pull_secret.stdout | trim != 'kubernetes.io/dockerconfigjson'
+
 - name: "{{ guest_name }}: put the pull secret beside the cluster"
   kubernetes.core.k8s:
     kubeconfig: "{{ guest_infra_kubeconfig }}"
@@ -79,6 +107,35 @@
         key: "{{ lookup('password', '/dev/null length=32 chars=hexdigits') | b64encode }}"
   no_log: true
   when: etcd_key.rc != 0
+
+# The address the guest's API and console answer on, when the public entry
+# point is enabled. It has to be right in the manifest before the cluster is
+# ever created from it: spec.services is immutable afterwards, so an empty
+# address here is a cluster that has to be destroyed to correct.
+- name: "{{ guest_name }}: read the control-plane load balancer name"
+  ansible.builtin.slurp:
+    src: >-
+      {{ repo_root }}/deploy/aws-infra/instance-data/{{ acm_cluster_name }}/{{ guest_name }}_lb_dns
+  delegate_to: localhost
+  register: guest_lb_state
+  when: guest_public_control_plane | bool
+  failed_when: false
+
+- name: "{{ guest_name }}: fail if the public entry point was asked for but never built"
+  ansible.builtin.assert:
+    that: guest_lb_state.content is defined
+    fail_msg: >-
+      guest_public_control_plane is on but no load balancer is recorded for
+      {{ guest_name }}. Run 'make guest-lb GUEST={{ guest_name }}' first: the
+      NodePorts are pinned so the stack can be built before the guest, and
+      spec.services cannot be changed once the HostedCluster exists.
+  when: guest_public_control_plane | bool
+
+- name: "{{ guest_name }}: note where its API and console will answer"
+  ansible.builtin.set_fact:
+    guest_public_address: >-
+      {{ (guest_lb_state.content | default('') | b64decode | trim)
+         if guest_public_control_plane | bool else '' }}
 
 - name: "{{ guest_name }}: create the site folder"
   ansible.builtin.file:

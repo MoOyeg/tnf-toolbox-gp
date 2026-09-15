@@ -1,0 +1,58 @@
+#
+# Ansible managed -- roles/hcp-guest/templates/sites-infra-nodepool.yaml.j2
+#
+# The guest's workers: KubeVirt VMs on the same cluster as the control plane
+# that owns them, each with real T4s passed through.
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  name: hcp-1
+  namespace: clusters
+  annotations:
+    # After the HostedCluster: a NodePool naming a cluster that does not exist
+    # yet is rejected rather than retried.
+    argocd.argoproj.io/sync-wave: "2"
+    # HyperShift spreads a NodePool's VMs either way; without this it uses
+    # preferred pod anti-affinity, which only says "somewhere else if you can"
+    # and will put two of three on one node. With it, topology spread
+    # constraints with maxSkew 1.
+    #
+    # Switching an existing NodePool between the two replaces every VM, so the
+    # controller will not do it unasked. This one is created with it from the
+    # start, so there is nothing to replace.
+    hypershift.openshift.io/nodepool-supports-kubevirt-topology-spread-constraints: "true"
+spec:
+  clusterName: hcp-1
+  arch: amd64
+  replicas: 3
+  release:
+    image: quay.io/openshift-release-dev/ocp-release:4.22.10-x86_64
+  # Day-1 machine configuration, as a ConfigMap alongside this file. A
+  # reference to one that does not exist leaves the NodePool degraded rather
+  # than quietly unconfigured.
+  config:
+    - name: hcp-1-chrony
+  management:
+    # Replace rather than InPlace, and no auto-repair: a worker here is a VM
+    # with a passed-through GPU, and replacing one returns the device to the
+    # pool cleanly where repairing it in place would not.
+    autoRepair: false
+    upgradeType: Replace
+  platform:
+    type: KubeVirt
+    kubevirt:
+      attachDefaultNetwork: true
+      networkInterfaceMultiqueue: Enable
+      compute:
+        cores: 8
+        memory: 32Gi
+      rootVolume:
+        type: Persistent
+        persistent:
+          size: 200Gi
+          storageClass: lvms-vg1
+      # Discovered on the hosting cluster at run time, not guessed: the resource
+      # name the GPU Operator advertises carries the device model.
+      hostDevices:
+        - deviceName: nvidia.com/TU104GL_TESLA_T4
+          count: 2

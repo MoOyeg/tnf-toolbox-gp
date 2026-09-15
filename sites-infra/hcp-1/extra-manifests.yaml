@@ -1,0 +1,42 @@
+#
+# Ansible managed -- roles/hcp-guest/templates/sites-infra-extra-manifests.yaml.j2
+#
+# Install-time node configuration for hcp-1, referenced from the
+# NodePool via spec.config.
+#
+# The same manifest the hub-hosted profile writes, in the namespace the
+# HostedCluster actually lives in on the infra cluster. A NodePool's config
+# ConfigMap is resolved in the HostedCluster's own namespace, so this has to
+# follow the cluster rather than stay behind on the hub.
+#
+# The shape is fixed by HyperShift: a NodePool config entry is a ConfigMap
+# holding exactly one manifest under the key 'config', where the assisted
+# installer's takes many keyed by filename. One ConfigMap per manifest is the
+# cost of that.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: hcp-1-chrony
+  namespace: clusters
+  annotations:
+    # Before the NodePool that references it.
+    argocd.argoproj.io/sync-wave: "0"
+data:
+  config: |
+    apiVersion: machineconfiguration.openshift.io/v1
+    kind: MachineConfig
+    metadata:
+      name: 99-chrony-site
+      labels:
+        machineconfiguration.openshift.io/role: worker
+    spec:
+      config:
+        ignition:
+          version: 3.2.0
+        storage:
+          files:
+            - path: /etc/chrony.conf
+              mode: 420
+              overwrite: true
+              contents:
+                source: data:text/plain;charset=utf-8;base64,c2VydmVyIDIucmhlbC5wb29sLm50cC5vcmcgaWJ1cnN0CmRyaWZ0ZmlsZSAvdmFyL2xpYi9jaHJvbnkvZHJpZnQKbWFrZXN0ZXAgMS4wIDMKcnRjc3luYwpsb2dkaXIgL3Zhci9sb2cvY2hyb255Cg==
