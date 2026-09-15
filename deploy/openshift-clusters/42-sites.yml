@@ -80,28 +80,40 @@
       register: site_clusters
       changed_when: false
 
-    # Both profiles land on the same secret name -- HyperShift and Hive each
-    # write <cluster>-admin-kubeconfig into the cluster's own namespace -- so one
-    # harvest covers them without asking which kind it is looking at.
+    # Two places, because the two profiles do not agree. Hive writes
+    # <cluster>-admin-kubeconfig into the cluster's own namespace; HyperShift
+    # writes plain admin-kubeconfig into the hosted control plane's namespace,
+    # which is <hcp_namespace>-<cluster>. Looking in only the first found
+    # nothing for a hosted guest.
+    #
+    # Written through a temp file and moved into place, and that is the whole
+    # point rather than tidiness: a redirect truncates its target before the
+    # command runs, so a lookup that failed left an empty file behind -- and the
+    # task that swept those up then deleted a working kubeconfig that another
+    # stage had written. 'make sites' is meant to be re-runnable, and it was
+    # quietly destroying what it could not find. Nothing is touched now unless
+    # there is content to put there.
     - name: Harvest the kubeconfig of every site that has one
-      ansible.builtin.shell: >-
-        set -o pipefail;
-        oc get secret {{ item }}-admin-kubeconfig -n {{ item }}
-        -o jsonpath={.data.kubeconfig} | base64 -d
-        > {{ guest_kubeconfig_dir }}/{{ item }}.kubeconfig
+      ansible.builtin.shell: |
+        set -o pipefail
+        tmp="$(mktemp)"
+        trap 'rm -f "${tmp}"' EXIT
+        for pair in "{{ item }}:{{ item }}-admin-kubeconfig" \
+                    "{{ hcp_namespace }}-{{ item }}:admin-kubeconfig"; do
+          ns="${pair%%:*}"; secret="${pair##*:}"
+          if oc get secret "${secret}" -n "${ns}" \
+               -o jsonpath='{.data.kubeconfig}' 2>/dev/null \
+               | base64 -d > "${tmp}" && [ -s "${tmp}" ]; then
+            install -m 0600 "${tmp}" "{{ guest_kubeconfig_dir }}/{{ item }}.kubeconfig"
+            echo "${ns}/${secret}"
+            exit 0
+          fi
+        done
+        exit 1
       loop: "{{ site_clusters.stdout_lines | select | list }}"
       register: harvested
       changed_when: harvested.rc == 0
       failed_when: false
-
-    - name: Drop the empty files left by a cluster that is not ready yet
-      ansible.builtin.file:
-        path: "{{ guest_kubeconfig_dir }}/{{ item.item }}.kubeconfig"
-        state: absent
-      loop: "{{ harvested.results | default([]) }}"
-      loop_control:
-        label: "{{ item.item }}"
-      when: item.rc | default(1) != 0
 
     # The last link. A cluster built from a site definition is accepted by the
     # hub and then waits to be told about itself; this applies the import
