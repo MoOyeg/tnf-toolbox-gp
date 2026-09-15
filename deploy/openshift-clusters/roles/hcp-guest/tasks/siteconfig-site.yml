@@ -1,39 +1,48 @@
 ---
-# Write one guest's site definition into the fleet repository, and put the
-# secrets it references on the hub.
+# Write one guest's definition into the fleet repository, and put the secrets it
+# references on the cluster that will host it.
 #
-# Three secrets rather than the all-VM profile's one, because a hosted control
-# plane runs here: the pull secret, the kubeconfig that lets HyperShift create
-# VMs on the infra cluster, and the key its etcd is encrypted with. None of them
-# belongs in Git; all three are what the validator and HyperShift look for
-# before the HostedCluster can come up.
+# The definition goes under sites-infra/, not sites/. sites/ is the half of a
+# site the hub applies to itself, and the SiteConfig operator expands a
+# ClusterInstance into the cluster it runs in -- so a ClusterInstance for a
+# hosted cluster always produces a control plane on the hub. That is structural.
+# This guest's control plane runs on TNF, so its manifests are the half of the
+# site placed on the infra cluster, which is what sites-infra/ already means and
+# what applicationset-infra.yaml.j2 already delivers there.
+#
+# Two secrets rather than the three the hub-hosted profile needed: the pull
+# secret and the key etcd is encrypted with. The third was a kubeconfig letting
+# HyperShift reach across to another cluster to make VMs, and there is no across
+# any more -- the VMs are created where the control plane runs.
+#
+# infra_kubeconfig is a credential for the hosting cluster. These tasks run on
+# the ACM bastion, which has no kubeconfig for TNF of its own; 'make acm-site'
+# writes one there for exactly this kind of reach.
 
 - name: Set the name for this guest cluster
   ansible.builtin.set_fact:
     guest_name: "{{ guest_cluster_prefix }}-{{ guest_index }}"
 
-- name: "{{ guest_name }}: create the site namespace on the hub"
+- name: "{{ guest_name }}: create the hosted-cluster namespace on the infra cluster"
   kubernetes.core.k8s:
-    kubeconfig: "{{ op_kubeconfig }}"
+    kubeconfig: "{{ guest_infra_kubeconfig }}"
     state: present
     definition:
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: "{{ guest_name }}"
-        labels:
-          cluster.open-cluster-management.io/backup: cluster-activation
+        name: "{{ hcp_namespace }}"
 
-- name: "{{ guest_name }}: put the pull secret in the site namespace"
+- name: "{{ guest_name }}: put the pull secret beside the cluster"
   kubernetes.core.k8s:
-    kubeconfig: "{{ op_kubeconfig }}"
+    kubeconfig: "{{ guest_infra_kubeconfig }}"
     state: present
     definition:
       apiVersion: v1
       kind: Secret
       metadata:
         name: "{{ guest_name }}-pull-secret"
-        namespace: "{{ guest_name }}"
+        namespace: "{{ hcp_namespace }}"
       type: kubernetes.io/dockerconfigjson
       # Built as one expression, because pull_secret is JSON text and Ansible
       # converts a templated value that looks like a literal back into one. Set
@@ -43,52 +52,27 @@
       stringData: "{{ {'.dockerconfigjson': pull_secret} }}"
   no_log: true
 
-# What puts the worker VMs on the infra cluster instead of on this hub. Without
-# it HyperShift creates them locally, which is the whole thing this layout
-# exists to avoid -- the hub has no GPUs and no room for them.
-- name: "{{ guest_name }}: read the infra cluster credential"
-  ansible.builtin.slurp:
-    src: "{{ guest_infra_kubeconfig }}"
-  register: guest_infra_cred
-  when: guest_infra_kubeconfig | default('') | length > 0
-
-- name: "{{ guest_name }}: put the infra credential in the site namespace"
-  kubernetes.core.k8s:
-    kubeconfig: "{{ op_kubeconfig }}"
-    state: present
-    definition:
-      apiVersion: v1
-      kind: Secret
-      metadata:
-        name: "{{ guest_name }}-infra-credentials"
-        namespace: "{{ guest_name }}"
-      data:
-        kubeconfig: "{{ guest_infra_cred.content }}"
-  no_log: true
-  when: guest_infra_kubeconfig | default('') | length > 0
-
 # Generated once and then left alone. 'hcp create' mints this itself; rendering
-# from a template means nothing does unless we do. Rotating it out from under a
+# manifests means nothing does unless we do. Rotating it out from under a
 # running guest would make its etcd unreadable, so an existing key is kept.
 - name: "{{ guest_name }}: look for an existing etcd encryption key"
   ansible.builtin.command: >-
-    oc get secret {{ guest_name }}-etcd-encryption-key -n {{ guest_name }} -o name
-  environment:
-    KUBECONFIG: "{{ op_kubeconfig }}"
+    oc --kubeconfig {{ guest_infra_kubeconfig }}
+    get secret {{ guest_name }}-etcd-encryption-key -n {{ hcp_namespace }} -o name
   register: etcd_key
   changed_when: false
   failed_when: false
 
 - name: "{{ guest_name }}: create the etcd encryption key"
   kubernetes.core.k8s:
-    kubeconfig: "{{ op_kubeconfig }}"
+    kubeconfig: "{{ guest_infra_kubeconfig }}"
     state: present
     definition:
       apiVersion: v1
       kind: Secret
       metadata:
         name: "{{ guest_name }}-etcd-encryption-key"
-        namespace: "{{ guest_name }}"
+        namespace: "{{ hcp_namespace }}"
       type: Opaque
       data:
         # aescbc wants 32 bytes, base64 encoded.
@@ -98,7 +82,7 @@
 
 - name: "{{ guest_name }}: create the site folder"
   ansible.builtin.file:
-    path: "{{ site_repo_dir }}/{{ guest_name }}"
+    path: "{{ site_infra_repo_dir }}/{{ guest_name }}"
     state: directory
     mode: '0755'
   delegate_to: localhost
@@ -106,16 +90,30 @@
 - name: "{{ guest_name }}: write the site definition"
   ansible.builtin.template:
     src: "{{ item.src }}"
-    dest: "{{ site_repo_dir }}/{{ guest_name }}/{{ item.dest }}"
+    dest: "{{ site_infra_repo_dir }}/{{ guest_name }}/{{ item.dest }}"
     mode: '0644'
   loop:
-    - {src: site-namespace.yaml.j2, dest: namespace.yaml}
-    - {src: clusterinstance.yaml.j2, dest: clusterinstance.yaml}
-    - {src: extra-manifests.yaml.j2, dest: extra-manifests.yaml}
+    - {src: sites-infra-hcp-namespace.yaml.j2, dest: namespace.yaml}
+    - {src: sites-infra-extra-manifests.yaml.j2, dest: extra-manifests.yaml}
+    - {src: sites-infra-hostedcluster.yaml.j2, dest: hostedcluster.yaml}
+    - {src: sites-infra-nodepool.yaml.j2, dest: nodepool.yaml}
   loop_control:
     label: "{{ item.dest }}"
   delegate_to: localhost
 
+# The hub-hosted definition, if an earlier run of this stage left one. Leaving
+# it means the sites/ ApplicationSet keeps a ClusterInstance on the hub that
+# builds the same cluster the other way, and two HyperShift operators would each
+# create a control plane for {{ guest_name }}.
+- name: "{{ guest_name }}: remove any hub-hosted definition left behind"
+  ansible.builtin.file:
+    path: "{{ site_repo_dir }}/{{ guest_name }}"
+    state: absent
+  delegate_to: localhost
+
 - name: "{{ guest_name }}: report what to commit"
   ansible.builtin.debug:
-    msg: "{{ guest_name }}: site definition written to {{ site_repo_dir }}/{{ guest_name }}/"
+    msg: >-
+      {{ guest_name }}: definition written to
+      {{ site_infra_repo_dir }}/{{ guest_name }}/ -- applied to the infra
+      cluster, where its control plane and its worker VMs both run.

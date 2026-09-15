@@ -92,9 +92,9 @@
         op_kubeconfig: "{{ acm_kubeconfig }}"
 
     # Read from TNF, where the GPUs physically are, not from the hub. The hub
-    # has none and would report none -- and unlike the stages that create a
-    # cluster, this one bakes the answer into a template that every future guest
-    # is rendered from, so getting it from the wrong cluster would be durable.
+    # has none and would report none, and the answer is written into the guest
+    # manifests 'make sites' renders, so getting it from the wrong cluster would
+    # be durable.
     - name: Discover the passthrough GPU resource name on the infra cluster
       ansible.builtin.include_role:
         name: common
@@ -102,13 +102,15 @@
       vars:
         op_kubeconfig: "{{ acm_install_dir }}/infra-kubeconfig"
 
-    - name: Create the hosted-control-plane install template
-      ansible.builtin.include_role:
-        name: hcp-guest
-        tasks_from: siteconfig-template
-      vars:
-        op_kubeconfig: "{{ acm_kubeconfig }}"
-        guest_api_address: "{{ acm_sno_private_ip }}"
+    # No install template for the hosted guests. There was one, and a
+    # ClusterInstance referencing it, until the guests' control planes moved to
+    # TNF: the SiteConfig operator runs here and expands a ClusterInstance into
+    # the cluster it is running in, so that path can only ever produce a control
+    # plane on the hub. 'make sites' now writes the HostedCluster and NodePool
+    # straight into sites-infra/, which Argo CD applies to the infra cluster.
+    #
+    # The all-VM profile above still uses SiteConfig, and should: its clusters
+    # are built by the assisted installer, which the hub genuinely does run.
 
     - name: Install OpenShift GitOps and the fleet ApplicationSet
       ansible.builtin.include_role:

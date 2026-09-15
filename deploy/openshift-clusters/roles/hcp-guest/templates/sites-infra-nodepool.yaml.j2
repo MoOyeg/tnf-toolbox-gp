@@ -1,0 +1,60 @@
+#
+# Ansible managed -- roles/hcp-guest/templates/sites-infra-nodepool.yaml.j2
+#
+# The guest's workers: KubeVirt VMs on the same cluster as the control plane
+# that owns them, each with real T4s passed through.
+apiVersion: hypershift.openshift.io/v1beta1
+kind: NodePool
+metadata:
+  name: {{ guest_name }}
+  namespace: {{ hcp_namespace }}
+  annotations:
+    # After the HostedCluster: a NodePool naming a cluster that does not exist
+    # yet is rejected rather than retried.
+    argocd.argoproj.io/sync-wave: "2"
+    # HyperShift spreads a NodePool's VMs either way; without this it uses
+    # preferred pod anti-affinity, which only says "somewhere else if you can"
+    # and will put two of three on one node. With it, topology spread
+    # constraints with maxSkew 1.
+    #
+    # Switching an existing NodePool between the two replaces every VM, so the
+    # controller will not do it unasked. This one is created with it from the
+    # start, so there is nothing to replace.
+    hypershift.openshift.io/nodepool-supports-kubevirt-topology-spread-constraints: "true"
+spec:
+  clusterName: {{ guest_name }}
+  arch: amd64
+  replicas: {{ guest_nodepool_replicas }}
+  release:
+    image: {{ guest_release_image }}
+  # Day-1 machine configuration, as a ConfigMap alongside this file. A
+  # reference to one that does not exist leaves the NodePool degraded rather
+  # than quietly unconfigured.
+  config:
+    - name: {{ guest_name }}-chrony
+  management:
+    # Replace rather than InPlace, and no auto-repair: a worker here is a VM
+    # with a passed-through GPU, and replacing one returns the device to the
+    # pool cleanly where repairing it in place would not.
+    autoRepair: false
+    upgradeType: Replace
+  platform:
+    type: KubeVirt
+    kubevirt:
+      attachDefaultNetwork: true
+      networkInterfaceMultiqueue: Enable
+      compute:
+        cores: {{ guest_vm_cores }}
+        memory: {{ guest_vm_memory }}
+      rootVolume:
+        type: Persistent
+        persistent:
+          size: {{ guest_vm_root_disk }}
+          storageClass: {{ storage_class }}
+{% if guest_gpus_per_node | int > 0 %}
+      # Discovered on the hosting cluster at run time, not guessed: the resource
+      # name the GPU Operator advertises carries the device model.
+      hostDevices:
+        - deviceName: {{ gpu_resource_name }}
+          count: {{ guest_gpus_per_node }}
+{% endif %}

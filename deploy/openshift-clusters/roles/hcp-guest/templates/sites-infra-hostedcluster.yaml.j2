@@ -1,0 +1,97 @@
+#
+# Ansible managed -- roles/hcp-guest/templates/sites-infra-hostedcluster.yaml.j2
+#
+# A guest cluster's hosted control plane, applied to the infra cluster.
+#
+# Why this is not a ClusterInstance any more. The SiteConfig operator runs on
+# the hub and expands a ClusterInstance into the cluster it is running in, so a
+# ClusterInstance for a hosted cluster always produces a control plane on the
+# hub -- that is structural, not a setting. This guest's control plane runs on
+# TNF, beside the worker VMs it owns and the GPUs they use, so the manifests
+# are delivered to TNF and TNF's own MultiCluster Engine acts on them.
+#
+# What that costs is the ClusterInstance abstraction, and it is worth naming:
+# sizing, networking and the node count are spelled out below rather than
+# implied by a template set. SiteConfig's value is on the hub, and the hub is
+# no longer where this cluster is built.
+#
+# The one field that is *absent* is the point of the whole thing:
+# spec.platform.kubevirt has no credentials block. That block is what sends the
+# worker VMs to another cluster; without it HyperShift creates them where it is
+# running, which is here, which is where the GPUs are.
+apiVersion: hypershift.openshift.io/v1beta1
+kind: HostedCluster
+metadata:
+  name: {{ guest_name }}
+  namespace: {{ hcp_namespace }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+spec:
+  infraID: {{ guest_name }}
+  release:
+    image: {{ guest_release_image }}
+  # Created on the infra cluster by Ansible, not committed: a pull secret in a
+  # public repository is a credential in a public repository.
+  pullSecret:
+    name: {{ guest_name }}-pull-secret
+  controllerAvailabilityPolicy: {{ guest_control_plane_availability }}
+  infrastructureAvailabilityPolicy: {{ guest_infra_availability }}
+  olmCatalogPlacement: management
+  fips: false
+  etcd:
+    managementType: Managed
+    managed:
+      storage:
+        type: PersistentVolume
+        persistentVolume:
+          size: 8Gi
+          storageClassName: {{ storage_class }}
+  secretEncryption:
+    type: aescbc
+    aescbc:
+      activeKey:
+        name: {{ guest_name }}-etcd-encryption-key
+  networking:
+    networkType: {{ network_type }}
+    clusterNetwork:
+      - cidr: {{ cluster_network_cidr }}
+    # Objects, not bare strings: HostedCluster's serviceNetwork is a list of
+    # {cidr: ...} and the flattened form fails server-side apply with
+    # ".spec.networking.serviceNetwork[0]: expected map, got &{...}".
+    serviceNetwork:
+      - cidr: {{ service_network_cidr }}
+  platform:
+    type: KubeVirt
+    kubevirt:
+      # The guest's ingress domain is derived from the hosting cluster's, so the
+      # VMs need no DNS zone of their own.
+      baseDomainPassthrough: true
+  # Every service on a NodePort, and none on a LoadBalancer or a Route. On
+  # platform:none in AWS a LoadBalancer Service stays <pending> for ever, and
+  # the Route strategy is no escape -- HyperShift serves Route-strategy services
+  # from a private router it exposes with a LoadBalancer of its own.
+  #
+  # spec.services is immutable once the HostedCluster exists, which is why it is
+  # correct here rather than patched afterwards.
+  services:
+{% for service in ['APIServer', 'OAuthServer'] %}
+    - service: {{ service }}
+      servicePublishingStrategy:
+        type: NodePort
+        nodePort:
+{% if guest_public_control_plane %}
+          address: {{ guest_public_address }}
+          port: {{ guest_api_nodeport if service == 'APIServer' else guest_oauth_nodeport }}
+{% else %}
+          address: {{ guest_api_address }}
+{% endif %}
+{% endfor %}
+{% for service in ['Ignition', 'Konnectivity'] %}
+    # Spoken only by the worker VMs, which run on this same cluster -- so this
+    # stays the node address even when the two above move to a public name.
+    - service: {{ service }}
+      servicePublishingStrategy:
+        type: NodePort
+        nodePort:
+          address: {{ guest_api_address }}
+{% endfor %}

@@ -116,7 +116,11 @@ multiclusterhub_name: multiclusterhub
 siteconfig_template_namespace: open-cluster-management
 siteconfig_vcp_cluster_template: vcp-cluster-templates-v1
 siteconfig_vcp_node_template: vcp-node-templates-v1
-siteconfig_hcp_cluster_template: hcp-kubevirt-cluster-templates-v1
+# No hosted-cluster template set. There was one, until the guests' control
+# planes moved to TNF: the SiteConfig operator expands a ClusterInstance into
+# the cluster it runs in, so that path could only ever build a control plane on
+# the hub. Those guests are written straight to sites-infra/ as a HostedCluster
+# and a NodePool, and Argo CD applies them to the cluster that runs them.
 
 # The generated fleet. Ansible writes one folder per cluster under site_repo_dir
 # and Argo CD reads them back from site_repo_url -- so the files are generated,
