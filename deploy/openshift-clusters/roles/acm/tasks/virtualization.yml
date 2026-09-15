@@ -49,7 +49,7 @@
 - name: Confirm the hub accepted the virtualization component
   ansible.builtin.command: >-
     oc get multiclusterhub {{ multiclusterhub_name }} -n {{ acm_namespace }}
-    -o jsonpath={.spec.overrides.components[?(@.name=="{{ acm_virtualization_component }}")].enabled}
+    -o jsonpath='{.spec.overrides.components[?(@.name=="{{ acm_virtualization_component }}")].enabled}'
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
   register: mch_virt_component
