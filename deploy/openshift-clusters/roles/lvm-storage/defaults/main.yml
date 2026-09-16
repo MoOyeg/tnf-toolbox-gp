@@ -4,3 +4,9 @@ lvms_namespace: openshift-storage
 lvm_device_class: vg1
 lvm_cluster_name: lvmcluster
 lvms_timeout: 900
+
+# Explicit device paths, for nodes whose extra disk is not an EBS volume. A
+# virtual machine's is a virtio device at the same path on every node, so one
+# entry covers the cluster. Empty means derive the paths from each node's
+# recorded EBS volume id instead.
+lvm_devices: []

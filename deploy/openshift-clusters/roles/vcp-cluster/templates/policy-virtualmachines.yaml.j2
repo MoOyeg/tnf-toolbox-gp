@@ -283,6 +283,17 @@ spec:
                           storageClassName: {{ storage_class }}
                         source:
                           blank: {}
+                    - metadata:
+                        name: {{ vm.name }}-data
+                      spec:
+                        storage:
+                          accessModes: [ReadWriteOnce]
+                          resources:
+                            requests:
+                              storage: {{ vcp_data_disk }}
+                          storageClassName: {{ storage_class }}
+                        source:
+                          blank: {}
                   template:
                     metadata:
                       labels:
@@ -333,6 +344,13 @@ spec:
                               cdrom:
                                 bus: sata
                                 readonly: true
+                            # No bootOrder: it must never be booted from. This
+                            # is the blank disk LVM Storage builds the cluster's
+                            # storage class on, and a device LVM owns carries no
+                            # bootable filesystem.
+                            - name: data
+                              disk:
+                                bus: virtio
                           interfaces:
                             # The l2bridge binding plugin, not masquerade.
                             # Masquerade NATs the guest behind the pod and hands
@@ -371,6 +389,9 @@ spec:
                         - name: discovery
                           dataVolume:
                             name: {{ vcp_cluster_name }}-discovery
+                        - name: data
+                          dataVolume:
+                            name: {{ vm.name }}-data
                       # An assisted install reboots each node when it writes the
                       # image to disk; without this KubeVirt treats the reboot as
                       # a crash and restarts the VM from the ISO instead.

@@ -1656,6 +1656,34 @@ def test_the_vm_pods_carry_what_the_services_select():
                       "a Service selecting it would find no endpoints")
 
 
+def test_the_vms_carry_a_disk_for_storage():
+    """An all-VM cluster needs a disk LVM can own, or it has no storage at all.
+
+    It installs with no storage class: the image registry stays Removed, nothing
+    can claim a PVC, and a workload that wants one sits Pending with nothing
+    naming the cause. The root disk cannot serve -- LVM wants a whole
+    unpartitioned device and that one is the installed system.
+    """
+    print("\nall-VM storage disk")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles/vcp-cluster"
+    for name in ("virtualmachine.yaml.j2", "policy-virtualmachines.yaml.j2"):
+        body = open(f"{roles}/templates/{name}", encoding="utf-8").read()
+        check(f"{name}: declares a data volume per node",
+              "-data" in body, "no second disk to build storage on")
+        check(f"{name}: attaches it as a disk",
+              re.search(r"- name: data\s*\n\s*disk:", body) is not None)
+        # It must never be bootable: a device LVM owns has no filesystem to boot.
+        m = re.search(r"- name: data\s*\n(\s*bootOrder:)?", body)
+        check(f"{name}: and gives it no boot order",
+              m is not None and not m.group(1),
+              "a bootable blank disk can win the boot order after install")
+
+    expose = open(f"{roles}/tasks/expose.yml", encoding="utf-8").read()
+    check("the cluster gets a storage class built on it",
+          "lvm-storage" in expose,
+          "without one the registry stays Removed and PVCs never bind")
+
+
 def test_both_vcp_paths_publish_the_cluster():
     """A cluster built from Git must be reachable, same as one built directly.
 
@@ -1846,6 +1874,7 @@ def main():
     test_applicationset_templates_match_their_template_engine()
     test_a_site_folder_creates_its_namespace_first()
     test_the_vm_pods_carry_what_the_services_select()
+    test_the_vms_carry_a_disk_for_storage()
     test_both_vcp_paths_publish_the_cluster()
     test_rendering_sites_does_not_block_on_one_guest()
     test_the_guest_is_built_from_git_onto_its_host()

@@ -50,6 +50,20 @@ vcp_worker_memory: 24Gi
 # ceiling costs nothing until it is written into.
 vcp_root_disk: 180Gi
 
+# A second disk per node, for LVM Storage to build a storage class on.
+#
+# Without it the cluster has no storage class at all: the image registry stays
+# Removed, nothing can claim a PVC, and a workload that wants one sits Pending
+# with nothing saying why. The root disk cannot serve -- LVM needs a whole
+# unpartitioned device, and that one is the installed system.
+vcp_data_disk: 100Gi
+
+# Where that disk appears inside the guest. virtio devices are named in
+# attachment order, so the second disk of every node is the same path on all of
+# them -- which is why one entry covers the cluster where an EBS volume id
+# would need one per node.
+vcp_data_device: /dev/vdb
+
 # Per node, not per worker. In a compact cluster the control-plane nodes are
 # where workloads run, so that is where the GPUs have to go -- the older split,
 # which gave control-plane VMs none on the grounds that they ran nothing worth a

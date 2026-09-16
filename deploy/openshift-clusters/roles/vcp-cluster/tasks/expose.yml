@@ -146,3 +146,23 @@
   when:
     - vcp_kubeconfig_present | bool
     - vcp_node_count.stdout_lines | default([]) | length > 0
+
+# Storage, once the cluster is up.
+#
+# An all-VM cluster installs with no storage class at all: the image registry
+# stays Removed, nothing can claim a PVC, and a workload that wants one sits
+# Pending with nothing naming the cause. The second disk each node carries is
+# what LVM Storage builds one on.
+#
+# Here rather than in a stage of its own for the same reason the DNS and the
+# Services are here: it needs the cluster to exist, and this is the point in a
+# re-runnable stage where that is first true.
+- name: "{{ vcp_cluster_name }}: build a storage class on each node's data disk"
+  ansible.builtin.include_role:
+    name: lvm-storage
+  vars:
+    op_kubeconfig: "{{ vcp_guest_kubeconfig }}"
+    # The same virtio path on every node, so one entry covers the cluster --
+    # unlike an EBS volume id, which differs per node.
+    lvm_devices: ["{{ vcp_data_device }}"]
+  when: vcp_kubeconfig_present | bool

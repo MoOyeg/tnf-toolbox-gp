@@ -21,26 +21,34 @@
     op_operator_group_scope: own
     op_csv_timeout: "{{ operator_csv_timeout }}"
 
-# AWS exposes an EBS volume's id as the NVMe serial, so udev names it
-# predictably. Knowing the volume id from CloudFormation means the right disk
-# can be named outright instead of inferred from size or mount state.
+# Two ways to name the disk, because the two kinds of node differ.
+#
+# On EC2, AWS exposes an EBS volume's id as the NVMe serial, so udev names it
+# predictably -- knowing the volume id from CloudFormation means the right disk
+# can be named outright rather than inferred from size or mount state.
+#
+# A node that is a virtual machine has no EBS volume and no such serial: its
+# extra disk is whatever virtio device KubeVirt attached, the same path on every
+# node. Such a caller passes lvm_devices and the derivation is skipped.
 - name: Derive the expected device path for each node's data volume
   ansible.builtin.set_fact:
     lvm_device_paths: >-
-      {{ control_plane_nodes
-         | map(attribute='data_volume')
-         | select('truthy')
-         | map('regex_replace', '-', '')
-         | map('regex_replace', '^', '/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_')
-         | list }}
+      {{ lvm_devices if (lvm_devices | default([]) | length > 0)
+         else (control_plane_nodes
+               | map(attribute='data_volume')
+               | select('truthy')
+               | map('regex_replace', '-', '')
+               | map('regex_replace', '^', '/dev/disk/by-id/nvme-Amazon_Elastic_Block_Store_')
+               | list) }}
 
 - name: Fail if no data volumes were recorded
   ansible.builtin.assert:
-    that: lvm_device_paths | length == control_plane_nodes | length
+    that: lvm_device_paths | length > 0
     fail_msg: >-
-      Expected one data volume per control-plane node but found
-      {{ lvm_device_paths }}. Re-run 'make tnf' so the compute stack outputs are
-      recorded in deploy/aws-infra/instance-data/.
+      No data volume to build storage on. On EC2 nodes this means the compute
+      stack's outputs are not recorded -- re-run the stage that creates them;
+      for nodes that are virtual machines, pass lvm_devices with the path their
+      extra disk appears at.
 
 - name: Confirm the data volume is present on each node
   ansible.builtin.command: >-
