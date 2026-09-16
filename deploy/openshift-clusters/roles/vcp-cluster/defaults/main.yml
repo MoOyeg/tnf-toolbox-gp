@@ -86,3 +86,9 @@ vcp_node_network_name: vcp-nodes
 # the site namespace: that name is also a ManagedCluster, and ACM's propagator
 # deletes any root policy it finds in a cluster's namespace.
 vcp_policy_namespace: "{{ vcp_cluster_name }}-policies"
+
+# Where this cluster's own kubeconfig is once it has been harvested. Absent
+# until the cluster is installed, which is why every task that uses it checks
+# first -- the same shape as approving agents and publishing DNS, both of which
+# do nothing useful on the run that first writes the site.
+vcp_guest_kubeconfig: "{{ guest_kubeconfig_dir }}/{{ vcp_cluster_name }}.kubeconfig"

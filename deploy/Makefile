@@ -3,7 +3,7 @@ ANSIBLE := ./openshift-clusters/scripts/run-playbook.sh
 .PHONY: all keypair infra acm-infra peering siteconfig sites tnf kubeconfig iommu gpu virt-mce \
         tnf-recover \
         acm-site guests hcp-make-guests-from-acm vcp-make-guests-from-acm \
-        guest-gpu import-guests app observability-bucket guest-lb guest-lbs doctor ssh acm-ssh status \
+        guest-gpu import-guests app observability-bucket guest-lb guest-lbs vcp-lb doctor ssh acm-ssh status \
         inventory clean clean-guests destroy destroy-acm help
 
 # ---------------------------------------------------------------- end to end
@@ -86,6 +86,14 @@ observability-bucket:
 # SITE says which cluster hosts the control plane, and so which cluster's nodes
 # answer the NodePorts: tnf for a guest from 'make guests', acm for one from
 # 'make hcp-make-guests-from-acm'. The default follows 'make all'.
+# A public entry point for an all-VM cluster. Separate from guest-lb because the
+# shapes differ: a hosted cluster's ports are pinned in config so its stack can
+# be built before the cluster exists, while an all-VM cluster's are allocated by
+# the API server and have to be read back after 'make sites' publishes them.
+vcp-lb:
+	@test -n "$(GUEST)" || { echo "usage: make vcp-lb GUEST=vcp-1"; exit 1; }
+	@./aws-infra/scripts/create-vcp-lb.sh "$(GUEST)"
+
 guest-lb:
 	@test -n "$(GUEST)" || { echo "usage: make guest-lb GUEST=hcp-1 [SITE=tnf]"; exit 1; }
 	@./aws-infra/scripts/create-guest-lb.sh "$(GUEST)" "$(or $(SITE),tnf)"

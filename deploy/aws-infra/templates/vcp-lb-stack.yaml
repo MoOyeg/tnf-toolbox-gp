@@ -1,0 +1,180 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  A public entry point for an all-VM cluster's API and console.
+
+  Different in shape from guest-lb-stack.yaml, and the difference is the whole
+  reason it exists. A hosted cluster publishes its API as an address *and a
+  port*, so that stack can listen on the NodePort itself. A console URL carries
+  no port -- a browser asking for
+  https://console-openshift-console.apps.<cluster>.<domain> connects to 443 --
+  so this listens on the ports clients actually use and forwards to whatever
+  NodePort the Service landed on.
+
+  The targets are the infra cluster's nodes. An all-VM cluster's own nodes sit
+  on a user-defined network that nothing outside the infra cluster can route,
+  which is why they are unreachable without this; expose.yml publishes them as
+  NodePort Services and this fronts those.
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: The all-VM cluster's name, used to name the resources.
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  SubnetId:
+    Type: AWS::EC2::Subnet::Id
+    Description: A subnet with a route to an internet gateway.
+  TargetInstanceId:
+    Type: String
+    Description: An infra-cluster node carrying the NodePorts.
+  SecondTargetInstanceId:
+    Type: String
+    Default: ''
+    Description: >-
+      A second node of the same cluster, where there is one. A NodePort answers
+      on every node, so registering one would put the cluster behind the single
+      node most likely to be taken away.
+  ApiNodePort:
+    Type: Number
+    Description: NodePort the cluster's kube-apiserver Service landed on.
+    MinValue: 30000
+    MaxValue: 32767
+  IngressHttpsNodePort:
+    Type: Number
+    Description: NodePort the cluster's ingress Service landed on for 443.
+    MinValue: 30000
+    MaxValue: 32767
+  ClusterSecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+    Description: The infra cluster's node security group, where the NodePorts live.
+  AllowedApiCidr:
+    Type: String
+    Description: CIDR permitted to reach the cluster.
+  VpcCidr:
+    Type: String
+    Description: This VPC's CIDR, which is where the load balancer's ENIs live.
+
+Conditions:
+  HasSecondTarget: !Not [!Equals [!Ref SecondTargetInstanceId, '']]
+
+Resources:
+  # NLB, not ALB: both the API and the console speak TLS end to end and present
+  # the cluster's own certificates. An ALB would have to terminate TLS and be
+  # given those certs, and re-given them on every rebuild.
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub '${ClusterName}-pub'
+      Type: network
+      Scheme: internet-facing
+      IpAddressType: ipv4
+      Subnets: [!Ref SubnetId]
+
+  ApiTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ClusterName}-papi'
+      VpcId: !Ref VpcId
+      Protocol: TCP
+      Port: !Ref ApiNodePort
+      TargetType: instance
+      # TCP, not HTTPS: the API server wants a client certificate, so an HTTPS
+      # probe is answered 401 and a healthy target is marked unhealthy.
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Targets:
+        - Id: !Ref TargetInstanceId
+          Port: !Ref ApiNodePort
+        - Fn::If:
+            - HasSecondTarget
+            - Id: !Ref SecondTargetInstanceId
+              Port: !Ref ApiNodePort
+            - !Ref AWS::NoValue
+
+  IngressTargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Name: !Sub '${ClusterName}-ping'
+      VpcId: !Ref VpcId
+      Protocol: TCP
+      Port: !Ref IngressHttpsNodePort
+      TargetType: instance
+      HealthCheckProtocol: TCP
+      HealthCheckIntervalSeconds: 10
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+      Targets:
+        - Id: !Ref TargetInstanceId
+          Port: !Ref IngressHttpsNodePort
+        - Fn::If:
+            - HasSecondTarget
+            - Id: !Ref SecondTargetInstanceId
+              Port: !Ref IngressHttpsNodePort
+            - !Ref AWS::NoValue
+
+  # 6443 and 443, the ports a client uses -- not the NodePorts behind them.
+  ApiListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: TCP
+      Port: 6443
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref ApiTargetGroup
+
+  IngressListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Protocol: TCP
+      Port: 443
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref IngressTargetGroup
+
+  # The NodePorts sit behind the cluster's own security group, which otherwise
+  # admits only the bastion, the nodes and the peered VPC -- so without these
+  # every client and every health check is dropped.
+  ApiFromClients:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ClusterSecurityGroupId
+      IpProtocol: tcp
+      FromPort: !Ref ApiNodePort
+      ToPort: !Ref ApiNodePort
+      CidrIp: !Ref AllowedApiCidr
+
+  ApiFromHealthChecks:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ClusterSecurityGroupId
+      IpProtocol: tcp
+      FromPort: !Ref ApiNodePort
+      ToPort: !Ref ApiNodePort
+      CidrIp: !Ref VpcCidr
+
+  IngressFromClients:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ClusterSecurityGroupId
+      IpProtocol: tcp
+      FromPort: !Ref IngressHttpsNodePort
+      ToPort: !Ref IngressHttpsNodePort
+      CidrIp: !Ref AllowedApiCidr
+
+  IngressFromHealthChecks:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref ClusterSecurityGroupId
+      IpProtocol: tcp
+      FromPort: !Ref IngressHttpsNodePort
+      ToPort: !Ref IngressHttpsNodePort
+      CidrIp: !Ref VpcCidr
+
+Outputs:
+  LoadBalancerDns:
+    Description: The public name clients reach this cluster on.
+    Value: !GetAtt LoadBalancer.DNSName

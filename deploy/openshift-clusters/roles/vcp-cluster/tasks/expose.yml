@@ -44,11 +44,18 @@
         namespace: "{{ vcp_vm_namespace }}"
       spec:
         type: NodePort
-        # Ingress runs on the workers, so this selects them rather than every
-        # node of the cluster.
+        # Wherever the router actually runs. Ingress runs on the workers when
+        # there are any, so this selects them rather than every node of the
+        # cluster -- but vcp_worker_replicas defaults to 0, and on a cluster
+        # with no workers the control-plane nodes are schedulable and the router
+        # runs there. Selecting workers unconditionally left this Service with
+        # no endpoints on the default topology: a NodePort listening with
+        # nothing behind it, which refuses connections rather than failing in a
+        # way that names the cause.
         selector:
           tnf-toolbox-gp/cluster: "{{ vcp_cluster_name }}"
-          tnf-toolbox-gp/role: worker
+          tnf-toolbox-gp/role: >-
+            {{ 'worker' if (vcp_worker_replicas | int) > 0 else 'control-plane' }}
         ports:
           - name: https
             port: 443
@@ -79,3 +86,41 @@
       - "Point api.{{ vcp_cluster_name }}.{{ base_domain }} and"
       - "*.apps.{{ vcp_cluster_name }}.{{ base_domain }} at a node address on"
       - "those ports. From the bastion the kubeconfig works as fetched."
+
+# One router per node the ingress Service selects.
+#
+# The Service selects every node of the cluster, and kube-proxy forwards to any
+# of them -- but the default IngressController runs two replicas, so on a
+# three-node cluster one node has no router and refuses the connection. The load
+# balancer's health check does not catch it: it is a TCP check against the
+# NodePort, which kube-proxy opens on every node whether or not a router is
+# behind it. The symptom is a console that works about two times in three, which
+# reads as flakiness rather than as a replica count.
+- name: "{{ vcp_cluster_name }}: see whether its kubeconfig has been harvested yet"
+  ansible.builtin.stat:
+    path: "{{ vcp_guest_kubeconfig }}"
+  register: vcp_kubeconfig_file
+
+- name: "{{ vcp_cluster_name }}: read how many nodes the ingress Service covers"
+  ansible.builtin.command: >-
+    oc --kubeconfig {{ vcp_guest_kubeconfig }}
+    get nodes --no-headers -o name
+  register: vcp_node_count
+  changed_when: false
+  failed_when: false
+  when: vcp_kubeconfig_file.stat.exists
+
+- name: "{{ vcp_cluster_name }}: run one router on each of them"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_guest_kubeconfig }}"
+    state: patched
+    api_version: operator.openshift.io/v1
+    kind: IngressController
+    name: default
+    namespace: openshift-ingress-operator
+    definition:
+      spec:
+        replicas: "{{ vcp_node_count.stdout_lines | length }}"
+  when:
+    - vcp_kubeconfig_file.stat.exists
+    - vcp_node_count.stdout_lines | default([]) | length > 0
