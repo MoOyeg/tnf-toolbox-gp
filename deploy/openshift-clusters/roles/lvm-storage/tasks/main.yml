@@ -50,13 +50,24 @@
       for nodes that are virtual machines, pass lvm_devices with the path their
       extra disk appears at.
 
+# Pair each node with the device to look for. The two kinds of node pair
+# differently: an EC2 node's path is its own, derived from its own volume id, so
+# the lists line up one to one; a virtual machine's is the same virtio path on
+# every node, so one path has to be checked against all of them.
+- name: Work out which device to expect on each node
+  ansible.builtin.set_fact:
+    lvm_node_devices: >-
+      {{ control_plane_nodes | zip(lvm_device_paths) | list
+         if (lvm_device_paths | length == control_plane_nodes | length)
+         else control_plane_nodes | product(lvm_device_paths) | list }}
+
 - name: Confirm the data volume is present on each node
   ansible.builtin.command: >-
     oc debug node/{{ item.0.name }} --quiet --
     chroot /host bash -c "test -e {{ item.1 }} && lsblk -no SIZE {{ item.1 }}"
   environment:
     KUBECONFIG: "{{ op_kubeconfig }}"
-  loop: "{{ control_plane_nodes | zip(lvm_device_paths) | list }}"
+  loop: "{{ lvm_node_devices }}"
   loop_control:
     label: "{{ item.0.name }} -> {{ item.1 }}"
   register: device_check

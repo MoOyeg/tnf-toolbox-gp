@@ -162,6 +162,11 @@
     name: lvm-storage
   vars:
     op_kubeconfig: "{{ vcp_guest_kubeconfig }}"
+    # This cluster's nodes, not the infra cluster's. The role checks the device
+    # on each node it is given, and the default list is the cluster Ansible
+    # normally runs against -- which here is the one hosting the VMs, not the
+    # one inside them.
+    control_plane_nodes: "{{ vcp_nodes }}"
     # The same virtio path on every node, so one entry covers the cluster --
     # unlike an EBS volume id, which differs per node.
     lvm_devices: ["{{ vcp_data_device }}"]
