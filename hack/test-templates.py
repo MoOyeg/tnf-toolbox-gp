@@ -1626,10 +1626,19 @@ def test_the_vm_pods_carry_what_the_services_select():
     print("\nall-VM pod labels")
     roles = f"{ROOT}/deploy/openshift-clusters/roles/vcp-cluster"
     expose = yaml.safe_load(open(f"{roles}/tasks/expose.yml", encoding="utf-8"))
-    selectors = [t["kubernetes.core.k8s"]["definition"]["spec"]["selector"]
-                 for t in expose
-                 if isinstance(t.get("kubernetes.core.k8s"), dict)
-                 and t["kubernetes.core.k8s"].get("definition", {}).get("kind") == "Service"]
+    # Some definitions are built as a single Jinja expression and parse as a
+    # string, so every step here has to tolerate that rather than assume a dict.
+    selectors = []
+    for task in expose:
+        module = task.get("kubernetes.core.k8s")
+        if not isinstance(module, dict):
+            continue
+        definition = module.get("definition")
+        if not isinstance(definition, dict) or definition.get("kind") != "Service":
+            continue
+        selector = definition.get("spec", {}).get("selector")
+        if isinstance(selector, dict):
+            selectors.append(selector)
     check("the exposure tasks declare Service selectors", bool(selectors))
 
     # Both templates that create the VMs must satisfy every selector key.
