@@ -1614,6 +1614,39 @@ def test_a_site_folder_creates_its_namespace_first():
               f"sync-wave={wave}")
 
 
+def test_the_vm_pods_carry_what_the_services_select():
+    """expose.yml's Services select pods; the labels must be on the pod template.
+
+    A virt-launcher pod inherits spec.template.metadata.labels, not the
+    VirtualMachine's own. A role label set only on the VM matches nothing, the
+    Services find no endpoints, and the NodePort listens with no backend --
+    refusing every connection in milliseconds, which reads as a firewall or a
+    dead API rather than as a selector that matches no pod.
+    """
+    print("\nall-VM pod labels")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles/vcp-cluster"
+    expose = yaml.safe_load(open(f"{roles}/tasks/expose.yml", encoding="utf-8"))
+    selectors = [t["kubernetes.core.k8s"]["definition"]["spec"]["selector"]
+                 for t in expose
+                 if isinstance(t.get("kubernetes.core.k8s"), dict)
+                 and t["kubernetes.core.k8s"].get("definition", {}).get("kind") == "Service"]
+    check("the exposure tasks declare Service selectors", bool(selectors))
+
+    # Both templates that create the VMs must satisfy every selector key.
+    for name, expr in (("virtualmachine.yaml.j2",
+                        r"template:.*?metadata:.*?labels:(.*?)spec:"),
+                       ("policy-virtualmachines.yaml.j2",
+                        r"template:\s*\n\s*metadata:\s*\n\s*labels:(.*?)\n\s*spec:")):
+        body = open(f"{roles}/templates/{name}", encoding="utf-8").read()
+        m = re.search(expr, body, re.S)
+        pod_labels = m.group(1) if m else ""
+        for sel in selectors:
+            for key in sel:
+                check(f"{name}: its pod template carries {key}",
+                      key in pod_labels,
+                      "a Service selecting it would find no endpoints")
+
+
 def test_both_vcp_paths_publish_the_cluster():
     """A cluster built from Git must be reachable, same as one built directly.
 
@@ -1803,6 +1836,7 @@ def main():
     test_the_guest_entry_point_follows_the_control_plane()
     test_applicationset_templates_match_their_template_engine()
     test_a_site_folder_creates_its_namespace_first()
+    test_the_vm_pods_carry_what_the_services_select()
     test_both_vcp_paths_publish_the_cluster()
     test_rendering_sites_does_not_block_on_one_guest()
     test_the_guest_is_built_from_git_onto_its_host()

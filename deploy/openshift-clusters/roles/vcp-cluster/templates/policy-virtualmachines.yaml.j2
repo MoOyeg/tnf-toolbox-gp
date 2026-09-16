@@ -288,6 +288,15 @@ spec:
                       labels:
                         kubevirt.io/domain: {{ vm.name }}
                         tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+                        # On the pod template, not only on the VirtualMachine
+                        # above. A Service selects pods, and the virt-launcher
+                        # pod inherits these labels rather than the VM object's
+                        # -- so the role set up there matches nothing here, and
+                        # expose.yml's Services find no endpoints. The NodePort
+                        # then listens with no backend and refuses every
+                        # connection, which reads as a firewall or a dead API
+                        # rather than as a selector that matches no pod.
+                        tnf-toolbox-gp/role: {{ vm.role }}
                     spec:
                       # Spread these across the infra cluster's nodes rather than
                       # letting them pile onto whichever one has room first.

@@ -24,6 +24,12 @@ spec:
     metadata:
       labels:
         kubevirt.io/domain: {{ vm.name }}
+        # On the pod template as well as on the VirtualMachine above. A Service
+        # selects pods, and the virt-launcher pod inherits these labels rather
+        # than the VM object's -- so expose.yml's Services matched nothing, and
+        # the NodePort listened with no backend and refused every connection.
+        tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+        tnf-toolbox-gp/role: {{ vm.role }}
     spec:
       # A node that reboots into its installed disk must not be handed the
       # discovery ISO again, so the disk is first in the boot order and the
