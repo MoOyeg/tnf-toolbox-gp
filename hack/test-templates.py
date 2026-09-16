@@ -1656,6 +1656,44 @@ def test_the_vm_pods_carry_what_the_services_select():
                       "a Service selecting it would find no endpoints")
 
 
+def test_the_app_can_pull_as_well_as_build():
+    """The app must deploy to a cluster that has no registry to build into.
+
+    roles/app builds its images in the cluster and pushes to the cluster's own
+    registry, which needs nothing but oc -- and needs the cluster to have a
+    registry. A cluster with no storage class has none, and new-build fails with
+    "Output image could not be resolved", naming the ImageStream rather than the
+    missing registry behind it.
+    """
+    print("\nthe app's images")
+    roles = f"{ROOT}/deploy/openshift-clusters/roles/app"
+    defaults = yaml.safe_load(open(f"{roles}/defaults/main.yml", encoding="utf-8"))
+    check("building in the cluster is still the default",
+          defaults.get("app_external_registry") == "",
+          "it needs no external registry and no credentials")
+    check("an external repository can be named instead",
+          "app_external_registry" in defaults)
+    check("and each image's address there is described",
+          set(defaults.get("app_image_tags", {})) == set(defaults["app_images"]),
+          "quay has no nested repositories, so the three differ by tag")
+
+    instance = open(f"{roles}/tasks/instance.yml", encoding="utf-8").read()
+    check("the in-cluster build is skipped when pulling",
+          "app_external_registry" in instance,
+          "otherwise it fails against a registry that is not there")
+
+    # The manifests must be able to express a reference that is not
+    # <registry>/<name>:latest.
+    makefile = open(f"{ROOT}/app/Makefile", encoding="utf-8").read()
+    for var in ("IMAGE_CAMERA_SIM", "IMAGE_ANALYZER", "IMAGE_DASHBOARD"):
+        check(f"the app Makefile takes {var}",
+              var in makefile,
+              "a tag-addressed image cannot be built from a prefix")
+    check("and both deploy and render honour them",
+          makefile.count("$(IMAGE_ANALYZER)") >= 2,
+          "one path would silently keep the old prefix form")
+
+
 def test_the_vms_carry_a_disk_for_storage():
     """An all-VM cluster needs a disk LVM can own, or it has no storage at all.
 
@@ -1874,6 +1912,7 @@ def main():
     test_applicationset_templates_match_their_template_engine()
     test_a_site_folder_creates_its_namespace_first()
     test_the_vm_pods_carry_what_the_services_select()
+    test_the_app_can_pull_as_well_as_build()
     test_the_vms_carry_a_disk_for_storage()
     test_both_vcp_paths_publish_the_cluster()
     test_rendering_sites_does_not_block_on_one_guest()

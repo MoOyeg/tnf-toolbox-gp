@@ -56,7 +56,32 @@
 # a CUDA torch base and write a 6.6GiB analyzer layer again for the same result.
 - name: "{{ app_label }}: build the images in the cluster"
   ansible.builtin.include_tasks: build.yml
-  when: app_instance | int == 1
+  when:
+    - app_instance | int == 1
+    - not (app_external_registry | default('') | length > 0)
+
+# Pulling instead of building. A cluster with no storage class has no image
+# registry to build into, so there is nothing to push to and new-build fails
+# with "Output image could not be resolved" -- which names the ImageStream and
+# not the missing registry behind it.
+- name: "{{ app_label }}/{{ app_namespace }}: credentials for the external registry"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig }}"
+    state: present
+    definition: "{{ app_image_pull_secret | from_yaml }}"
+  no_log: true
+  when: app_image_pull_secret | default('') | length > 0
+
+- name: "{{ app_label }}/{{ app_namespace }}: let its pods use those credentials"
+  ansible.builtin.command: >-
+    oc -n {{ app_namespace }} secrets link default
+    {{ (app_image_pull_secret | from_yaml).metadata.name }} --for=pull
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: app_ext_secret_link
+  changed_when: app_ext_secret_link.rc == 0
+  failed_when: false
+  when: app_image_pull_secret | default('') | length > 0
 
 # And the instances that did not build them need to be allowed to pull them.
 # Without this their pods fail with ImagePullBackOff against an internal

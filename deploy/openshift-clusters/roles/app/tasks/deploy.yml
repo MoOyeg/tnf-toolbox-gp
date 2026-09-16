@@ -20,6 +20,29 @@
   ansible.builtin.set_fact:
     app_cluster: "{{ app_label | regex_replace('\\.kubeconfig$', '') }}"
 
+# Where each image is pulled from. An in-cluster build puts them at
+# <registry>/<name>:latest; an external repository may lay them out
+# differently, which is what app_image_tags describes -- Quay has no nested
+# repositories, so three images in one repository differ by tag, not by path.
+#
+# Written out one image at a time rather than built with a filter chain,
+# because the reference that ends up in a manifest should be readable in the
+# file that produces it.
+- name: "{{ app_label }}/{{ app_namespace }}: resolve each image's reference"
+  ansible.builtin.set_fact:
+    app_ref_camera_sim: >-
+      {{ (app_external_registry ~ ':' ~ app_image_tags['camera-sim'])
+         if (app_external_registry | default('') | length > 0)
+         else (app_registry ~ '/camera-sim:latest') }}
+    app_ref_analyzer: >-
+      {{ (app_external_registry ~ ':' ~ app_image_tags['analyzer'])
+         if (app_external_registry | default('') | length > 0)
+         else (app_registry ~ '/analyzer:latest') }}
+    app_ref_dashboard: >-
+      {{ (app_external_registry ~ ':' ~ app_image_tags['dashboard'])
+         if (app_external_registry | default('') | length > 0)
+         else (app_registry ~ '/dashboard:latest') }}
+
 - name: "{{ app_label }}/{{ app_namespace }}: render the manifests into the fleet repository"
   ansible.builtin.command:
     cmd: >-
@@ -27,6 +50,9 @@
       OUT={{ gitops_fleet_repo_dir }}/{{ app_cluster }}/{{ app_namespace }}
       NAMESPACE={{ app_namespace }}
       REGISTRY={{ app_registry }}
+      IMAGE_CAMERA_SIM={{ app_ref_camera_sim | trim }}
+      IMAGE_ANALYZER={{ app_ref_analyzer | trim }}
+      IMAGE_DASHBOARD={{ app_ref_dashboard | trim }}
       CAMERAS={{ app_cameras }}
       MODEL={{ app_model }}
       VLLM_IMAGE={{ app_vllm_image }}

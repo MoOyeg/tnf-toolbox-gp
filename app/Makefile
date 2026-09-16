@@ -4,6 +4,17 @@
 # interesting one, since its GPUs are physical T4s passed through KubeVirt.
 
 REGISTRY   ?= image-registry.openshift-image-registry.svc:5000/visual-inspection
+
+# Each image's full reference, so a registry that does not lay the three out as
+# <registry>/<name>:latest can still be used. Quay has no nested repositories,
+# for instance, so three images in one repository are told apart by tag:
+#
+#   make deploy IMAGE_CAMERA_SIM=quay.io/you/app:camera-sim ...
+#
+# Left alone they follow REGISTRY, which is what an in-cluster build produces.
+IMAGE_CAMERA_SIM ?= $(REGISTRY)/camera-sim:latest
+IMAGE_ANALYZER   ?= $(REGISTRY)/analyzer:latest
+IMAGE_DASHBOARD  ?= $(REGISTRY)/dashboard:latest
 NAMESPACE  ?= visual-inspection
 CAMERAS    ?= 4
 MODEL      ?= Qwen/Qwen2.5-VL-3B-Instruct
@@ -48,7 +59,9 @@ push:
 deploy:
 	@sed -e "s|name: visual-inspection|name: $(NAMESPACE)|" manifests/00-namespace.yaml | oc apply -f -
 	@for f in manifests/[1-5]*.yaml; do \
-	   sed -e "s|REPLACED_BY_KUSTOMIZE|$(REGISTRY)|g" \
+	   sed -e "s|REPLACED_BY_KUSTOMIZE/camera-sim:latest|$(IMAGE_CAMERA_SIM)|g" \
+	       -e "s|REPLACED_BY_KUSTOMIZE/analyzer:latest|$(IMAGE_ANALYZER)|g" \
+	       -e "s|REPLACED_BY_KUSTOMIZE/dashboard:latest|$(IMAGE_DASHBOARD)|g" \
 	       -e "s|registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.1|$(VLLM_IMAGE)|g" \
 	       -e "s|value: \"4\"|value: \"$(CAMERAS)\"|g" \
 	       -e "s|Qwen/Qwen2.5-VL-3B-Instruct|$(MODEL)|g" \
@@ -72,7 +85,9 @@ render:
 	@sed -e "s|name: visual-inspection|name: $(NAMESPACE)|" \
 	     manifests/00-namespace.yaml > "$(OUT)/00-namespace.yaml"
 	@for f in manifests/[1-5]*.yaml; do \
-	   sed -e "s|REPLACED_BY_KUSTOMIZE|$(REGISTRY)|g" \
+	   sed -e "s|REPLACED_BY_KUSTOMIZE/camera-sim:latest|$(IMAGE_CAMERA_SIM)|g" \
+	       -e "s|REPLACED_BY_KUSTOMIZE/analyzer:latest|$(IMAGE_ANALYZER)|g" \
+	       -e "s|REPLACED_BY_KUSTOMIZE/dashboard:latest|$(IMAGE_DASHBOARD)|g" \
 	       -e "s|registry.redhat.io/rhaiis/vllm-cuda-rhel9:3.2.1|$(VLLM_IMAGE)|g" \
 	       -e "s|value: \"4\"|value: \"$(CAMERAS)\"|g" \
 	       -e "s|Qwen/Qwen2.5-VL-3B-Instruct|$(MODEL)|g" \

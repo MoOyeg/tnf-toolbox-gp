@@ -51,6 +51,28 @@ app_images:
   - analyzer
   - dashboard
 
+# Where the three images come from.
+#
+# Empty means build them in the cluster and push to its own registry, which is
+# the default because it needs nothing but oc: no external registry, no
+# credentials, no pushing from outside. It does need the cluster to *have* a
+# registry, and a cluster with no storage class has none -- an all-VM cluster
+# installs that way.
+#
+# Set it to an external repository to pull instead, with app_image_tags saying
+# how the three are addressed there. A registry that needs credentials also
+# needs app_image_pull_secret.
+app_external_registry: ""
+app_image_pull_secret: ""
+
+# How each image is named in an external repository. Quay has no nested
+# repositories, so three images in one repository are told apart by tag rather
+# than by path -- which is why this is a mapping and not a prefix.
+app_image_tags:
+  camera-sim: camera-sim
+  analyzer: analyzer
+  dashboard: dashboard
+
 app_registry: "image-registry.openshift-image-registry.svc:5000/{{ app_images_namespace }}"
 
 # Every workload the manifests create, in the order they become useful. Used
