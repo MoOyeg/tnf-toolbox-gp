@@ -24,9 +24,14 @@ delete_stacks_parallel "${ACM_CLUSTER_NAME}-bootstrap" "${ACM_SNO_STACK}"
 # Discovered rather than derived from the guest names: the count and prefix can
 # change between runs, and a stack this teardown does not know about is exactly
 # the one that blocks it.
+#
+# Two suffixes, because the two profiles publish differently: a hosted cluster's
+# entry point is <guest>-cp-lb, an all-VM cluster's is <cluster>-pub-lb. Matching
+# only one leaves the other holding an ENI in the subnet, and the network stack
+# will not delete under it.
 for lb in $(aws cloudformation list-stacks \
       --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE ROLLBACK_COMPLETE \
-      --query 'StackSummaries[?ends_with(StackName, `-cp-lb`)].StackName' \
+      --query 'StackSummaries[?ends_with(StackName, `-cp-lb`) || ends_with(StackName, `-pub-lb`)].StackName' \
       --output text 2>/dev/null); do
   delete_stack "${lb}"
 done
