@@ -158,6 +158,21 @@
   ansible.builtin.include_tasks: dns.yml
   when: vcp_agents.stdout_lines | default([]) | select | list | length > 0
 
+# Only once the machines have addresses, for the same reason the DNS does: the
+# Services select the VMs by label and have nothing to point at before they are
+# running.
+#
+# Shared with the direct path rather than left to it. With user-managed
+# networking the installer builds no VIPs, so nothing publishes the API or the
+# ingress -- and the nodes' own addresses are on a user-defined network that
+# only the infra cluster can route. A cluster built from Git without this is
+# installed, healthy and unreachable: not from a workstation, not from the ACM
+# bastion, which is where the klusterlet is installed from, so it cannot even
+# be imported into the hub.
+- name: Publish the cluster's API and ingress
+  ansible.builtin.include_tasks: expose.yml
+  when: vcp_agents.stdout_lines | default([]) | select | list | length > 0
+
 - name: Report what to commit
   ansible.builtin.debug:
     msg:

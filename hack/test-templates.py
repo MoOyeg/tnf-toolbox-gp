@@ -1614,6 +1614,37 @@ def test_a_site_folder_creates_its_namespace_first():
               f"sync-wave={wave}")
 
 
+def test_both_vcp_paths_publish_the_cluster():
+    """A cluster built from Git must be reachable, same as one built directly.
+
+    With user-managed networking the installer builds no VIPs, and the nodes'
+    own addresses are on a user-defined network only the infra cluster can
+    route. Without the Services that publish the API and ingress, the cluster
+    installs, reports healthy and cannot be reached -- not from a workstation,
+    and not from the ACM bastion, which is where the klusterlet is installed
+    from, so it cannot even be imported into the hub.
+    """
+    print("\nboth all-VM paths publish the cluster")
+    tasks = f"{ROOT}/deploy/openshift-clusters/roles/vcp-cluster/tasks"
+
+    def reachable_from(entry):
+        """The steps an entry point runs, following one level of include."""
+        body = open(f"{tasks}/{entry}", encoding="utf-8").read()
+        for inc in re.findall(r"include_tasks:\s*(\S+\.yml)", body):
+            path = f"{tasks}/{inc}"
+            if os.path.exists(path):
+                body += open(path, encoding="utf-8").read()
+        return body
+
+    for entry, label in (("main.yml", "the direct path"),
+                         ("siteconfig-site.yml", "the GitOps path")):
+        body = reachable_from(entry)
+        for step, why in (("approve-agents.yml", "agents nothing approves are counted by nothing"),
+                          ("dns.yml", "no records means every agent fails validation"),
+                          ("expose.yml", "an unreachable cluster cannot even be imported")):
+            check(f"{label} runs {step}", step in body, why)
+
+
 def test_rendering_sites_does_not_block_on_one_guest():
     """'make sites' renders the whole fleet; one guest must not stall it.
 
@@ -1772,6 +1803,7 @@ def main():
     test_the_guest_entry_point_follows_the_control_plane()
     test_applicationset_templates_match_their_template_engine()
     test_a_site_folder_creates_its_namespace_first()
+    test_both_vcp_paths_publish_the_cluster()
     test_rendering_sites_does_not_block_on_one_guest()
     test_the_guest_is_built_from_git_onto_its_host()
 

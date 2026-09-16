@@ -8,6 +8,11 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: acm-vcp-vms
+  annotations:
+    # Before anything placed into it, for the same reason the hub half of the
+    # site carries one: Argo CD can otherwise try to apply a namespaced object
+    # before the namespace exists and fail the whole sync.
+    argocd.argoproj.io/sync-wave: "-1"
   labels:
     tnf-toolbox-gp/owner: acm-vcp
     # Opts the namespace into a primary user-defined network. Without it the UDN
