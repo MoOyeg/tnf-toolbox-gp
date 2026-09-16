@@ -96,10 +96,30 @@
 # NodePort, which kube-proxy opens on every node whether or not a router is
 # behind it. The symptom is a console that works about two times in three, which
 # reads as flakiness rather than as a replica count.
-- name: "{{ vcp_cluster_name }}: see whether its kubeconfig has been harvested yet"
-  ansible.builtin.stat:
-    path: "{{ vcp_guest_kubeconfig }}"
-  register: vcp_kubeconfig_file
+# Read from the hub rather than from a harvested file. The harvest happens
+# later in the same run -- 42-sites.yml collects kubeconfigs after every site is
+# written -- so a task here that waits for the file can never fire on the run
+# that needs it, and silently skips instead.
+- name: "{{ vcp_cluster_name }}: read its kubeconfig from the hub"
+  ansible.builtin.shell: |
+    set -o pipefail
+    tmp="$(mktemp)"
+    if oc --kubeconfig {{ op_kubeconfig }} get secret {{ vcp_cluster_name }}-admin-kubeconfig \
+         -n {{ vcp_cluster_name }} -o jsonpath='{.data.kubeconfig}' 2>/dev/null \
+         | base64 -d > "${tmp}" && [ -s "${tmp}" ]; then
+      install -m 0600 "${tmp}" "{{ vcp_guest_kubeconfig }}"
+      rm -f "${tmp}"
+      echo present
+    else
+      rm -f "${tmp}"
+    fi
+  register: vcp_kubeconfig_read
+  changed_when: false
+  failed_when: false
+
+- name: "{{ vcp_cluster_name }}: note whether it is installed yet"
+  ansible.builtin.set_fact:
+    vcp_kubeconfig_present: "{{ 'present' in (vcp_kubeconfig_read.stdout | default('')) }}"
 
 - name: "{{ vcp_cluster_name }}: read how many nodes the ingress Service covers"
   ansible.builtin.command: >-
@@ -108,7 +128,7 @@
   register: vcp_node_count
   changed_when: false
   failed_when: false
-  when: vcp_kubeconfig_file.stat.exists
+  when: vcp_kubeconfig_present | bool
 
 - name: "{{ vcp_cluster_name }}: run one router on each of them"
   kubernetes.core.k8s:
@@ -118,9 +138,11 @@
     kind: IngressController
     name: default
     namespace: openshift-ingress-operator
-    definition:
-      spec:
-        replicas: "{{ vcp_node_count.stdout_lines | length }}"
+    # Built as one expression so the count stays a number. A templated scalar
+    # arrives as text however it is filtered, and the IngressController CRD
+    # rejects "3" where it wants 3 -- the same reason the GPU workload label is
+    # built this way in roles/gpu-passthrough.
+    definition: "{{ {'spec': {'replicas': vcp_node_count.stdout_lines | length}} }}"
   when:
-    - vcp_kubeconfig_file.stat.exists
+    - vcp_kubeconfig_present | bool
     - vcp_node_count.stdout_lines | default([]) | length > 0
