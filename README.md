@@ -22,15 +22,29 @@ the ACM site manages it and runs none of it.**
 | | runs on | which means |
 |---|---|---|
 | TNF cluster | 2 × `g4dn.metal` | the two-node cluster itself, 16 × Tesla T4 between them |
-| `hcp-1` control plane | **TNF**, as pods | `etcd`, `kube-apiserver`, `konnectivity` in namespace `clusters-hcp-1` |
-| `hcp-1` workers | **TNF**, as KubeVirt VMs | 3 VMs in that same namespace, 2 T4 passed into each |
-| the inspection app | inside `hcp-1`, on its T4s | camera-sim → analyzer → vLLM → dashboard |
+| the guest cluster | **TNF** | one of the two profiles below — never both at once |
+| the inspection app | inside that guest, on its T4s | camera-sim → analyzer → vLLM → dashboard |
 | ACM hub | 1 × `m6i.4xlarge` | ACM, MCE, SiteConfig, GitOps, observability — and no workload |
 
-TNF's own MultiCluster Engine creates the `HostedCluster`, so the control-plane
-pods land beside the worker VMs they own, on the cluster that has the GPUs. The
-hub's job is to manage the fleet: it imports TNF as a managed cluster, holds the
-cluster definitions, and collects metrics. Nothing of the guest runs on it.
+### The guest is one profile or the other
+
+A site definition names a profile, and the same two nodes carry whichever it
+names. Both run entirely on TNF; they differ in what the control plane *is*:
+
+| | control plane | workers | built by |
+|---|---|---|---|
+| **`hcp-1`** — hosted control plane | pods on TNF, in namespace `clusters-hcp-1` | 3 KubeVirt VMs on TNF, 2 T4 each | HyperShift, driven by TNF's own MCE |
+| **`vcp-1`** — every node a VM | 3 KubeVirt VMs on TNF, 1 T4 each — these *are* the cluster | the same three VMs, or workers added to them | the assisted installer, driven by the hub |
+
+A hosted control plane is cheaper: it is pods, and it shares the hosting
+cluster's etcd machinery. A standalone one costs three more VMs before a single
+workload runs, and in exchange it survives its host going away. `make gpu`,
+`make app` and `make guest-gpu` take either.
+
+Either way the control plane lands on the cluster that has the GPUs, beside the
+VMs it owns. The hub's job is to manage the fleet: it imports TNF as a managed
+cluster, holds the cluster definitions, and collects metrics. Nothing of the
+guest runs on it.
 
 That is what lets the hub be an ordinary EC2 instance. It has no virtual
 machines, so it needs no KVM, so it needs no bare metal — and a hub that lives
@@ -58,9 +72,12 @@ ACM site  VPC 10.1.0.0/16              TNF site  VPC 10.0.0.0/16
       └── Observability                      ├── LVM Storage on EBS gp3
                   │                          ├── OpenShift Virtualization
                   │                          ├── MCE + HyperShift
-                  │                          └── clusters-hcp-1
-                  │                                ├── control-plane pods
-                  │                                └── 3 worker VMs, 2 T4 each
+                  │                          └── the guest — whichever profile
+                  │                              the site definition names:
+                  │                              ├── hcp-1  control-plane pods
+                  │                              │          + 3 worker VMs, 2 T4
+                  │                              └── vcp-1  3 control-plane VMs,
+                  │                                         1 T4 each, no pods
                   │                                    ▲
                   └────────── VPC peering ─────────────┘
                     management only: TNF is imported into the hub as a managed
@@ -147,9 +164,9 @@ The three are worth telling apart:
 | `hcp-make-guests-from-acm` | pods on the ACM hub | KubeVirt VMs on TNF | HyperShift, ACM's MCE |
 | `vcp-make-guests-from-acm` | KubeVirt VMs on TNF | KubeVirt VMs on TNF | assisted installer |
 
-A hosted control plane is cheaper — it is pods, and it shares the hosting
-cluster's etcd machinery. A standalone one costs three more VMs before a single
-workload runs, and in exchange it survives its host going away.
+The first two rows are the same `hcp-1` profile built from different hubs; the
+third is the `vcp-1` profile. What each profile costs is in
+[Architecture](#the-guest-is-one-profile-or-the-other).
 
 ## Building clusters from Git
 

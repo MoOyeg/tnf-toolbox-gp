@@ -15,16 +15,23 @@ edit to CONTAINERS, NODES and EDGES.
     python3 hack/render-architecture.py --check    # fail if it is out of date
 
 The diagram nests three kinds of boundary, and telling them apart is most of
-what it is for:
+what it is for (the app area is a fourth style, but a workload rather than a
+boundary -- it is drawn inside whichever guest was built):
 
     site      a VPC, dashed -- an AWS network boundary, not a cluster
       cluster an OpenShift cluster, solid blue
         guest a cluster hosted *by* the cluster it is drawn inside, solid green
 
-hcp-1 is drawn inside the TNF cluster because that is where it runs: its control
-plane is pods on TNF's two nodes and its workers are KubeVirt VMs on the same
-two nodes. Drawing it as a peer of TNF -- which this diagram used to do -- is the
-picture of the old topology, where the control plane lived on the ACM hub.
+Both guest profiles are drawn inside the TNF cluster, side by side, because
+both run there and a site definition picks one of them:
+
+    hcp-1     control plane as pods on TNF, workers as KubeVirt VMs on TNF
+    vcp-1     every node a KubeVirt VM on TNF, no hosted control plane at all
+
+They are alternatives, not layers -- EXCLUSION keeps either from being drawn
+inside the other, which would say one is built on top of the other. Drawing
+either as a *peer* of TNF -- which this diagram used to do -- is the picture of
+the old topology, where the control plane lived on the ACM hub.
 
 Coordinates are absolute, in the same space draw.io uses, with y growing
 downward. Boxes are placed by hand because the diagram is small enough to read
@@ -58,20 +65,33 @@ BOUNDARY = {
     "site":    ("#f7f9fc", "#9fb0c9", True,  1.2, "#5a6b82"),
     "cluster": ("#eaf1f9", "#3f6390", False, 2.2, "#2b4a70"),
     "guest":   ("#edf6ea", "#4a7c3f", False, 2.2, "#35602b"),
+    # Not a boundary of its own -- it is a workload, drawn inside whichever
+    # guest was built. Dashed and quiet so it does not read as a third cluster.
+    "app-area": ("#fdf8f0", "#c09a5c", True, 1.6, "#7a5a1e"),
 }
 
 # id, x, y, w, h, kind, label. Outermost first -- they are drawn in this order
 # so an inner boundary paints over the one containing it.
 CONTAINERS = [
-    ("tnfsite", 30, 60, 900, 760, "site", "TNF site — VPC 10.0.0.0/16"),
-    ("acmsite", 960, 60, 410, 760, "site", "ACM site — VPC 10.1.0.0/16"),
-    ("tnfcluster", 55, 175, 850, 621, "cluster",
+    ("tnfsite", 30, 60, 900, 790, "site",
+     "TNF site — VPC 10.0.0.0/16 · peered with the ACM VPC"),
+    # The peering is stated once, on the wider site -- this title has 410px
+    # and the long form runs off the canvas.
+    ("acmsite", 960, 60, 410, 790, "site", "ACM site — VPC 10.1.0.0/16"),
+    ("tnfcluster", 55, 175, 850, 655, "cluster",
      "TNF cluster — two-node OpenShift 4.22 with fencing"),
-    ("hcp1", 75, 367, 810, 409, "guest",
-     "Guest cluster hcp-1 — hosted by TNF, namespace clusters-hcp-1"),
-    ("acmcluster", 985, 175, 360, 368, "cluster",
+    # The two guest profiles, side by side because they are alternatives: a
+    # site definition names one or the other. Both run entirely on TNF.
+    ("hcp1", 75, 378, 400, 170, "guest",
+     "hcp-1 — hosted control plane"),
+    ("vcp1", 495, 378, 390, 170, "guest",
+     "vcp-1 — every node a VM"),
+    ("app", 75, 576, 810, 240, "app-area",
+     "The inspection app — deployed into whichever guest was built"),
+    ("acmcluster", 985, 175, 360, 385, "cluster",
      "ACM hub — single-node OpenShift"),
 ]
+
 
 # id, x, y, w, h, palette, lines. First line is the heading.
 NODES = [
@@ -79,8 +99,6 @@ NODES = [
     ("tnfb", 55, 105, 345, 50, "infra", [
         "bastion 10.0.0.5",
         "haproxy · Redfish shim · ignition"]),
-    # The fencing "BMC": a shim on the bastion turning Redfish into EC2
-    # Stop/Start. AWS palette because the endpoint is a regional service.
     ("ec2api", 470, 105, 270, 50, "aws", [
         "AWS EC2 API",
         "Stop / Start — the fencing BMC"]),
@@ -91,43 +109,48 @@ NODES = [
     ("m1", 490, 215, 395, 60, "compute", [
         "master-1 · g4dn.metal",
         "8× T4 → vfio-pci"]),
-    ("tnfsvc", 75, 295, 810, 52, "infra", [
-        "Pacemaker + etcd · LVM Storage · OpenShift Virtualization · MCE + HyperShift"]),
-    # ------------------------------------- hcp-1, inside TNF because that is where it runs
-    ("cp", 95, 412, 770, 56, "compute", [
-        "Hosted control plane — pods on the two nodes above",
-        "etcd · kube-apiserver · konnectivity · ignition"]),
-    ("vm1", 95, 488, 250, 56, "compute", [
-        "worker-1 · KubeVirt VM",
-        "2 × T4 passed through"]),
-    ("vm2", 365, 488, 250, 56, "compute", [
-        "worker-2 · KubeVirt VM",
-        "2 × T4 passed through"]),
-    ("vm3", 635, 488, 250, 56, "compute", [
-        "worker-3 · KubeVirt VM",
-        "2 × T4 passed through"]),
-    ("cam", 95, 576, 160, 76, "app", [
+    # The second line is the either/or the two green boxes below cannot say for
+    # themselves: drawn side by side, they would otherwise read as coexisting.
+    ("tnfsvc", 75, 292, 810, 56, "infra", [
+        "Pacemaker + etcd · LVM Storage · OpenShift Virtualization · MCE + HyperShift",
+        "a site definition picks one guest profile — hcp-1 or vcp-1, never both"]),
+    # ------------------------------------------- hcp-1: control plane as pods on TNF
+    ("cp", 95, 424, 360, 50, "compute", [
+        "Control plane — pods on the two nodes",
+        "etcd · kube-apiserver · konnectivity"]),
+    ("hvm", 95, 486, 360, 50, "compute", [
+        "3 × worker VM · 2 T4 each",
+        "created by HyperShift from a NodePool"]),
+    # ------------------------------------------ vcp-1: every node a VM, no hosted CP
+    ("vvm", 515, 424, 350, 50, "compute", [
+        "3 × control-plane VM · 1 T4 each",
+        "these are the cluster — no pods on TNF"]),
+    ("vnote", 515, 486, 350, 50, "note", [
+        "Installed by the assisted installer",
+        "own storage disk · survives the hub"]),
+    # ------------------------------------------------------- the app, in either guest
+    ("cam", 95, 622, 170, 76, "app", [
         "camera-sim",
         "VisA stills → looping line",
         "per-camera offsets"]),
-    ("rtsp", 301, 576, 130, 76, "app", [
+    ("rtsp", 320, 622, 120, 76, "app", [
         "rtsp-server",
         "mediamtx",
         "rtsp://…/camN"]),
-    ("an", 477, 566, 230, 96, "compute", [
-        "analyzer  ·  T4 #1",
+    ("an", 495, 612, 210, 88, "compute", [
+        "analyzer  ·  T4",
         "EfficientAD every frame",
         "CUDA-event GPU accounting",
         "~20.6 ms · fitted threshold"]),
-    ("dash", 753, 576, 130, 76, "app", [
+    ("dash", 745, 622, 120, 76, "app", [
         "dashboard",
         "per-camera card",
         "node · gpu · share"]),
-    ("vllm", 477, 680, 230, 76, "compute", [
-        "vLLM  ·  T4 #2",
+    ("vllm", 495, 724, 210, 76, "compute", [
+        "vLLM  ·  T4",
         "Qwen2.5-VL-3B (RHAIIS)",
         "only on flagged frames"]),
-    ("gmet", 753, 680, 130, 76, "note", [
+    ("gmet", 745, 724, 120, 76, "note", [
         "/metrics",
         "inspection_* · DCGM",
         "→ observability addon"]),
@@ -144,21 +167,20 @@ NODES = [
         "LVM Storage"]),
     ("fleet", 1005, 379, 320, 68, "hub", [
         "Fleet — managed clusters",
-        "tnf-gp (imported) · hcp-1 · vcp-1",
-        "cluster definitions from Git · Argo CD pull"]),
-    ("mco", 1005, 467, 320, 56, "hub", [
+        "tnf-gp (imported) · the guest it built",
+        "cluster definitions from Git · Argo CD"]),
+    ("mco", 1005, 487, 320, 56, "hub", [
         "MultiCluster Observability",
         "Thanos · right-sizing · Perses"]),
-    # Outside the cluster boundary on purpose: it is an AWS service, not
-    # something running on the hub.
-    ("s3", 985, 575, 360, 56, "aws", [
+    ("s3", 985, 630, 360, 56, "aws", [
         "AWS S3",
         "long-term metrics"]),
-    ("hubnote", 985, 655, 360, 68, "note", [
+    ("hubnote", 985, 720, 360, 68, "note", [
         "No OpenShift Virtualization here",
         "the hub runs no VMs, so it needs no KVM,",
         "and so does not need to be bare metal"]),
 ]
+
 
 # src, src side, dst, dst side, label, dashed, pins. sx/sy/ex/ey pin a
 # coordinate so a run leaves and arrives where it should rather than slanting.
@@ -168,55 +190,72 @@ EDGES = [
     ("tnfb", "r", "ec2api", "l", "Redfish", True, {}),
     ("m0", "b", "tnfsvc", "t", "", False, {"ex": 272}),
     ("m1", "b", "tnfsvc", "t", "", False, {"ex": 687}),
-    ("tnfsvc", "b", "cp", "t", "hosts", False, {"sx": 760, "ex": 760}),
-    ("cp", "b", "vm2", "t", "NodePool → 3 × KubeVirt VM", False,
-     {"sx": 490, "ex": 490}),
-    ("vm2", "b", "an", "t", "workloads run on the VMs", True,
-     {"sx": 560, "ex": 560}),
+    # One or the other. A site definition names a profile, and the same two
+    # nodes below carry whichever it names.
+    ("tnfsvc", "b", "hcp1", "t", "HyperShift", False, {"sx": 275, "ex": 275}),
+    ("tnfsvc", "b", "vcp1", "t", "assisted installer", False,
+     {"sx": 690, "ex": 690}),
+    # Into whichever exists.
+    ("hcp1", "b", "app", "t", "", True, {"sx": 275, "ex": 275}),
+    ("vcp1", "b", "app", "t", "", True, {"sx": 690, "ex": 690}),
     ("cam", "r", "rtsp", "l", "publish", False, {}),
     ("rtsp", "r", "an", "l", "consume", False, {}),
     ("an", "r", "dash", "l", "state", False, {}),
     ("an", "b", "vllm", "t", "flagged frame → report", False, {}),
-    ("an", "r", "gmet", "l", "", False, {"sy": 645, "ey": 700}),
+    ("an", "r", "gmet", "l", "", False, {"sy": 690}),
     ("acmb", "b", "sno", "t", "", False, {"sx": 1165, "ex": 1165}),
     ("sno", "b", "acmhub", "t", "", False, {"sx": 1165, "ex": 1165}),
     ("acmhub", "b", "fleet", "t", "", False, {"sx": 1165, "ex": 1165}),
-    ("fleet", "b", "mco", "t", "", False, {"sx": 1165, "ex": 1165}),
+    ("fleet", "b", "mco", "t", "", False, {"sx": 1212, "ex": 1212}),
+    # Out of the cluster and into object storage, so it crosses the boundary.
     ("mco", "b", "s3", "t", "blocks", False, {"sx": 1165, "ex": 1165}),
-    # The one link between the sites, and it is management only.
-    ("sno", "l", "tnfcluster", "r", "manages · VPC peering", True, {"ey": 300}),
+    # The one link between the sites, and it is management only. The label has
+    # to fit the clear band between master-1 and sno-0 -- the sites are 30px
+    # apart, so anything longer gets painted over by a box. Peering is stated
+    # in the TNF site's title instead.
+    ("sno", "l", "tnfcluster", "r", "builds · manages", True, {"ey": 320}),
     ("gmet", "r", "mco", "l", "to hub", True, {}),
 ]
+
 
 BOX = {n[0]: n[1:5] for n in NODES}
 BOX.update({c[0]: c[1:5] for c in CONTAINERS})
 
-LEGEND_Y = 848
+LEGEND_Y = 878
 LEGEND = [
     (30, "site", "VPC / site boundary"),
     (300, "cluster", "OpenShift cluster"),
     (560, "guest", "cluster hosted by the cluster it sits inside"),
+    (900, "app-area", "the inspection app — a workload, not a cluster"),
 ]
 
 
 # Which box must sit geometrically inside which. The nesting *is* the argument
-# the diagram makes -- hcp-1 running on TNF rather than beside it -- so a box
-# nudged out of its boundary is a wrong diagram, not a cosmetic slip.
+# the diagram makes -- the guests running on TNF rather than beside it -- so a
+# box nudged out of its boundary is a wrong diagram, not a cosmetic slip.
 CONTAINMENT = [
     ("tnfcluster", "tnfsite"),
     ("hcp1", "tnfcluster"),
+    ("vcp1", "tnfcluster"),
+    ("app", "tnfcluster"),
     ("acmcluster", "acmsite"),
-    ("cp", "hcp1"), ("vm1", "hcp1"), ("vm2", "hcp1"), ("vm3", "hcp1"),
-    ("cam", "hcp1"), ("rtsp", "hcp1"), ("an", "hcp1"), ("dash", "hcp1"),
-    ("vllm", "hcp1"), ("gmet", "hcp1"),
+    ("cp", "hcp1"), ("hvm", "hcp1"),
+    ("vvm", "vcp1"), ("vnote", "vcp1"),
+    ("cam", "app"), ("rtsp", "app"), ("an", "app"), ("dash", "app"),
+    ("vllm", "app"), ("gmet", "app"),
     ("m0", "tnfcluster"), ("m1", "tnfcluster"), ("tnfsvc", "tnfcluster"),
     ("sno", "acmcluster"), ("acmhub", "acmcluster"),
     ("fleet", "acmcluster"), ("mco", "acmcluster"),
 ]
 
+
 # And which must NOT: the bastion is not part of the cluster it installs, and
 # S3 is not part of the hub.
 EXCLUSION = [
+    # The two profiles are alternatives, so neither may be drawn inside the
+    # other -- that would read as one built on top of the other.
+    ("hcp1", "vcp1"),
+    ("vcp1", "hcp1"),
     ("tnfb", "tnfcluster"),
     ("ec2api", "tnfcluster"),
     ("acmb", "acmcluster"),
@@ -326,7 +365,7 @@ def render_svg():
                        f'{html.escape(line)}</text>')
             offset += 13
 
-    # Three boundary styles is two more than a reader should have to infer.
+    # Four box styles is three more than a reader should have to infer.
     for x, kind, text in LEGEND:
         fill, stroke, dashed, stroke_w, _ = BOUNDARY[kind]
         dash = ' stroke-dasharray="7 5"' if dashed else ""
