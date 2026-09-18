@@ -10,10 +10,19 @@
 # NodePort Services on the infra cluster; this fronts those with a public load
 # balancer and publishes the names in the account's public zone.
 #
-# Run after expose.yml, not before: the NodePorts are allocated by the API
-# server rather than pinned, so they have to be read back rather than assumed.
-# That is the difference from the hosted-cluster load balancer, whose ports are
-# fixed in config precisely so its stack can be built first.
+# Called by expose.yml -- 'make sites' and 'make vcp-make-guests-from-acm' --
+# straight after it creates those Services, so every all-VM cluster gets one
+# without a separate step. The hub reaches the cluster through nothing else, so
+# there was never a reason for it to be optional. 'make vcp-lb GUEST=<name>'
+# still runs this by hand, to rebuild the stack or its records.
+#
+# After the Services, not before: the NodePorts are allocated by the API server
+# rather than pinned, so they have to be read back rather than assumed. That is
+# the difference from the hosted-cluster load balancer, whose ports are fixed in
+# config precisely so its stack can be built first.
+#
+# Re-runnable: an unchanged stack is reported as already up to date, and the
+# records are UPSERTs.
 set -euo pipefail
 # shellcheck source=../../common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../../common.sh"
@@ -60,12 +69,18 @@ DNS="$(stack_output "${STACK}" LoadBalancerDns)"
 # these answer with the load balancer.
 resolve_public_hosted_zone
 info "publishing ${CLUSTER}'s public names in ${BASE_DOMAIN}"
-for name in "api.${CLUSTER}" "*.apps.${CLUSTER}"; do
-  aws route53 change-resource-record-sets --hosted-zone-id "${PUBLIC_ZONE_ID}" \
-    --change-batch "$(jq -n --arg n "${name}.${BASE_DOMAIN}" --arg v "${DNS}" \
-      '{Changes:[{Action:"UPSERT",ResourceRecordSet:{Name:$n,Type:"CNAME",TTL:60,
-        ResourceRecords:[{Value:$v}]}}]}')" >/dev/null
-done
+CHANGE_ID="$(aws route53 change-resource-record-sets --hosted-zone-id "${PUBLIC_ZONE_ID}" \
+  --change-batch "$(jq -n --arg d "${BASE_DOMAIN}" --arg c "${CLUSTER}" --arg v "${DNS}" '
+    {Changes: [ ("api." + $c), ("*.apps." + $c) | {Action: "UPSERT",
+      ResourceRecordSet: {Name: (. + "." + $d), Type: "CNAME", TTL: 60,
+        ResourceRecords: [{Value: $v}]}} ]}')" \
+  --query 'ChangeInfo.Id' --output text)"
+
+# Not done until Route 53's own servers answer with them. The caller asks for
+# these names seconds later, and a lookup that lands before the change has
+# propagated is answered NXDOMAIN -- which resolvers keep for the account
+# zone's negative TTL, fifteen minutes, however soon the record then appears.
+aws route53 wait resource-record-sets-changed --id "${CHANGE_ID}"
 
 green "${CLUSTER} reachable at:"
 green "  API     https://api.${CLUSTER}.${BASE_DOMAIN}:6443"

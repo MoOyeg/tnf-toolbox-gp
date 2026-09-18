@@ -7,9 +7,11 @@
 # LoadBalancer, for the same reason everything else here is: nothing in a VPC
 # provisions a LoadBalancer on platform:none.
 #
-# This is the same shape the hosted variant uses for a guest API, and it has the
-# same consequence: the addresses answer from inside the VPC -- the bastions and
-# the peered ACM site -- rather than from a workstation.
+# NodePorts alone answer only inside TNF's VPC: the nodes are on a user-defined
+# network nothing else routes to, and the cluster's DNS zone is private to that
+# VPC. So they are fronted with a public load balancer, created right here, and
+# that is the one way in for everything outside TNF -- a workstation, and the
+# hub itself, which finishes the cluster through it further down.
 
 - name: Publish the control-plane API
   kubernetes.core.k8s:
@@ -77,15 +79,32 @@
   register: vcp_nodeports
   changed_when: false
 
-- name: Report how to reach it
+# As soon as the ports exist, which on the Git path is the run that approves
+# the agents -- forty minutes before the cluster is installed. That timing is
+# the point: the public names are in place long before anyone looks them up,
+# and a name looked up before its record exists is cached as nonexistent for a
+# quarter of an hour. This used to be a separate 'make vcp-lb', which nothing
+# ran and the README did not mention, so the cluster installed and was
+# unreachable from everywhere but TNF.
+#
+# delegate_to: localhost for the same reason as the DNS: the AWS credentials
+# are on the control host, and the bastions' instance profiles are scoped to
+# far less than creating a load balancer.
+- name: "{{ vcp_cluster_name }}: put a public load balancer in front of them"
+  ansible.builtin.command:
+    argv:
+      - "{{ repo_root }}/deploy/aws-infra/scripts/create-vcp-lb.sh"
+      - "{{ vcp_cluster_name }}"
+  delegate_to: localhost
+  register: vcp_public_lb
+  changed_when: "'already up to date' not in vcp_public_lb.stdout"
+
+- name: "{{ vcp_cluster_name }}: report how to reach it"
   ansible.builtin.debug:
-    msg:
-      - "{{ vcp_cluster_name }} is published on the infra cluster's node ports:"
-      - "{{ vcp_nodeports.stdout_lines }}"
-      - ""
-      - "Point api.{{ vcp_cluster_name }}.{{ base_domain }} and"
-      - "*.apps.{{ vcp_cluster_name }}.{{ base_domain }} at a node address on"
-      - "those ports. From the bastion the kubeconfig works as fetched."
+    # The URLs picked out rather than the lines cleaned up: the script colours
+    # its output unconditionally, and a character class that cannot match the
+    # escape byte ends each match before the colour code without needing one.
+    msg: "{{ vcp_public_lb.stdout | regex_findall('https://[-.:a-z0-9]+') }}"
 
 # One router per node the ingress Service selects.
 #
@@ -122,18 +141,22 @@
     vcp_kubeconfig_present: "{{ 'present' in (vcp_kubeconfig_read.stdout | default('')) }}"
 
 # Installed is not the same as reachable from here. This runs on the hub's
-# bastion, in the ACM VPC; the cluster's private zone is attached only to the
-# TNF VPC, and the addresses it answers with are on a user-defined network
-# nothing outside TNF can route to. The hub reaches an all-VM cluster through
-# its public load balancer -- 'make vcp-lb' -- and until that exists every step
-# below would fail: the router step skipped without a word, storage died in
-# urllib3 with "Name or service not known", and the import would follow it.
+# bastion, in the ACM VPC, and reaches the cluster only through the public load
+# balancer created above. Before that existed the steps below failed without
+# saying why: the router step skipped without a word, storage died in urllib3
+# with "Name or service not known", and the import would have followed.
+# Retried because the load balancer may be minutes old. A new one's targets
+# take about a minute to pass their first health checks, and until they do the
+# name resolves and the connection is refused.
 - name: "{{ vcp_cluster_name }}: check its API answers from here"
   ansible.builtin.command: >-
     oc --kubeconfig {{ vcp_guest_kubeconfig }} get --raw /readyz --request-timeout=15s
   register: vcp_api_probe
   changed_when: false
   failed_when: false
+  retries: 12
+  delay: 10
+  until: vcp_api_probe.stdout | default('') | trim == 'ok'
   when: vcp_kubeconfig_present | bool
 
 - name: "{{ vcp_cluster_name }}: note whether it can be finished from here"
@@ -149,10 +172,11 @@
   ansible.builtin.debug:
     msg: >-
       {{ vcp_cluster_name }} is installed, but its API does not answer from the
-      hub bastion ({{ (vcp_api_probe.stderr_lines | default(['no answer']) | last | default('no answer'))[:160] }}).
-      The hub reaches it through its public load balancer: run
-      'make vcp-lb GUEST={{ vcp_cluster_name }}', then 'make sites' again to
-      scale its routers, build its storage and import it.
+      hub bastion through its public load balancer after two minutes
+      ({{ (vcp_api_probe.stderr_lines | default(['no answer']) | last | default('no answer'))[:160] }}).
+      Its routers, storage and import are left for the next run. Check the
+      {{ vcp_cluster_name }}-pub-lb stack's target health, then run
+      'make sites' again.
   when:
     - vcp_kubeconfig_present | bool
     - not vcp_api_reachable | bool

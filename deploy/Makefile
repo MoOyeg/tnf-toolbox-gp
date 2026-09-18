@@ -86,10 +86,11 @@ observability-bucket:
 # SITE says which cluster hosts the control plane, and so which cluster's nodes
 # answer the NodePorts: tnf for a guest from 'make guests', acm for one from
 # 'make hcp-make-guests-from-acm'. The default follows 'make all'.
-# A public entry point for an all-VM cluster. Separate from guest-lb because the
-# shapes differ: a hosted cluster's ports are pinned in config so its stack can
-# be built before the cluster exists, while an all-VM cluster's are allocated by
-# the API server and have to be read back after 'make sites' publishes them.
+# An all-VM cluster's public entry point, by hand. 'make sites' creates it on
+# its own as soon as the cluster's NodePorts exist, so this is only for
+# rebuilding the stack or its records. Its ports are allocated by the API server
+# and read back, where a hosted cluster's are pinned in config so its stack can
+# be built before the cluster exists.
 vcp-lb:
 	@test -n "$(GUEST)" || { echo "usage: make vcp-lb GUEST=vcp-1"; exit 1; }
 	@./aws-infra/scripts/create-vcp-lb.sh "$(GUEST)"

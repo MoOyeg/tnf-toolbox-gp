@@ -1811,7 +1811,10 @@ def test_both_vcp_paths_publish_the_cluster():
         body = reachable_from(entry)
         for step, why in (("approve-agents.yml", "agents nothing approves are counted by nothing"),
                           ("dns.yml", "no records means every agent fails validation"),
-                          ("expose.yml", "an unreachable cluster cannot even be imported")):
+                          ("expose.yml", "an unreachable cluster cannot even be imported"),
+                          ("create-vcp-lb.sh", "the hub reaches the cluster through its public load "
+                                               "balancer and nothing else -- as a separate, "
+                                               "unmentioned 'make vcp-lb' it was never run")):
             check(f"{label} runs {step}", step in body, why)
 
 
