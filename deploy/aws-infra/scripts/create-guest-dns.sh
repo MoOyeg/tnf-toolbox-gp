@@ -1,7 +1,10 @@
 #!/bin/bash
 # DNS for a guest cluster whose nodes are virtual machines on the infra cluster.
 #
-# Usage: create-guest-dns.sh <guest-name> <node-ip> [<node-ip> ...]
+# Usage: create-guest-dns.sh <guest-name> [<node-ip> ...]
+#
+# With no addresses it creates the zone and nothing in it. That is the first
+# call, made before the nodes exist -- see "Why the zone comes first" below.
 #
 # With userManagedNetworking the installer builds no VIPs and creates no DNS, so
 # the assisted installer's own validations fail before anything is installed:
@@ -24,6 +27,23 @@
 #
 # Re-runnable. UPSERT with the same addresses is a no-op, and after a rebuild it
 # corrects them rather than needing the zone torn down first.
+#
+# Why the zone comes first
+#
+# The nodes query these names the moment they register, and their addresses --
+# which the records need -- are only known after that. A name looked up before
+# its zone exists falls through to the account's public zone and comes back
+# NXDOMAIN, and Route 53 Resolver caches that answer VPC-wide for the public
+# zone's negative TTL: min(SOA TTL, SOA minimum) = min(900, 86400), fifteen
+# minutes. Publishing the records does not clear it. Measured on vcp-1: records
+# correct, a never-queried *.apps name resolving, api and api-int still
+# NXDOMAIN from every node, and the install sitting 'insufficient' until the
+# cache ran out.
+#
+# So the zone is created empty, before the nodes boot, and its own SOA carries a
+# 60-second negative TTL. An early lookup then misses inside *this* zone and is
+# forgotten within a minute of the records appearing.
+NEGATIVE_TTL=60
 set -euo pipefail
 # shellcheck source=../../common.sh
 source "$(dirname "${BASH_SOURCE[0]}")/../../common.sh"
@@ -32,9 +52,8 @@ load_config
 require_tools aws jq
 resolve_public_hosted_zone
 
-GUEST="${1:?usage: $0 <guest-name> <node-ip> [<node-ip> ...]}"
+GUEST="${1:?usage: $0 <guest-name> [<node-ip> ...]}"
 shift
-[ "$#" -gt 0 ] || die "no node addresses given; nothing to point ${GUEST}'s DNS at"
 
 DOMAIN="${GUEST}.${BASE_DOMAIN}"
 VPC="$(read_state vpc_id)"
@@ -65,6 +84,27 @@ else
     --query 'ChangeInfo.Status' --output text >/dev/null 2>&1 || true
 fi
 
+# Both the SOA's own TTL and its minimum field, because a resolver caches a
+# negative answer for whichever is smaller. Rewritten on every run: it costs one
+# call, and a zone created by an older version of this script has the default
+# fifteen minutes.
+SOA="$(aws route53 list-resource-record-sets --hosted-zone-id "${ZONE_ID}" \
+  --query "ResourceRecordSets[?Type=='SOA'] | [0].ResourceRecords[0].Value" --output text)"
+SOA_SHORT="$(awk -v t="${NEGATIVE_TTL}" '{$NF = t; print}' <<<"${SOA}")"
+if [ "${SOA}" != "${SOA_SHORT}" ]; then
+  aws route53 change-resource-record-sets --hosted-zone-id "${ZONE_ID}" \
+    --change-batch "$(jq -n --arg d "${DOMAIN}." --arg v "${SOA_SHORT}" --argjson t "${NEGATIVE_TTL}" \
+      '{Changes: [{Action: "UPSERT", ResourceRecordSet:
+         {Name: $d, Type: "SOA", TTL: $t, ResourceRecords: [{Value: $v}]}}]}')" \
+    --query 'ChangeInfo.Status' --output text >/dev/null
+fi
+save_state "${GUEST}_hosted_zone_id" "${ZONE_ID}"
+
+if [ "$#" -eq 0 ]; then
+  green "${GUEST} DNS: zone ${DOMAIN} ready, negative answers cached ${NEGATIVE_TTL}s; records follow once the nodes have addresses"
+  exit 0
+fi
+
 # api and api-int carry the same answers. They are separate names because
 # OpenShift treats them as separate endpoints, not because they differ here:
 # there is no external load balancer for one of them to point at.
@@ -84,5 +124,4 @@ CHANGES="$(jq -n --argjson ips "$(printf '%s\n' "$@" | jq -R . | jq -s .)" \
 aws route53 change-resource-record-sets --hosted-zone-id "${ZONE_ID}" \
   --change-batch "${CHANGES}" --query 'ChangeInfo.Status' --output text >/dev/null
 
-save_state "${GUEST}_hosted_zone_id" "${ZONE_ID}"
 green "${GUEST} DNS: api, api-int and *.apps.${DOMAIN} -> $*"

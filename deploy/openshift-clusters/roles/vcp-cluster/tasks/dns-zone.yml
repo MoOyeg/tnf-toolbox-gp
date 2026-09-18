@@ -1,0 +1,24 @@
+---
+# The cluster's private zone, empty, before any of its nodes exist.
+#
+# The records need the nodes' addresses and wait for them in dns.yml. The zone
+# does not, and it has to be there first: a node that looks up its API name
+# before the zone exists gets an NXDOMAIN from the account's public zone, which
+# Route 53 Resolver caches VPC-wide for fifteen minutes. Publishing the records
+# afterwards does not clear it, so the install sits 'insufficient' for a quarter
+# of an hour with every record correct. Created here, with a 60-second negative
+# TTL, the same early miss is forgotten a minute after the records appear.
+#
+# The reasoning, and the measurement behind it, are in create-guest-dns.sh.
+- name: "{{ vcp_cluster_name }}: create its DNS zone before its nodes boot"
+  ansible.builtin.command:
+    argv:
+      - "{{ repo_root }}/deploy/aws-infra/scripts/create-guest-dns.sh"
+      - "{{ vcp_cluster_name }}"
+  delegate_to: localhost
+  register: vcp_dns_zone
+  changed_when: "'creating private zone' in vcp_dns_zone.stdout"
+
+- name: "{{ vcp_cluster_name }}: report the zone"
+  ansible.builtin.debug:
+    msg: "{{ vcp_dns_zone.stdout_lines | default([]) | last | default('') }}"

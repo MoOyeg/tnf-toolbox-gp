@@ -50,6 +50,9 @@
 - name: Create the discovery ISO
   ansible.builtin.include_tasks: infraenv.yml
 
+- name: Create the cluster's DNS zone before its machines exist
+  ansible.builtin.include_tasks: dns-zone.yml
+
 - name: Create the virtual machines
   ansible.builtin.include_tasks: vms.yml
 

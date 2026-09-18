@@ -134,6 +134,11 @@
 - name: Create the VM namespace on the infra cluster
   ansible.builtin.include_tasks: vm-namespace.yml
 
+# On the first run, before the commit that lets Argo CD create the machines --
+# so the zone is already there when they first look their names up.
+- name: Create the cluster's DNS zone before its machines exist
+  ansible.builtin.include_tasks: dns-zone.yml
+
 - name: Say where the virtual machines come from now
   ansible.builtin.debug:
     msg: >-
