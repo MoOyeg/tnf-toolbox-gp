@@ -163,4 +163,4 @@ should keep serving from `master-0` throughout. Allow 15 minutes.
 | shim returns 500 on a system | the `Name` tag does not match, or two live instances share it |
 | fence reported failed but the node did stop | timeouts still at their defaults — re-run `make tnf` |
 | stonith device exists for an unknown node | node hostname does not match the fencing credential; check `/etc/hostname` |
-| neither node can fence the other | the bastion is down; it is a single point of failure for fencing |
+| neither node can fence the other | the bastion is down; it is a single point of failure for fencing *and* for the cluster API — see [resilience.md](resilience.md#1-the-bastion-is-a-single-point-of-failure-for-the-entire-tnf-cluster) |

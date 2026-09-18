@@ -577,8 +577,8 @@ sites/                   generated: one ClusterInstance per cluster, synced to
                          the hub by Argo CD (commit these)
 sites-infra/             generated: the VirtualMachines an all-VM cluster's
                          nodes run on, synced to TNF (commit these too)
-docs/                    architecture, fencing, GPU allocation, guest clusters,
-                         the app redesign, and the editable diagram
+docs/                    architecture, fencing, resilience, GPU allocation,
+                         guest clusters, the app redesign, and the diagram
 hack/                    lint, static template checks, and the diagram renderer
 tools/redfish-ec2/       the Redfish → EC2 fencing shim, with unit tests
 ```
@@ -719,6 +719,9 @@ Argo CD rebuild it.
 - [docs/fencing-on-aws.md](docs/fencing-on-aws.md) — the shim, timeouts, and
   how to test a fence. `make tnf-recover` is what to run when a fence or a
   reboot leaves the pair unable to re-form
+- [docs/resilience.md](docs/resilience.md) — what happens when each piece
+  fails, which single points of failure look like redundancy, and the
+  experiments that would settle the untested claims
 - [docs/gpu-allocation.md](docs/gpu-allocation.md) — why the split is per node,
   what both-nodes-passthrough costs, and how to change it
 - [docs/hcp-guests.md](docs/hcp-guests.md) — guest clusters, GPU passthrough,
