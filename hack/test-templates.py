@@ -13,6 +13,8 @@ import glob
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
 
 import yaml
@@ -461,6 +463,62 @@ def test_shell_commands_are_not_split_by_stray_newlines():
 
     check("no shell command is split by a stray newline", not found,
           "; ".join(found))
+
+
+def test_shell_commands_survive_ansibles_argument_splitting():
+    """Ansible must be able to split every shell and command task into arguments.
+
+    It does that before the shell ever sees the text, tracking quotes through
+    all of it -- comments included. One unpaired apostrophe in a comment ("the
+    agent's own inventory") fails the task at runtime with "failed at splitting
+    arguments, either an unbalanced jinja2 block or quotes", and --syntax-check
+    never renders task arguments, so nothing before a live run notices. That
+    cost a 'make sites' run twice over: the comment explaining the first
+    apostrophe contained a second.
+
+    Runs Ansible's own splitter rather than a reimplementation, so it cannot
+    disagree with the thing that fails -- and under the interpreter Ansible is
+    installed for, which is not necessarily the one running these checks.
+    """
+    playbook = shutil.which("ansible-playbook")
+    if not playbook:
+        check("shell tasks survive Ansible's argument splitting", False,
+              "ansible-playbook is not on PATH")
+        return
+    with open(playbook, encoding="utf-8") as handle:
+        interpreter = handle.readline()[2:].split()
+    probe = r"""
+import glob, os, sys, yaml
+from ansible.parsing.splitter import split_args
+root = sys.argv[1]
+for path in sorted(glob.glob(root + "/**/*.yml", recursive=True)):
+    if "ansible_collections" in path:
+        continue
+    try:
+        stack = [yaml.safe_load(open(path, encoding="utf-8"))]
+    except yaml.YAMLError:
+        continue
+    while stack:
+        node = stack.pop()
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in ("ansible.builtin.shell", "ansible.builtin.command",
+                           "shell", "command") and isinstance(value, str):
+                    try:
+                        split_args(value)
+                    except Exception:
+                        print(os.path.relpath(path, root) + ": " + str(node.get("name", "?")))
+                stack.append(value)
+        elif isinstance(node, list):
+            stack.extend(node)
+"""
+    result = subprocess.run(
+        interpreter + ["-c", probe, f"{ROOT}/deploy/openshift-clusters"],
+        capture_output=True, text=True, check=False)
+    failures = result.stdout.strip()
+    check("shell tasks survive Ansible's argument splitting",
+          result.returncode == 0 and not failures,
+          failures.replace("\n", "; ") or result.stderr.strip()[-300:])
 
 
 def test_nothing_reads_role_defaults_from_outside():
@@ -1890,6 +1948,7 @@ def main():
     test_cloudformation()
     test_jsonpath_filters_are_shell_quoted()
     test_shell_commands_are_not_split_by_stray_newlines()
+    test_shell_commands_survive_ansibles_argument_splitting()
     test_nothing_reads_role_defaults_from_outside()
     test_play_path_fallbacks_keep_the_system_directories()
     test_iommu_is_enabled_at_install_time()

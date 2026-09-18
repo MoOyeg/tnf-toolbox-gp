@@ -35,8 +35,11 @@
       # "must have exactly 3 dedicated control plane nodes" with three
       # control-plane machines sitting in front of it.
       host=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.status.inventory.hostname}')
-      # The disk by its id from the agent's own inventory, found by name. See
-      # vcp_root_device for what happens when the installer chooses.
+      # The disk by its id from the inventory the agent reports, found by
+      # name. See vcp_root_device for what happens when the installer chooses.
+      # No apostrophes in these comments: Ansible splits the text of a shell task
+      # into arguments before the shell sees it, comments included, and one
+      # unpaired single quote fails the whole task before it runs.
       disk=$(oc get "$a" -n {{ vcp_cluster_name }} -o json \
         | jq -r --arg n '{{ vcp_root_device | basename }}' \
             '[.status.inventory.disks[]? | select(.name == $n) | .id] | first // empty')
