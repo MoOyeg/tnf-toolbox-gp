@@ -122,6 +122,15 @@
 - name: "{{ vcp_cluster_name }}: read its kubeconfig from the hub"
   ansible.builtin.shell: |
     set -o pipefail
+    # Installed means the ClusterDeployment says so, not that the kubeconfig
+    # exists. The assisted installer writes that secret when the install
+    # starts, forty minutes early -- harmless while nothing outside TNF could
+    # reach the cluster, but with the load balancer created on this same run
+    # the bootstrap node answered readyz, and storage was installed onto a
+    # cluster whose OLM did not exist yet: 404 on the OperatorGroup.
+    installed=$(oc --kubeconfig {{ op_kubeconfig }} get clusterdeployment {{ vcp_cluster_name }} \
+      -n {{ vcp_cluster_name }} -o jsonpath='{.spec.installed}' 2>/dev/null)
+    [ "${installed}" = "true" ] || exit 0
     tmp="$(mktemp)"
     if oc --kubeconfig {{ op_kubeconfig }} get secret {{ vcp_cluster_name }}-admin-kubeconfig \
          -n {{ vcp_cluster_name }} -o jsonpath='{.data.kubeconfig}' 2>/dev/null \

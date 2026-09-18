@@ -96,6 +96,18 @@
     - name: Harvest the kubeconfig of every site that has one
       ansible.builtin.shell: |
         set -o pipefail
+        # A site with a ClusterDeployment is harvested once it is installed,
+        # not once its kubeconfig exists: the assisted installer writes that at
+        # the start of the install, and harvesting it then hands a bootstrapping
+        # cluster to the import below and to every later stage that globs these
+        # files. A hosted site has no ClusterDeployment, and its kubeconfig only
+        # appears once its API is up, so it is left to the lookup as before.
+        installed=$(oc get clusterdeployment "{{ item }}" -n "{{ item }}" \
+          -o jsonpath='{.spec.installed}' 2>/dev/null || echo absent)
+        if [ "${installed}" != "absent" ] && [ "${installed}" != "true" ]; then
+          echo "{{ item }} is still installing"
+          exit 1
+        fi
         tmp="$(mktemp)"
         trap 'rm -f "${tmp}"' EXIT
         for pair in "{{ item }}:{{ item }}-admin-kubeconfig" \
