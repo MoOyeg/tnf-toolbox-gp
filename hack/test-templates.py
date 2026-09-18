@@ -417,8 +417,12 @@ def test_shell_commands_are_not_split_by_stray_newlines():
 
     A newline is fine when it is inside quotes, or escaped with a trailing
     backslash, or part of a deliberate multi-line `|` script whose next line
-    starts a new command. Only a newline followed by a quoted argument is
-    reported.
+    starts a new command. Reported is a newline followed by something that
+    cannot start one: a quoted argument, an option (`-n ...` runs "-n" as a
+    program), or a pipe or `||`/`&&` (a syntax error at the start of a line).
+    The option case was missed by the first version of this check: a password
+    lookup split before `-n <namespace>` ran `oc get secret` against the wrong
+    namespace, and then tried to execute `-n`.
     """
     print("\nshell command continuation")
 
@@ -433,7 +437,7 @@ def test_shell_commands_are_not_split_by_stray_newlines():
             elif ch == "\n":
                 if command[i - 1:i] == "\\":
                     continue  # escaped: a real shell line continuation
-                if command[i + 1:].lstrip(" ")[:1] in ("'", '"'):
+                if command[i + 1:].lstrip(" ")[:1] in ("'", '"', "-", "|", "&"):
                     return command[max(0, i - 40):i + 30].replace("\n", "\\n")
         return None
 
