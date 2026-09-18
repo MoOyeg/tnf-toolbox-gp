@@ -45,23 +45,65 @@
 # On the base cluster each mode should have produced its own resource name. A
 # vm-passthrough node advertising nvidia.com/gpu means vfio-manager did not
 # take the GPUs, and every later hostDevices request would fail to schedule.
-- name: Confirm each node advertises the resource its workload mode implies
+#
+# Waited for per node, and read fresh. The inventory above is a snapshot taken
+# the moment *any* node advertised *anything*, which after a mode change is the
+# old resource still on the node, and on a fresh install can be one node
+# finished while the other is still binding. Checked against that snapshot, a
+# node that was seconds from ready failed the stage.
+- name: Wait for each node to advertise the resource its workload mode implies
   when: gpu_sandbox_workloads | bool
-  ansible.builtin.assert:
-    that:
-      - >-
-        gpu_resources.stdout_lines
-        | select('search', '^' ~ item.name ~ ' ' ~ expected_resource)
-        | list | length > 0
-    fail_msg: >-
-      {{ item.name }} is labelled {{ item.gpu_workload }} but does not
-      advertise {{ expected_resource }}. Found:
-      {{ gpu_resources.stdout_lines | select('search', '^' ~ item.name) | list }}
-    success_msg: "{{ item.name }} ({{ item.gpu_workload }}) advertises {{ expected_resource }}"
+  ansible.builtin.shell: >-
+    set -o pipefail;
+    oc get node {{ item.name }} -o json
+    | jq -r --arg r '{{ expected_resource | trim }}' --arg l '{{ gpu_device_label }}'
+    '"\(.metadata.labels[$l] // "unlabelled") \(.status.allocatable[$r] // "0")
+    \([.status.allocatable | to_entries[] | select(.key | startswith("nvidia.com/"))
+    | "\(.key)=\(.value)"] | join(","))"'
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
   vars:
     expected_resource: >-
       {{ 'nvidia.com/gpu' if item.gpu_workload == 'container'
          else gpu_resource_name }}
   loop: "{{ control_plane_nodes }}"
   loop_control:
-    label: "{{ item.name }}"
+    label: "{{ item.name }} ({{ item.gpu_workload | default('?') }})"
+  register: node_gpu
+  changed_when: false
+  failed_when: false
+  retries: 40
+  delay: 15
+  until: >-
+    node_gpu.rc == 0
+    and (node_gpu.stdout.split() | length) > 1
+    and node_gpu.stdout.split()[1] not in ['0', '']
+
+# Separate from the wait so the failure says what the node actually is -- its
+# real label and everything it advertises -- rather than restating what it was
+# supposed to be.
+- name: Confirm each node advertises the resource its workload mode implies
+  when: gpu_sandbox_workloads | bool
+  ansible.builtin.assert:
+    that:
+      - item.rc == 0
+      - (item.stdout.split() | length) > 1
+      - item.stdout.split()[1] not in ['0', '']
+    fail_msg: >-
+      {{ item.item.name }} should be {{ item.item.gpu_workload }} and advertise
+      {{ expected_resource | trim }}, but after ten minutes it is labelled
+      '{{ (item.stdout.split() | first) | default('?') }}' and advertises
+      {{ (item.stdout.split()[2] | default('')) or 'no nvidia.com resources at all' }}.
+      {{ 'The label is wrong -- re-run make gpu.'
+         if (item.stdout.split() | first | default('')) != item.item.gpu_workload
+         else 'The label is right, so the operator has not finished swapping this node -- check the vfio-manager and sandbox-device-plugin pods on it in ' ~ gpu_operator_namespace ~ '.' }}
+    success_msg: >-
+      {{ item.item.name }} ({{ item.item.gpu_workload }}) advertises
+      {{ expected_resource | trim }}={{ item.stdout.split()[1] | default('?') }}
+  vars:
+    expected_resource: >-
+      {{ 'nvidia.com/gpu' if item.item.gpu_workload == 'container'
+         else gpu_resource_name }}
+  loop: "{{ node_gpu.results }}"
+  loop_control:
+    label: "{{ item.item.name }}"

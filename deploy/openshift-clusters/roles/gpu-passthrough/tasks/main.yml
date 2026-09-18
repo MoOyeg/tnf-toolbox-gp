@@ -1,6 +1,8 @@
 ---
-# Prepare the bare metal nodes for GPU passthrough, and record which node's
-# GPUs go to containers and which node's go to virtual machines.
+# Prepare the bare metal nodes for GPU passthrough: the GPUs are visible and the
+# IOMMU is on. Which node's GPUs go to containers and which to virtual machines
+# is not decided here -- that label is set by the GPU stage, which is the one
+# that reads it (roles/gpu-operator/tasks/workload-labels.yml).
 #
 # The split is per node, not per GPU. The GPU Operator binds every GPU on a
 # node to one driver: either the NVIDIA driver (containers) or vfio-pci (VM
@@ -175,23 +177,6 @@
     previous_rendered_config: >-
       {{ mcp_before.stdout | default('') if iommu_mc.changed | default(false) else '' }}
 
-- name: Label each node with its GPU workload mode
-  kubernetes.core.k8s:
-    kubeconfig: "{{ op_kubeconfig | default(kubeconfig) }}"
-    state: patched
-    kind: Node
-    name: "{{ item.name }}"
-    definition:
-      metadata:
-        # The whole mapping is built inside one expression. Ansible does not
-        # reliably template a dictionary *key* written as "{{ var }}:" in a
-        # nested module argument -- it arrives at the API server as the literal
-        # string, and the request is rejected as an invalid label name.
-        labels: "{{ {gpu_device_label: item.gpu_workload} }}"
-  loop: "{{ control_plane_nodes }}"
-  loop_control:
-    label: "{{ item.name }} -> {{ item.gpu_workload }}"
-
 # Bounded and retried for the same reason as the check above: a node that has
 # just been uncordoned can still refuse a debug pod for a few seconds.
 - name: Verify the IOMMU is actually on
@@ -213,8 +198,7 @@
 - name: Report the IOMMU group count
   ansible.builtin.debug:
     msg: >-
-      {{ item.item.name }}: {{ item.stdout | trim }} IOMMU groups,
-      GPUs assigned to {{ item.item.gpu_workload }}
+      {{ item.item.name }}: {{ item.stdout | trim }} IOMMU groups
   loop: "{{ iommu_groups.results }}"
   loop_control:
     label: "{{ item.item.name }}"

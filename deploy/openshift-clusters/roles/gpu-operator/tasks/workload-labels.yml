@@ -1,0 +1,48 @@
+---
+# Tell the GPU Operator which mode each base-cluster node's GPUs run in.
+#
+# The operator reads this label and nothing else. A node without it falls back
+# to sandboxWorkloads.defaultWorkload -- container -- so its T4s stay bound to
+# the NVIDIA driver, no passthrough resource is advertised, and the failure
+# surfaces minutes later in verify.yml as a missing resource rather than as a
+# missing label.
+#
+# It lives here, in the stage that installs the operator, because this is the
+# stage that depends on it. It used to be set by the IOMMU stage, which is a
+# no-op on a cluster this repo built -- so skipping that stage, reasonably,
+# left every node in container mode.
+#
+# Applied before the ClusterPolicy, so the operator's first reconcile already
+# sees the right mode rather than installing the driver on a node it is about
+# to hand to vfio-pci. Changing a node's mode later is this same task: edit
+# MASTERn_GPU_WORKLOAD and re-run 'make gpu', and the operator swaps that
+# node's operands on its own.
+
+- name: Fail on a workload mode the operator does not know
+  ansible.builtin.assert:
+    that: item.gpu_workload in ['container', 'vm-passthrough']
+    fail_msg: >-
+      {{ item.name }} has GPU workload '{{ item.gpu_workload }}'. It must be
+      container or vm-passthrough -- the operator treats anything else as
+      unlabelled and silently falls back to container.
+    quiet: true
+  loop: "{{ control_plane_nodes }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+- name: Label each node with its GPU workload mode
+  kubernetes.core.k8s:
+    kubeconfig: "{{ op_kubeconfig | default(kubeconfig) }}"
+    state: patched
+    kind: Node
+    name: "{{ item.name }}"
+    definition:
+      metadata:
+        # The whole mapping is built inside one expression. Ansible does not
+        # reliably template a dictionary *key* written as "{{ var }}:" in a
+        # nested module argument -- it arrives at the API server as the literal
+        # string, and the request is rejected as an invalid label name.
+        labels: "{{ {gpu_device_label: item.gpu_workload} }}"
+  loop: "{{ control_plane_nodes }}"
+  loop_control:
+    label: "{{ item.name }} -> {{ item.gpu_workload }}"

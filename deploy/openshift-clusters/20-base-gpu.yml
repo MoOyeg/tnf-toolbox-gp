@@ -38,6 +38,13 @@
           that runs before this one.
         success_msg: "IOMMU MachineConfig is applied"
 
+    - name: Label each node with its GPU workload mode
+      ansible.builtin.include_role:
+        name: gpu-operator
+        tasks_from: workload-labels
+      vars:
+        op_kubeconfig: "{{ kubeconfig }}"
+
     - name: Install Node Feature Discovery
       ansible.builtin.include_role:
         name: nfd

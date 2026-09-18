@@ -125,7 +125,7 @@ rather than starting over.
 | `make tnf` | install TNF 4.22 on two `g4dn.metal` **with the IOMMU enabled from first boot**, then verify it is healthy *as TNF* | 50 min |
 | `make kubeconfig` | fetch every cluster's credentials and write `deploy/clusters/access.md` | seconds |
 | `make iommu` | optional — checks the IOMMU and applies nothing on a cluster this repo built | seconds |
-| `make gpu` | NFD + NVIDIA GPU Operator on the base cluster | 10 min |
+| `make gpu` | label each node with its GPU mode, then NFD + NVIDIA GPU Operator on the base cluster | 10 min |
 | `make virt-mce` | LVM Storage, OpenShift Virtualization, MultiCluster Engine | 15 min |
 | `make acm-site` | single-node OpenShift at the ACM site, then ACM on it, then import TNF into the hub | 56 min |
 | `make guests` | guest clusters created by TNF's own MCE: control-plane pods and worker VMs both on TNF, with the GPUs | 40 min |
@@ -356,10 +356,11 @@ three. The images are built once by the first instance and shared; the rest are
 granted `system:image-puller` on its namespace rather than rebuilding a
 byte-identical 6.6GiB analyzer layer.
 
-**`make iommu` reboots nothing now, but it is not optional.** `make tnf` writes
-the IOMMU MachineConfig into the install manifests, so both nodes boot with
-`intel_iommu=on iommu=pt` and there is no rollout to survive. On a cluster built
-by this repo the stage finds the arguments already in place and applies nothing:
+**`make iommu` reboots nothing now, and on a cluster this repo built it is
+genuinely optional.** `make tnf` writes the IOMMU MachineConfig into the install
+manifests, so both nodes boot with `intel_iommu=on iommu=pt` and there is no
+rollout to survive. The stage finds the arguments already in place and applies
+nothing:
 
 ```
 $ make iommu
@@ -367,14 +368,14 @@ intel_iommu=on iommu=pt already on every node and
 100-master-gpu-passthrough is in place. Nothing to apply, and no reboot.
 ```
 
-It still has to run, because it is also the only thing that labels the nodes
-`nvidia.com/gpu.workload.config=vm-passthrough`. Without that label the GPU
-Operator leaves them on `sandboxWorkloads.defaultWorkload` — container mode —
-the T4s stay bound to the NVIDIA driver instead of `vfio-pci`, no passthrough
-resource is ever advertised, and `make virt-mce` fails minutes later at
-`discover-gpu-resource` with an error that points at GPUs rather than at a
-missing label. `make all` includes it; skipping stages by hand is where this
-bites.
+It used to be the only thing that labelled the nodes
+`nvidia.com/gpu.workload.config=vm-passthrough`, which made a no-op stage
+mandatory: skip it and the GPU Operator left both nodes on
+`sandboxWorkloads.defaultWorkload` — container mode — and `make gpu` failed
+waiting for a passthrough resource that nothing would ever advertise. The label
+now belongs to `make gpu`, the stage that reads it, and is applied before the
+operator's first reconcile. Changing a node's mode is therefore: edit
+`MASTERn_GPU_WORKLOAD`, re-run `make gpu`.
 
 It also still performs the day-2 rollout on a cluster built before the
 MachineConfig moved into the install manifests. Which is worth avoiding: adding those arguments to a *running* two-node
