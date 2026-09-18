@@ -64,6 +64,15 @@ vcp_data_disk: 100Gi
 # would need one per node.
 vcp_data_device: /dev/vdb
 
+# And the disk the system is installed on, named for the same reason. It has to
+# be stated: both disks are eligible, and left to choose, the assisted installer
+# took the *smaller* one -- the data disk. The system landed on vdb, the VM
+# booted vda by its boot order, found it empty, fell through to the discovery
+# ISO, and every node sat in 'pending user action' asking for the boot order to
+# be fixed. approve-agents.yml sets this on each agent before the install
+# starts, which is the last point it can be changed.
+vcp_root_device: /dev/vda
+
 # Per node, not per worker. In a compact cluster the control-plane nodes are
 # where workloads run, so that is where the GPUs have to go -- the older split,
 # which gave control-plane VMs none on the grounds that they ran nothing worth a

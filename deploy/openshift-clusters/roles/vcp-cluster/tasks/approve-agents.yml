@@ -23,24 +23,36 @@
   changed_when: false
   failed_when: false
 
-- name: "{{ vcp_cluster_name }}: approve them and give each its role"
+- name: "{{ vcp_cluster_name }}: approve them, give each its role and its install disk"
   ansible.builtin.shell: |
     set -o pipefail
     changed=0
     for a in $(oc get agent -n {{ vcp_cluster_name }} -o name); do
       approved=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.spec.approved}')
-      [ "$approved" = "true" ] && continue
       # status.inventory.hostname, not spec.hostname. The latter is an override
       # and is empty unless somebody sets one, so reading it matched nothing and
       # every agent was approved as a worker -- leaving the cluster reporting
       # "must have exactly 3 dedicated control plane nodes" with three
       # control-plane machines sitting in front of it.
       host=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.status.inventory.hostname}')
+      # The disk by its id from the agent's own inventory, found by name. See
+      # vcp_root_device for what happens when the installer chooses.
+      disk=$(oc get "$a" -n {{ vcp_cluster_name }} -o json \
+        | jq -r --arg n '{{ vcp_root_device | basename }}' \
+            '[.status.inventory.disks[]? | select(.name == $n) | .id] | first // empty')
+      if [ -z "$disk" ]; then
+        echo "${host:-$a} has no disk named {{ vcp_root_device | basename }} in its inventory" >&2
+        exit 3
+      fi
+      current=$(oc get "$a" -n {{ vcp_cluster_name }} -o jsonpath='{.spec.installation_disk_id}')
+      # Revisited even once approved, so an agent approved before this existed
+      # gets its disk too -- up to the moment the install starts.
+      [ "$approved" = "true" ] && [ "$current" = "$disk" ] && continue
       # The name carries the role, which is why the VMs are named for it.
       role=worker
       case "$host" in *-cp-*) role=master ;; esac
       oc patch "$a" -n {{ vcp_cluster_name }} --type merge \
-        -p "{\"spec\":{\"approved\":true,\"role\":\"${role}\"}}" >/dev/null
+        -p "{\"spec\":{\"approved\":true,\"role\":\"${role}\",\"installation_disk_id\":\"${disk}\"}}" >/dev/null
       changed=1
     done
     echo "$changed"
