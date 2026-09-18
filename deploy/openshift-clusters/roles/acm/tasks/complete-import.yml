@@ -61,18 +61,26 @@
       {{ import_cluster_name }}-import was never populated in namespace
       {{ import_cluster_name }}. Without it the klusterlet cannot be installed.
 
+  when: import_already_available.stdout | default('') != 'True'
 # crds.yaml first: import.yaml contains the custom resources those CRDs define,
 # and applying it first fails with "no matches for kind Klusterlet".
-  when: import_already_available.stdout | default('') != 'True'
 - name: "{{ import_cluster_name }}: install the klusterlet"
   ansible.builtin.shell: |
     set -o pipefail
-    for key in crds.yaml import.yaml; do
+    manifest() {
       oc --kubeconfig {{ op_kubeconfig }} get secret {{ import_cluster_name }}-import \
-        -n {{ import_cluster_name }} -o jsonpath="{.data.${key//./\\.}}" \
-        | base64 -d \
-        | oc --kubeconfig {{ import_cluster_kubeconfig }} apply -f -
-    done
+        -n {{ import_cluster_name }} -o jsonpath="{.data.${1//./\\.}}" | base64 -d
+    }
+    manifest crds.yaml | oc --kubeconfig {{ import_cluster_kubeconfig }} apply -f -
+    # A CRD is stored the moment it is created but served only once it is
+    # Established, and import.yaml carries a Klusterlet -- so applied straight
+    # after, on a cluster seeing these CRDs for the first time, it fails with
+    # "no matches for kind Klusterlet". A re-run passes, because by then they
+    # exist: which is why this only ever broke a fresh import.
+    manifest crds.yaml \
+      | oc --kubeconfig {{ import_cluster_kubeconfig }} wait -f - \
+          --for=condition=Established --timeout=120s
+    manifest import.yaml | oc --kubeconfig {{ import_cluster_kubeconfig }} apply -f -
   register: site_klusterlet_applied
   changed_when: "'created' in site_klusterlet_applied.stdout or 'configured' in site_klusterlet_applied.stdout"
   when: import_already_available.stdout | default('') != 'True'
