@@ -121,6 +121,42 @@
   ansible.builtin.set_fact:
     vcp_kubeconfig_present: "{{ 'present' in (vcp_kubeconfig_read.stdout | default('')) }}"
 
+# Installed is not the same as reachable from here. This runs on the hub's
+# bastion, in the ACM VPC; the cluster's private zone is attached only to the
+# TNF VPC, and the addresses it answers with are on a user-defined network
+# nothing outside TNF can route to. The hub reaches an all-VM cluster through
+# its public load balancer -- 'make vcp-lb' -- and until that exists every step
+# below would fail: the router step skipped without a word, storage died in
+# urllib3 with "Name or service not known", and the import would follow it.
+- name: "{{ vcp_cluster_name }}: check its API answers from here"
+  ansible.builtin.command: >-
+    oc --kubeconfig {{ vcp_guest_kubeconfig }} get --raw /readyz --request-timeout=15s
+  register: vcp_api_probe
+  changed_when: false
+  failed_when: false
+  when: vcp_kubeconfig_present | bool
+
+- name: "{{ vcp_cluster_name }}: note whether it can be finished from here"
+  ansible.builtin.set_fact:
+    vcp_api_reachable: "{{ vcp_kubeconfig_present | bool and (vcp_api_probe.stdout | default('') | trim) == 'ok' }}"
+    # Read by 42-sites.yml, which imports every harvested guest after this.
+    vcp_guests_unreachable: >-
+      {{ (vcp_guests_unreachable | default([]))
+         + ([vcp_cluster_name] if (vcp_kubeconfig_present | bool
+              and (vcp_api_probe.stdout | default('') | trim) != 'ok') else []) }}
+
+- name: "{{ vcp_cluster_name }}: say what is left, and what unblocks it"
+  ansible.builtin.debug:
+    msg: >-
+      {{ vcp_cluster_name }} is installed, but its API does not answer from the
+      hub bastion ({{ (vcp_api_probe.stderr_lines | default(['no answer']) | last | default('no answer'))[:160] }}).
+      The hub reaches it through its public load balancer: run
+      'make vcp-lb GUEST={{ vcp_cluster_name }}', then 'make sites' again to
+      scale its routers, build its storage and import it.
+  when:
+    - vcp_kubeconfig_present | bool
+    - not vcp_api_reachable | bool
+
 - name: "{{ vcp_cluster_name }}: read how many nodes the ingress Service covers"
   ansible.builtin.command: >-
     oc --kubeconfig {{ vcp_guest_kubeconfig }}
@@ -128,7 +164,7 @@
   register: vcp_node_count
   changed_when: false
   failed_when: false
-  when: vcp_kubeconfig_present | bool
+  when: vcp_api_reachable | bool
 
 - name: "{{ vcp_cluster_name }}: run one router on each of them"
   kubernetes.core.k8s:
@@ -144,7 +180,7 @@
     # built this way in roles/gpu-passthrough.
     definition: "{{ {'spec': {'replicas': vcp_node_count.stdout_lines | length}} }}"
   when:
-    - vcp_kubeconfig_present | bool
+    - vcp_api_reachable | bool
     - vcp_node_count.stdout_lines | default([]) | length > 0
 
 # Storage, once the cluster is up.
@@ -170,4 +206,4 @@
     # The same virtio path on every node, so one entry covers the cluster --
     # unlike an EBS volume id, which differs per node.
     lvm_devices: ["{{ vcp_data_device }}"]
-  when: vcp_kubeconfig_present | bool
+  when: vcp_api_reachable | bool

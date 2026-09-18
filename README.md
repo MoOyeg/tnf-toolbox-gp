@@ -210,11 +210,28 @@ still booting the discovery ISO it just published.
 So the sequence for an all-VM cluster is:
 
 ```bash
-make sites     # writes the definition; VMs boot the discovery ISO
-               # wait for the machines to appear as agents (a few minutes)
-make sites     # approves them, then publishes the DNS records their
-               # addresses are needed for
+make sites                # writes the definition and the cluster's (empty) DNS zone;
+                          # commit and push, and Argo CD creates the VMs, which boot
+                          # the discovery ISO. Wait for them to register as agents
+make sites                # approves them onto their root disk, publishes their DNS
+                          # records and the node ports their API and ingress answer on
+make vcp-lb GUEST=vcp-1   # the public load balancer and the public api / *.apps
+                          # names -- now, while the cluster installs (~40 minutes)
+make sites                # once it is installed: a router on every node, storage on
+                          # each node's data disk, and the import into the hub
 ```
+
+**`make vcp-lb` is not optional, and its place in the sequence matters.** It is
+the only way anything outside TNF reaches the cluster, the hub included: the
+cluster's private zone is attached to TNF's VPC alone, and the addresses it
+answers with are on a user-defined network nothing else can route to. Without
+it the third `make sites` stops short, and says so — it cannot scale the
+routers, build storage or import the cluster through a name the hub cannot
+resolve. And it belongs *before* the install finishes, not after: a public name
+looked up before its record exists is cached as nonexistent for the account
+zone's negative TTL, fifteen minutes, so a console opened the moment the
+cluster is ready stays "unreachable" for a quarter of an hour after the record
+appears. Published during the install, nobody has asked yet.
 
 The second run also writes the cluster's DNS, which is why it cannot be skipped:
 with `userManagedNetworking` the installer creates no records of its own, and

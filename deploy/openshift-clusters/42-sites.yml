@@ -131,7 +131,12 @@
       loop: "{{ harvested.results | default([]) }}"
       loop_control:
         label: "{{ item.item }}"
-      when: item.rc | default(1) == 0
+      # Not one whose API the check in vcp-cluster/tasks/expose.yml found
+      # unreachable from here: that run has already said what unblocks it, and
+      # the import would only fail the stage on the same missing route.
+      when:
+        - item.rc | default(1) == 0
+        - item.item not in (vcp_guests_unreachable | default([]))
 
     # The guests built from sites-infra/ rather than from a ClusterInstance.
     # 'oc get clusterinstance' above cannot see them -- their HostedCluster and
