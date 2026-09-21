@@ -233,12 +233,22 @@ spec:
                   # being substituted into a block scalar.
                   ca.pem: |
                     {% raw %}{{hub fromConfigMap "openshift-config-managed" "default-ingress-cert" "ca-bundle.crt" | autoindent hub}}{% endraw +%}
+{% for vm in vcp_nodes %}
+            # One discovery volume per machine, not one shared by all of them.
+            #
+            # It is ReadWriteOnce on node-local storage, so a shared one is a
+            # hard constraint that pins every machine to whichever infra node
+            # holds it -- and the spread constraint below, being a preference,
+            # loses to it. Three machines then sat on one node, and losing that
+            # node lost the whole cluster rather than one member of three. A
+            # volume each costs one ISO import per machine and lets them
+            # actually spread.
             - complianceType: musthave
               objectDefinition:
                 apiVersion: cdi.kubevirt.io/v1beta1
                 kind: DataVolume
                 metadata:
-                  name: {{ vcp_cluster_name }}-discovery
+                  name: {{ vm.name }}-discovery
                   namespace: {{ vcp_vm_namespace }}
                 spec:
                   source:
@@ -258,7 +268,6 @@ spec:
                       requests:
                         storage: 8Gi
                     storageClassName: {{ storage_class }}
-{% for vm in vcp_nodes %}
             - complianceType: musthave
               objectDefinition:
                 apiVersion: kubevirt.io/v1
@@ -324,6 +333,19 @@ spec:
                           labelSelector:
                             matchLabels:
                               tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+                        # And again over the control-plane machines alone. The
+                        # constraint above balances the cluster as a whole, which
+                        # an even split satisfies with every master on one infra
+                        # node and every worker on the other -- a node lost would
+                        # take the entire control plane. This one puts a master
+                        # on each infra node before it puts a second anywhere.
+                        - maxSkew: 1
+                          topologyKey: kubernetes.io/hostname
+                          whenUnsatisfiable: ScheduleAnyway
+                          labelSelector:
+                            matchLabels:
+                              tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+                              tnf-toolbox-gp/role: control-plane
                       domain:
                         cpu:
                           cores: {{ vm.cores }}
@@ -388,7 +410,7 @@ spec:
                             name: {{ vm.name }}-root
                         - name: discovery
                           dataVolume:
-                            name: {{ vcp_cluster_name }}-discovery
+                            name: {{ vm.name }}-discovery
                         - name: data
                           dataVolume:
                             name: {{ vm.name }}-data

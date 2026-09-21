@@ -36,17 +36,26 @@
   changed_when: false
   failed_when: false
 
-# An empty list here is the masquerade failure returning: every VM reporting the
+# One distinct address per machine that has registered -- not per machine in the
+# plan. The check is here for the masquerade failure: every VM reporting the
 # same NAT address means none of them is on the user-defined network, and
-# publishing that address for all three would produce a cluster that resolves
-# but cannot form. Better to say so than to write records that look right.
+# publishing that address for all of them produces a cluster that resolves and
+# cannot form. Counting against the plan instead failed the whole stage the
+# moment a machine was added to an existing cluster, because the new one has not
+# booted yet -- a machine joins these records once it registers, the same way it
+# waits to be approved.
 - name: "{{ vcp_cluster_name }}: refuse to publish an address the nodes do not have"
+  vars:
+    vcp_registered: "{{ vcp_agents.stdout_lines | default([]) | select | list | length }}"
   ansible.builtin.assert:
     that:
-      - vcp_node_addresses.stdout_lines | length == vcp_nodes | length
+      - vcp_node_addresses.stdout_lines | default([]) | length > 0
+      - vcp_node_addresses.stdout_lines | unique | length
+        == vcp_node_addresses.stdout_lines | length
+      - vcp_node_addresses.stdout_lines | length == vcp_registered | int
     fail_msg: >-
-      Expected {{ vcp_nodes | length }} node addresses in
-      {{ vcp_node_network_cidr }} but found
+      Expected one address in {{ vcp_node_network_cidr }} for each of the
+      {{ vcp_registered }} machine(s) that have registered, but found
       {{ vcp_node_addresses.stdout_lines | default([]) | length }}:
       {{ vcp_node_addresses.stdout_lines | default([]) }}.
       Every VM on the same address means the namespace is missing the
@@ -55,7 +64,8 @@
       relabelling does not move a running pod, so they have to be recreated.
     success_msg: >-
       {{ vcp_cluster_name }}: {{ vcp_node_addresses.stdout_lines | length }}
-      distinct node addresses
+      distinct node addresses, for {{ vcp_registered }} registered of
+      {{ vcp_nodes | length }} planned
 
 # delegate_to: localhost because the AWS credentials are on the control host --
 # the bastion's instance profile is deliberately power-only. Same reason

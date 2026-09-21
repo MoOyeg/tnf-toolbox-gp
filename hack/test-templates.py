@@ -795,10 +795,25 @@ def test_virtual_machines_are_an_acm_policy():
     check("the DataVolume verifies against the CA the policy creates",
           by_kind["DataVolume"]["spec"]["source"]["http"]["certConfigMap"]
           == by_kind["ConfigMap"]["metadata"]["name"])
-    check("every machine boots the DataVolume the policy creates",
-          all(any(v.get("dataVolume", {}).get("name")
-                  == by_kind["DataVolume"]["metadata"]["name"]
-                  for v in vm["spec"]["template"]["spec"]["volumes"]) for vm in vms))
+    # One discovery volume per machine, and the reason is scheduling rather
+    # than tidiness. It is ReadWriteOnce on node-local storage, so a shared one
+    # is a hard constraint pinning every machine to the node that holds it,
+    # which the spread constraint -- a preference -- cannot win against. Three
+    # machines then sat on one infra node, and losing that node lost the whole
+    # cluster instead of one member of three.
+    discovery_volumes = {
+        vm["metadata"]["name"]: [v["dataVolume"]["name"]
+                                 for v in vm["spec"]["template"]["spec"]["volumes"]
+                                 if v.get("dataVolume", {}).get("name", "").endswith("-discovery")]
+        for vm in vms}
+    declared = {o["metadata"]["name"] for o in objects if o["kind"] == "DataVolume"}
+    check("every machine boots its own discovery volume",
+          all(v == [f"{name}-discovery"] for name, v in discovery_volumes.items()),
+          str(discovery_volumes))
+    check("the policy creates each of them",
+          all(f"{name}-discovery" in declared for name in discovery_volumes))
+    check("no two machines share one, which would pin them to a node together",
+          len({v for vols in discovery_volumes.values() for v in vols}) == len(vms))
     # An assisted install reboots each node to write the image to disk. Without
     # this KubeVirt calls that a crash and restarts it from the ISO, forever.
     check("every machine survives the install reboot",

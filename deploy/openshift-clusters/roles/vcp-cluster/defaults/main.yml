@@ -29,7 +29,12 @@ cim_image_storage: 50Gi
 # has three nodes; they are simply all workers there, since its control plane is
 # pods on the hub rather than nodes of its own.
 vcp_control_plane_replicas: 3
-vcp_worker_replicas: 0
+# One worker, which makes four machines -- two on each infra node, now that a
+# discovery volume each lets them spread. Three would have put two on one node
+# and one on the other, which is a worse answer to the same question: an infra
+# node lost takes half the cluster either way, and with four it takes exactly
+# half rather than two thirds.
+vcp_worker_replicas: 1
 
 # Assisted installer minimums are 4 vCPU / 16 GiB for a control-plane node and
 # 2 / 8 for a worker. These sit above them: the installer validates against free
@@ -38,11 +43,14 @@ vcp_worker_replicas: 0
 # place a workload can land, so the old split -- 20Gi for a control-plane node
 # that ran nothing, 24Gi for a worker that did -- does not apply. 32Gi matches
 # GUEST_VM_MEMORY, so both kinds of guest node are the same size.
-vcp_cp_cores: 8
+vcp_cp_cores: 10
 vcp_cp_memory: 32Gi
-# Only used if workers are asked for explicitly; the default topology has none.
-vcp_worker_cores: 8
-vcp_worker_memory: 24Gi
+# The same size as a control-plane node. The assisted installer keeps the
+# control-plane nodes schedulable while there are fewer than two workers, so
+# this one is not the only place a workload can land -- but it is where the
+# router runs, and it carries its share of the app.
+vcp_worker_cores: 10
+vcp_worker_memory: 32Gi
 # 64Gi was too small and evicted builds: a worker carries ~25GiB of platform
 # images before the app arrives, and the app adds a 6.6GiB analyzer, a 12.2GiB
 # vLLM and roughly 20GiB of transient space while the analyzer image is built.

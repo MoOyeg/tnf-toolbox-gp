@@ -46,18 +46,18 @@
         namespace: "{{ vcp_vm_namespace }}"
       spec:
         type: NodePort
-        # Wherever the router actually runs. Ingress runs on the workers when
-        # there are any, so this selects them rather than every node of the
-        # cluster -- but vcp_worker_replicas defaults to 0, and on a cluster
-        # with no workers the control-plane nodes are schedulable and the router
-        # runs there. Selecting workers unconditionally left this Service with
+        # Wherever the router actually runs, which is not simply "the workers".
+        # The assisted installer keeps the control-plane nodes schedulable, and
+        # worker-labelled, while there are fewer than two workers -- so with one
+        # worker the routers still run on the control-plane machines, and this
+        # follows that rule rather than the presence of any worker at all. Selecting workers unconditionally left this Service with
         # no endpoints on the default topology: a NodePort listening with
         # nothing behind it, which refuses connections rather than failing in a
         # way that names the cause.
         selector:
           tnf-toolbox-gp/cluster: "{{ vcp_cluster_name }}"
           tnf-toolbox-gp/role: >-
-            {{ 'worker' if (vcp_worker_replicas | int) > 0 else 'control-plane' }}
+            {{ 'worker' if (vcp_worker_replicas | int) >= 2 else 'control-plane' }}
         ports:
           - name: https
             port: 443
@@ -190,10 +190,16 @@
     - vcp_kubeconfig_present | bool
     - not vcp_api_reachable | bool
 
+# The nodes a router may run on, which is not the same as every node. The
+# default IngressController places routers on nodes labelled worker: on a
+# cluster with no dedicated workers that is all of them, and on one with a
+# worker it is only that worker. Counting every node instead asked for four
+# replicas where one node could take them, leaving three Pending and the
+# ingress operator Degraded.
 - name: "{{ vcp_cluster_name }}: read how many nodes the ingress Service covers"
   ansible.builtin.command: >-
     oc --kubeconfig {{ vcp_guest_kubeconfig }}
-    get nodes --no-headers -o name
+    get nodes -l node-role.kubernetes.io/worker --no-headers -o name
   register: vcp_node_count
   changed_when: false
   failed_when: false
