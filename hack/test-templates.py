@@ -1145,12 +1145,17 @@ def test_siteconfig_install_templates():
           "spec.userManagedNetworking is pruned by the API server")
     check("and claims no VIPs, which a pod network cannot provide",
           "apiVIPs" not in aci["spec"] and "ingressVIPs" not in aci["spec"])
-    # A compact cluster has no workers, so unless the control-plane nodes are
-    # schedulable there is nowhere for a workload to land. The CRD has no
-    # default for this, so silence means "not schedulable".
-    check("a cluster with no workers makes its control plane schedulable",
-          int(defaults["vcp_worker_replicas"]) != 0
-          or aci["spec"].get("mastersSchedulable") is True)
+    # Unconditionally, not only when the cluster has no workers. The CRD has no
+    # default for this, so silence means "not schedulable" -- and in this
+    # profile every machine is given a GPU, control-plane included, so masters
+    # that cannot be scheduled on would hold most of the cluster's cards and
+    # offer none of them. Asserted against the field rather than against the
+    # worker count, because the count is what used to decide it: at one worker
+    # it rendered false and the cluster was saved only by the assisted
+    # installer forcing masters schedulable below two workers.
+    check("its control plane is schedulable whatever the worker count",
+          aci["spec"].get("mastersSchedulable") is True,
+          f"mastersSchedulable is {aci['spec'].get('mastersSchedulable')!r}")
     # Counted from spec.nodes by the operator rather than restated here. The
     # site definition has to populate spec.nodes anyway -- validation rejects an
     # empty list for any cluster type but HostedControlPlane -- so restating the
@@ -1372,11 +1377,18 @@ def test_guest_vms_are_spread_across_the_infra_cluster():
 def test_site_definitions():
     """One ClusterInstance per cluster, and what has to be true of every one.
 
-    spec.nodes is empty in both profiles on purpose. A NodeSpec requires a BMC
-    address, a boot MAC and a credentials Secret that the operator's validator
-    checks for before rendering -- none of which exists for a KubeVirt VM. An
-    entry here would mean three fabrications per node and a dummy Secret on the
-    hub, for fields no rendered manifest would ever read.
+    spec.nodes carries an entry per machine, three of whose fields are
+    fictions: a NodeSpec requires a BMC address, a boot MAC and a credentials
+    Secret that the operator's validator checks for before rendering, and a
+    KubeVirt VM has none of them. They are written anyway because the list
+    cannot be empty -- validation rejects that for any cluster type but
+    HostedControlPlane -- and because the AgentClusterInstall's
+    provisionRequirements are counted off it by role.
+
+    That counting is why the list has to match the machines the policy creates,
+    which is checked below. A machine the policy boots and this list omits is
+    an agent nothing is waiting for: it registers, it is approved, and the
+    install completes without it.
     """
     print("\nsite definitions")
     roles = f"{ROOT}/deploy/openshift-clusters/roles"
@@ -1412,6 +1424,19 @@ def test_site_definitions():
                   all(n.get("templateRefs") and n.get("bmcCredentialsName")
                       and n.get("bmcAddress") and n.get("bootMACAddress")
                       for n in ci["spec"]["nodes"]))
+            # Against the same plan the virtual machines are rendered from, so
+            # that the two cannot drift. plan-nodes.yml calls a control-plane
+            # machine "control-plane" and the installer calls it "master"; the
+            # rest of the entry is the machine's own name, which is also how
+            # approve-agents.yml works out what role to give the agent.
+            planned = {n["name"]: ("master" if n["role"] == "control-plane"
+                                   else n["role"]) for n in CONTEXT["vcp_nodes"]}
+            declared = {n["hostName"]: n["role"] for n in ci["spec"]["nodes"]}
+            check(f"{name}: it declares exactly the machines that get built",
+                  declared == planned, f"declared {declared}, planned {planned}")
+            macs = [n["bootMACAddress"] for n in ci["spec"]["nodes"]]
+            check(f"{name}: no two of them claim the same boot address",
+                  len(set(macs)) == len(macs), str(macs))
         # The install templates hardcode namespace: .Spec.ClusterName, so a
         # namespace that disagrees renders manifests into a namespace that does
         # not exist.

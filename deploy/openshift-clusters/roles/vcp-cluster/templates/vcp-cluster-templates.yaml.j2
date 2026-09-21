@@ -85,11 +85,22 @@ data:
       # claim. Same reason MetalLB does not work in a VPC, one layer further in.
       platformType: None
 {% endraw %}
-      # Without this a compact cluster has nowhere to run anything: there are no
-      # worker nodes, and the CRD has no default -- the field is documented as
-      # "set to true to allow control plane nodes to be schedulable", so not
-      # saying it means they are not.
-      mastersSchedulable: {{ 'true' if vcp_worker_replicas | int == 0 else 'false' }}
+      # Always, not only when the cluster has no workers. The CRD has no default
+      # -- the field is documented as "set to true to allow control plane nodes
+      # to be schedulable", so not saying it means they are not -- and in this
+      # profile an unschedulable control-plane node is a node thrown away.
+      # Every machine here is given a GPU, control plane included, because a
+      # compact cluster is where workloads run; masters that cannot be scheduled
+      # on would hold three of the cluster's four T4s and offer none of them.
+      #
+      # It was conditional on there being no workers, which was right while the
+      # only alternative to a compact cluster was a fleet of dedicated workers.
+      # With one worker it rendered false, and the cluster survived that only
+      # because the assisted installer forces masters schedulable below two
+      # workers -- a rule this file was then quietly depending on rather than
+      # stating. Saying it outright costs nothing and does not change with the
+      # worker count.
+      mastersSchedulable: true
 {% raw %}
       networking:
         # Under networking, not beside it. The CRD has no spec.userManagedNetworking
