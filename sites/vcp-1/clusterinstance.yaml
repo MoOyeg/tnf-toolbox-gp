@@ -1,0 +1,91 @@
+#
+# Ansible managed -- roles/vcp-cluster/templates/clusterinstance.yaml.j2
+#
+# Site definition for vcp-1: a whole OpenShift cluster whose
+# every node is a virtual machine on the infra cluster.
+#
+# This file is the *what* -- name, domain, networks. The *how* is
+# vcp-cluster-templates-v1, which renders the ClusterDeployment,
+# AgentClusterInstall, InfraEnv, ManagedCluster and KlusterletAddonConfig this
+# cluster is installed from.
+apiVersion: siteconfig.open-cluster-management.io/v1alpha1
+kind: ClusterInstance
+metadata:
+  name: vcp-1
+  namespace: vcp-1
+spec:
+  clusterName: vcp-1
+  baseDomain: sandbox1531.opentlc.com
+  # Three control-plane VMs carrying their own etcd quorum. Not SNO, and not a
+  # hosted control plane: nothing of this cluster runs on the hub.
+  clusterType: HighlyAvailable
+  clusterImageSetNameRef: openshift-4.22.10
+  networkType: OVNKubernetes
+  pullSecretRef:
+    name: vcp-1-pull-secret
+  sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIORhGG3z4xX8OG24jQ4laRaKmsowH5wwZ6aYQYN8Ix4J tnf-toolbox-gp e2e test"
+  clusterNetwork:
+    - cidr: 10.132.0.0/14
+      hostPrefix: 23
+  serviceNetwork:
+    - cidr: 172.31.0.0/16
+  templateRefs:
+    - name: vcp-cluster-templates-v1
+      namespace: open-cluster-management
+  # Install-time node configuration, applied by the assisted installer while the
+  # cluster is built. The ConfigMap is the extra-manifests.yaml beside this file,
+  # resolved in this cluster's own namespace.
+  extraManifestsRefs:
+    - name: vcp-1-extra-manifests
+  # The same time source again, for the phase before those manifests exist. An
+  # agent validates its clock against the hub before installation starts, so a
+  # VM that booted with a skewed clock sits in 'insufficient' and never reaches
+  # the point where the chrony MachineConfig would have fixed it.
+  additionalNTPSources:
+    - 2.rhel.pool.ntp.org
+  # Every node has to be listed, and the operator's own validation is why:
+  #
+  #   controlPlaneCount < 1 && clusterType != HostedControlPlane
+  #     -> "at least 1 control-plane agent is required"
+  #
+  # An empty list is accepted by the CRD schema and then rejected at reconcile,
+  # which is a quiet way to fail -- the Application syncs green and the cluster
+  # never appears.
+  #
+  # So each VM is declared, and three of its required fields are fictions:
+  # a NodeSpec is written for hardware to be *claimed*, and these VMs do not
+  # exist until the infra cluster creates them. bmcAddress points into TEST-NET-1
+  # (RFC 5737, reserved for documentation) so that anything which does try to
+  # dial it fails immediately and visibly rather than reaching something real;
+  # the boot MAC is locally administered and is not the address KubeVirt will
+  # assign; and the credentials Secret exists only because the validator checks
+  # that it does. None is ever read, because the node template set renders no
+  # BareMetalHost for them to be read by.
+  nodes:
+    - hostName: "vcp-1-cp-1"
+      role: master
+      bmcAddress: "redfish-virtualmedia://192.0.2.1/redfish/v1/Systems/vcp-1-cp-1"
+      bmcCredentialsName:
+        name: vcp-1-bmc-placeholder
+      bootMACAddress: "02:00:00:00:00:01"
+      templateRefs:
+        - name: vcp-node-templates-v1
+          namespace: open-cluster-management
+    - hostName: "vcp-1-cp-2"
+      role: master
+      bmcAddress: "redfish-virtualmedia://192.0.2.1/redfish/v1/Systems/vcp-1-cp-2"
+      bmcCredentialsName:
+        name: vcp-1-bmc-placeholder
+      bootMACAddress: "02:00:00:00:00:02"
+      templateRefs:
+        - name: vcp-node-templates-v1
+          namespace: open-cluster-management
+    - hostName: "vcp-1-cp-3"
+      role: master
+      bmcAddress: "redfish-virtualmedia://192.0.2.1/redfish/v1/Systems/vcp-1-cp-3"
+      bmcCredentialsName:
+        name: vcp-1-bmc-placeholder
+      bootMACAddress: "02:00:00:00:00:03"
+      templateRefs:
+        - name: vcp-node-templates-v1
+          namespace: open-cluster-management
