@@ -1078,3 +1078,80 @@ Also worth recording, because it wasted time here: `kubelet` being
 `systemd-disabled` on a TNF node is normal, not a symptom. Both nodes show it;
 kubelet is started as part of the Pacemaker-managed sequence rather than by
 systemd at boot. The signal that matters is quorum.
+
+## Run 6 — 2026-09-21, eu-west-1, account 574636522655
+
+`vcp-1` rebuilt from three control-plane VMs to five machines -- three
+control-plane and two workers -- to get one master on each infra node and a
+worker on each. The rebuild itself is not interesting; what it found is.
+
+### 39. A ReadWriteOnce volume silently overrode the constraint meant to spread the VMs
+
+`vcp-1`'s three control-plane VMs were all on `master-1`, which
+[resilience.md](resilience.md) had recorded as a known trade. The cause was not
+the scheduler ignoring anything. Every VM mounted one shared
+`vcp-1-discovery` DataVolume, ReadWriteOnce, on `lvms-vg1` -- TopoLVM, so
+node-local and a *hard* constraint. The `topologySpreadConstraints` beside it
+asked for `maxSkew: 1` with `whenUnsatisfiable: ScheduleAnyway`, a preference.
+A hard constraint beats a soft one every time, so all three landed wherever the
+volume did, permanently: nothing detaches it after the install.
+
+Two changes. A discovery volume per machine, so no volume pins two machines
+together -- it costs one ISO import per machine instead of one per cluster, and
+that is the whole price. And a `DoNotSchedule` constraint per role on top of
+the cluster-wide preference, so `maxSkew: 1` over two infra nodes admits 2/1
+for three masters and 1/1 for two workers.
+
+Observed after the rebuild: masters on `master-1`, `master-0`, `master-1`;
+workers one to each. The preference alone had never once produced that.
+
+Worth stating because it generalises: a soft scheduling constraint is not a
+weaker version of a hard one, it is a *suggestion that loses to any hard
+constraint in the pod* -- including ones that arrive through storage rather
+than through the scheduler stanza. If the placement matters, nothing in the pod
+may pin it elsewhere.
+
+### 40. Adding a machine mid-provision deadlocks the install, both ways at once
+
+The worker count was raised from one to two while the cluster was provisioning.
+Two things then held each other shut.
+
+The SiteConfig admission webhook refuses `ClusterInstance` spec changes while a
+cluster is provisioning:
+
+```
+admission webhook "clusterinstances.siteconfig.open-cluster-management.io"
+denied the request: spec update not allowed during provisioning or cluster
+reinstalls
+```
+
+So Argo CD could not apply the five-node node list -- the Application sat
+`OutOfSync` on that one resource with everything else `Synced`, which is easy
+to read as Argo being slow rather than as the API refusing it.
+
+Meanwhile the Policy that creates the virtual machines is *not* gated that way.
+It had already built the fifth VM, which booted, registered and was approved by
+`approve-agents.yml` along with the rest. The `AgentClusterInstall` still said
+3 + 1:
+
+```
+RequirementsMet=False InsufficientAgents: The cluster currently requires
+exactly 3 master agents, 0 arbiter agents and 1 worker agents, but currently
+registered 3 master agents, 0 arbiter agents and 2 worker agents
+```
+
+**`exactly`.** The gate is equality, not sufficiency, so five approved agents
+against four expected does not start a four-node install -- it starts nothing,
+and the cluster sits in `ready` looking like it is about to go.
+
+The way out was to patch `provisionRequirements.workerAgents` to 2 on the
+`AgentClusterInstall` directly. That is drift, but drift *toward* Git: the
+committed `ClusterInstance` already said two workers, and once provisioning
+completes and the webhook releases, SiteConfig re-renders the same value from
+it. The install started on the next reconcile.
+
+The lesson is about ordering, not about a bug. The machine count belongs to
+`vcp_worker_replicas`, and the moment to change it is before the machines boot.
+Changed after, the Policy and the ClusterInstance move at different speeds --
+one is free to act and the other is locked -- and the cluster stops in a state
+whose message names the count but not the lock holding it.
