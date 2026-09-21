@@ -3,4 +3,12 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: visual-inspection
-  labels: {app.kubernetes.io/part-of: inspection}
+  labels:
+    app.kubernetes.io/part-of: inspection
+    # What lets the cluster's own Argo CD write here. OpenShift GitOps grants
+    # its controller rights per namespace, keyed on this label, and the pull
+    # model applies these manifests as that controller -- so without it the
+    # Application syncs to "services is forbidden: ... cannot create resource
+    # services in API group" and nothing is ever created. Harmless when the
+    # manifests are applied directly instead.
+    argocd.argoproj.io/managed-by: openshift-gitops

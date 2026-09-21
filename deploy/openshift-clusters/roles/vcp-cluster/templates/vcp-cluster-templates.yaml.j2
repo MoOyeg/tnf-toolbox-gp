@@ -188,8 +188,15 @@ data:
     spec:
       clusterName: "{{ .Spec.ClusterName }}"
       clusterNamespace: "{{ .Spec.ClusterName }}"
+      # On, and it is not optional for a cluster meant to run workloads. The
+      # hub's Argo CD learns about a managed cluster through a GitOpsCluster,
+      # which registers it from this addon; without it no cluster secret is
+      # created, the workloads ApplicationSet logs "unmatched cluster in
+      # ArgoCD" for it every thirty seconds, and no Application is ever
+      # generated. The cluster installs, imports, reports healthy -- and
+      # nothing committed under fleet/<cluster>/ ever reaches it.
       applicationManager:
-        enabled: false
+        enabled: true
       certPolicyController:
         enabled: false
       iamPolicyController:
