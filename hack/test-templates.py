@@ -916,6 +916,33 @@ def test_vcp_nodes_get_addresses_of_their_own():
         check(f"the {name} path attaches it to the user-defined network",
               iface.get("binding", {}).get("name") == "l2bridge", str(iface))
 
+    # The two paths build the same machine, and this is where they stopped
+    # doing so: the fix for the VMs sharing an infra node landed on the policy
+    # path alone, so a cluster built by 'make vcp-make-guests-from-acm' would
+    # still have piled every machine onto one node. Neither path is exercised
+    # by the other's runs, so only a comparison catches it.
+    for name, vm in [("policy", vms[0]), ("direct", direct)]:
+        spec = vm["spec"]["template"]["spec"]
+        machine = vm["metadata"]["name"]
+        role = vm["metadata"]["labels"]["tnf-toolbox-gp/role"]
+        discovery = [v["dataVolume"]["name"] for v in spec["volumes"]
+                     if v["name"] == "discovery"]
+        # Named for the machine, not the cluster. A cluster-named one is the
+        # shared volume, and shared is ReadWriteOnce on node-local storage --
+        # a hard constraint that pins every machine to one infra node and beats
+        # anything the spread constraints below ask for.
+        check(f"the {name} path gives the machine its own discovery volume",
+              discovery == [f"{machine}-discovery"], str(discovery))
+        tsc = spec.get("topologySpreadConstraints", [])
+        check(f"the {name} path spreads the cluster as a preference",
+              any(c["whenUnsatisfiable"] == "ScheduleAnyway"
+                  and "tnf-toolbox-gp/role" not in c["labelSelector"]["matchLabels"]
+                  for c in tsc), str(tsc))
+        check(f"the {name} path spreads the machine's own role as a requirement",
+              any(c["whenUnsatisfiable"] == "DoNotSchedule"
+                  and c["labelSelector"]["matchLabels"].get("tnf-toolbox-gp/role") == role
+                  for c in tsc), str(tsc))
+
     # A UDN the namespace has not opted into is created and ignored, and the VMs
     # come up on the pod network with nothing reporting it.
     ns = yaml.safe_load(render(f"{roles}/vcp-cluster/templates/sites-infra-namespace.yaml.j2"))

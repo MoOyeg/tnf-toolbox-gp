@@ -2,9 +2,10 @@
 # Import the hub's discovery ISO onto the infra cluster, with something CDI can
 # verify the hub against.
 #
-# Shared by the stage that builds an all-VM cluster directly and the one that
-# writes it for Argo CD, because both need the same ISO on the same cluster and
-# a second copy of this would be a second chance to get the trust wrong.
+# Used by the stage that builds an all-VM cluster directly. The GitOps stage
+# creates the same objects from its Policy instead, because the ISO's URL is a
+# credential that must not be committed and is resolved when the policy
+# enforces rather than when the site is written.
 #
 # certConfigMap was previously set to "", which reads as "no certificate to
 # worry about" and means nothing of the kind: CDI still verifies, now against
@@ -47,10 +48,20 @@
         namespace: "{{ vcp_vm_namespace }}"
       data: "{{ {'ca.pem': hub_ingress_ca.stdout} }}"
 
-# One import for the whole cluster rather than one per VM: the ISO is the same
-# for every node, and CDI would otherwise pull it once per machine across the
-# peering connection.
-- name: Import the discovery ISO as a shared DataVolume
+# One import per machine, not one shared by the cluster.
+#
+# Sharing it is the cheaper answer and it was the wrong one. The volume is
+# ReadWriteOnce on storage that is node-local, so a shared one is a hard
+# scheduling constraint that pins every machine to whichever infra node
+# holds it -- and a topology spread constraint, being at best a preference over
+# a hard one, cannot win against it. Three machines then sat on one infra node,
+# and losing that node lost the whole cluster rather than one member of three.
+#
+# The cost is real and is the whole cost: CDI pulls the same ISO once per
+# machine across the peering connection instead of once. That buys placement
+# the scheduler is free to choose, which is the only thing that makes the
+# spread constraints in virtualmachine.yaml.j2 mean anything.
+- name: Import the discovery ISO, one volume per machine
   kubernetes.core.k8s:
     kubeconfig: "{{ vcp_infra_kubeconfig }}"
     state: present
@@ -58,7 +69,7 @@
       apiVersion: cdi.kubevirt.io/v1beta1
       kind: DataVolume
       metadata:
-        name: "{{ vcp_cluster_name }}-discovery"
+        name: "{{ item.name }}-discovery"
         namespace: "{{ vcp_vm_namespace }}"
       spec:
         source:
@@ -71,3 +82,6 @@
             requests:
               storage: 8Gi
           storageClassName: "{{ storage_class }}"
+  loop: "{{ vcp_nodes }}"
+  loop_control:
+    label: "{{ item.name }}-discovery"

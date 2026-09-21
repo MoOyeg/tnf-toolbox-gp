@@ -42,6 +42,38 @@ spec:
         tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
         tnf-toolbox-gp/role: {{ vm.role }}
     spec:
+      # Spread these across the infra cluster's nodes rather than letting them
+      # pile onto whichever one has room first. maxSkew 1 asks for as even a
+      # distribution as the node count allows, and ScheduleAnyway keeps this one
+      # a preference: a VM that cannot be placed evenly is still placed, which
+      # matters on a two-node infra cluster where losing a node would otherwise
+      # leave VMs Pending rather than merely unbalanced.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+        # And again over the machines sharing this one's role, as a requirement.
+        # The constraint above balances the cluster as a whole, which an even
+        # split satisfies with every master on one infra node and every worker
+        # on the other -- losing a node would take the entire control plane, and
+        # the cluster would have scheduled cleanly on its way there. Per role,
+        # maxSkew 1 over two infra nodes admits 2/1 for three masters and 1/1
+        # for two workers.
+        #
+        # This is only worth anything because each machine now boots a discovery
+        # volume of its own. While they shared one, that volume was ReadWriteOnce
+        # on node-local storage -- a hard constraint no preference here could
+        # beat, and one this requirement would now simply deadlock against.
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
+              tnf-toolbox-gp/role: {{ vm.role }}
       # A node that reboots into its installed disk must not be handed the
       # discovery ISO again, so the disk is first in the boot order and the
       # cdrom second. Ignoring this gets a cluster that installs and then
@@ -93,7 +125,7 @@ spec:
             name: {{ vm.name }}-root
         - name: discovery
           dataVolume:
-            name: {{ vcp_cluster_name }}-discovery
+            name: {{ vm.name }}-discovery
         - name: data
           dataVolume:
             name: {{ vm.name }}-data

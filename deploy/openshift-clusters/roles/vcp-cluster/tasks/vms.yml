@@ -13,18 +13,23 @@
   vars:
     discovery_iso_url: "{{ iso_url.stdout }}"
 
-- name: Wait for the discovery ISO to finish importing
-  ansible.builtin.command: >-
-    oc get datavolume {{ vcp_cluster_name }}-discovery
-    -n {{ vcp_vm_namespace }} -o jsonpath={.status.phase}
-  environment:
-    KUBECONFIG: "{{ vcp_infra_kubeconfig }}"
-  register: dv_phase
-  changed_when: false
-  retries: 60
-  delay: 20
-  until: dv_phase.stdout == "Succeeded"
-
+# No wait for the import here, and that is not an omission.
+#
+# The storage class binds WaitForFirstConsumer, so a discovery volume does not
+# begin importing until something consumes it -- and the only consumer is the
+# virtual machine created below. Waiting for the volumes first is therefore a
+# deadlock: they sit in PendingPopulation forever because the thing that would
+# populate them is what the wait is blocking.
+#
+# WaitForFirstConsumer is also the point. The volume is provisioned on whichever
+# node the scheduler picks for the VM, so placement is decided by the spread
+# constraints and the storage follows. Forcing the import up front -- an
+# immediate-binding annotation -- would invert that: TopoLVM would pick a node
+# for the volume and the VM would be pinned to it, which is the failure the
+# per-machine volumes were introduced to remove.
+#
+# The wait that matters is the one below, which is satisfied only once each
+# machine's volume has imported and attached.
 - name: Create the cluster's virtual machines
   kubernetes.core.k8s:
     kubeconfig: "{{ vcp_infra_kubeconfig }}"
@@ -45,7 +50,11 @@
   register: vmi_running
   changed_when: false
   failed_when: false
-  retries: 60
+  # Thirty minutes, not twenty. This wait now covers one ISO import per machine
+  # rather than one for the cluster, and they cross the peering connection
+  # together -- the same bytes as before multiplied by the machine count, on a
+  # link that is shared with everything else between the two sites.
+  retries: 90
   delay: 20
   until: vmi_running.stdout | trim | int == vcp_nodes | length
 
