@@ -17,19 +17,32 @@
   changed_when: false
 
 # The analyzer takes one GPU for the fast path and vLLM takes another for the
-# slow one. Without both, the pods sit Pending with a message about insufficient
-# nvidia.com/gpu, which reads as a capacity problem rather than as "the GPU
-# stage has not run in this guest yet".
-- name: "{{ app_label }}: fail early if there are not enough GPUs to schedule on"
-  ansible.builtin.assert:
-    that: app_gpu_total.stdout | int >= (2 * app_instances | int)
-    fail_msg: >-
-      {{ app_label }} advertises {{ app_gpu_total.stdout }} nvidia.com/gpu, and
-      {{ app_instances }} instance(s) need {{ 2 * app_instances | int }} -- each
-      takes one for the analyzer's fast path and one for vLLM. Run
-      'make guest-gpu' first; if it has already run, the GPU Operator inside the
-      guest has not finished advertising the passed-through T4s. Otherwise lower
-      app_instances, or give the guest's workers more GPUs.
+# slow one. Said rather than enforced, because nothing this role does needs a
+# GPU: it builds images in the cluster and renders manifests into the fleet
+# repository, and it is the guest's own Argo CD that later creates the pods
+# which do. A shortfall here is a statement about the future, so failing on it
+# only forces this stage to be run twice.
+#
+# It used to fail, and the reason is kept because the diagnosis is the valuable
+# part: pods that cannot be scheduled report insufficient nvidia.com/gpu, which
+# reads as a capacity problem rather than as "the GPU stage has not finished in
+# this guest yet". Saying so here, while the build runs, means the message
+# arrives before the symptom instead of after it -- and the build, which is the
+# long pole at roughly twenty minutes, overlaps the GPU Operator's rollout
+# rather than queueing behind it.
+- name: "{{ app_label }}: say whether the GPUs the pods will need are there yet"
+  ansible.builtin.debug:
+    msg: >-
+      {{ app_label }} advertises {{ app_gpu_total.stdout }} nvidia.com/gpu and
+      {{ app_instances }} instance(s) will need {{ 2 * app_instances | int }} --
+      one for the analyzer's fast path and one for vLLM, each.
+      {{ 'Enough; the pods will schedule as soon as they are created.'
+         if (app_gpu_total.stdout | int >= (2 * app_instances | int))
+         else "Not enough yet, which is fine while 'make guest-gpu' is still
+               running: the images build and the manifests render regardless,
+               and the pods stay Pending until the GPU Operator advertises the
+               passed-through T4s. If that stage has already finished, lower
+               app_instances or give the guest's workers more GPUs." }}
 
 # Each instance is complete and independent, so they are deployed one after
 # another rather than all at once: a failure then names the instance that broke.

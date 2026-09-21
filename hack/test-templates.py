@@ -1307,9 +1307,16 @@ def test_app_instances_are_independent():
     """Two instances of the app, not one scaled up.
 
     Each is a whole pipeline in its own namespace and takes two GPUs, so the
-    GPU precondition has to scale with the count -- otherwise a second instance
-    is admitted onto a guest that cannot schedule it and its pods sit Pending on
-    nvidia.com/gpu, which reads as a broken GPU stage rather than as arithmetic.
+    GPU arithmetic has to scale with the count -- otherwise a second instance
+    is reported as fitting on a guest that cannot schedule it and its pods sit
+    Pending on nvidia.com/gpu, which reads as a broken GPU stage rather than as
+    arithmetic.
+
+    Reported rather than enforced: nothing the role does needs a GPU. It builds
+    images and renders manifests, and the guest's own Argo CD creates the pods
+    that need them later, so the count is checked and stated rather than made a
+    preconditon of running. What must not happen is the count being stated
+    wrongly, which is what this checks.
     """
     print("\napp instances")
     tasks = f"{ROOT}/deploy/openshift-clusters/roles/app/tasks"
@@ -1317,14 +1324,19 @@ def test_app_instances_are_independent():
     main = open(f"{tasks}/main.yml", encoding="utf-8").read()
     instance = open(f"{tasks}/instance.yml", encoding="utf-8").read()
 
-    # The assertion itself, not the message beside it -- the message mentions
-    # the same arithmetic, so matching the file would pass on a hardcoded check.
-    assertion = [l for l in main.splitlines() if l.strip().startswith("that:")
-                 and "app_gpu_total" in l]
+    # The comparison itself, not the prose beside it. The message interpolates
+    # the same arithmetic, so searching the file as a whole would pass on a
+    # comparison hardcoded to two GPUs sitting next to a message that talks
+    # about instances. A comparison is the line that relates the two counts, so
+    # it is the line that has to mention both.
+    comparison = [l for l in main.splitlines()
+                  if "app_gpu_total" in l and ">=" in l]
+    check("the guest's GPU count is compared against what the app needs",
+          comparison, "no line compares app_gpu_total against anything")
     check("the GPU check scales with the number of instances",
-          any("app_instances" in l for l in assertion),
-          f"assertion is {assertion or 'missing'} -- a second instance would be "
-          "admitted onto a guest that cannot schedule it")
+          all("app_instances" in l for l in comparison),
+          f"comparison is {comparison or 'missing'} -- a second instance would "
+          "be reported as fitting on a guest that cannot schedule it")
     check("each instance gets its own namespace",
           "app_namespace_base }}-{{ app_instance }}" in instance)
     check("the images are built once, by the first instance",
