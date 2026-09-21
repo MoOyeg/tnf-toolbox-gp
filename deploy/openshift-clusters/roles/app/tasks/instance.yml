@@ -24,6 +24,35 @@
         labels:
           app.kubernetes.io/part-of: inspection
 
+# The namespace's default ServiceAccount is created by a controller, not by the
+# namespace, so it appears a moment after the namespace does. The tasks below
+# link pull secrets to it, and 'oc secrets link' does not wait -- on a freshly
+# created namespace it fails outright with
+#
+#   Error from server (NotFound): serviceaccounts "default" not found
+#
+# which reads as a broken cluster rather than as arriving a second early. It is
+# only ever a short wait, and on a re-run the account is already there.
+- name: "{{ app_label }}/{{ app_namespace }}: wait for its default service account"
+  ansible.builtin.command: >-
+    oc -n {{ app_namespace }} get serviceaccount default -o name
+  environment:
+    KUBECONFIG: "{{ op_kubeconfig }}"
+  register: app_default_sa
+  changed_when: false
+  failed_when: false
+  retries: 30
+  delay: 2
+  until: app_default_sa.rc == 0
+
+- name: "{{ app_label }}/{{ app_namespace }}: fail if it never appeared"
+  ansible.builtin.assert:
+    that: app_default_sa.rc == 0
+    fail_msg: >-
+      {{ app_namespace }} has no default ServiceAccount after 60 seconds. The
+      pull secrets below are linked to it, so nothing in this namespace could
+      pull its images. Check the service account controller on the guest.
+
 # The default vLLM image is Red Hat AI Inference Server, on registry.redhat.io.
 # The cluster pull secret already carries those credentials, so this copies them
 # in rather than asking for a second secret nobody would remember to supply.
