@@ -335,15 +335,112 @@ has to refit its model from scratch, on whichever node it lands on next.
 
 | Finding | What it would take |
 |---|---|
-| **A fence costs the API for ~17m** | Fence by *isolation* rather than power. Revoking the instance's security group is confirmable in seconds, so Pacemaker could shrink etcd almost at once and power-cycle separately for recovery. This is the only change here that shortens the outage rather than trimming it. |
+| **A fence costs the API for ~17m** | Nothing cheap. Fencing by *isolation* was the obvious idea and it does not work here -- see [Partitioning a TNF node](#partitioning-a-tnf-node-measured), which found that revoking a security group leaves established connections running. A watchdog is the mechanism that would actually help, and its cost is a shared disk; see the note below the table. |
 | The first fence attempt always times out | Raise `pcmk_reboot_timeout` past the measured 15m30s, with margin. Cheap and safe, but it only saves the retry -- roughly two minutes of the seventeen. |
 | `/readyz` passing without quorum | Point the load balancers' health checks at something that needs etcd, so an API without quorum is taken out of rotation instead of kept in it. |
 | GPU workloads unschedulable after a node returns | Nothing, probably: it self-corrects in minutes and the alternative is trusting a device plugin that has not finished registering. Worth knowing so it is not diagnosed as a capacity problem. |
 | The app's models on node-local volumes | The same trade as `vcp-1`'s discovery volumes, and the same fix if it matters: shared storage, at the cost of needing some. |
 
-A note for whoever runs this next: `pcs stonith fence` through `oc debug` will
-report `error: http2: client connection lost`. The fence succeeded; the command
-lost its own session to the API blip it caused.
+The watchdog is the option worth pricing, because it is the only one that
+removes the wait rather than accommodating it. Both nodes have a real hardware
+watchdog (`iTCO_wdt`, 30s) and `sbd` installed, and both are unused --
+`stonith-watchdog-timeout` is 0 and `have-watchdog` is false. With SBD the
+survivor stops waiting for AWS to confirm anything: it waits a known timeout
+and proceeds, because the absent node's own watchdog guarantees it has reset
+itself. The catch is that `corosync.conf` sets `two_node: 1`, and diskless SBD
+on two nodes is unsafe -- a partition makes *both* sides self-fence -- so it
+needs a shared block device as a tiebreaker. On AWS that is EBS Multi-Attach,
+which both nodes could use since they share an availability zone. Whether TNF
+supports SBD at all is a question for Red Hat, not one this repository can
+answer.
+
+Two notes for whoever runs this next. `pcs stonith fence` through `oc debug`
+reports `error: http2: client connection lost`; the fence succeeded, and the
+command lost its own session to the API blip it caused. And `power_timeout` on
+the stonith devices does nothing: the fencing library zeroes it whenever the
+agent is run by `pacemaker-fenced`, which makes the poll loop unbounded and
+leaves `pcmk_reboot_timeout` as the only deadline that matters.
+
+## Partitioning a TNF node, measured
+
+Run 2026-09-21, an hour after the power-off above, to answer a different
+question: a fenced node is *dead*, but a partitioned node is **alive and
+isolated** -- which is the case fencing actually exists for. master-0 was the
+DC and held both stonith devices when this started.
+
+### First attempt: a security group is not a partition
+
+Revoking master-0's security group -- replacing it with one carrying no inbound
+and no outbound rules -- did not partition anything.
+
+```
+23:03:10  master-0's ENI moved to a rules-free security group
+23:03:27  haproxy marks every master-0 backend DOWN (new connections refused)
+23:04:51  pcs: "Online: [ master-0 master-1 ]", real API queries still succeed
+23:06:36  still Online, 3.5 minutes in
+```
+
+`ss` on master-1, mid-"partition":
+
+```
+ESTAB  10.0.0.11:37612 -> 10.0.0.10:2379   kube-apiserver
+corosync runtime.members.1.status = joined
+corosync runtime.members.2.status = joined
+```
+
+**AWS security groups are stateful, and removing a rule does not tear down the
+connections it was permitting.** New connections are refused immediately --
+which is why haproxy noticed in seventeen seconds -- while the established
+corosync and etcd flows carried on as though nothing had happened.
+
+This is worth more than a note on methodology, because it kills an idea this
+document previously recommended: fencing by revoking a security group, on the
+grounds that isolation is confirmable in seconds where a power-off is not. It
+is not isolation. A node fenced that way keeps every connection it already had,
+including the etcd session it could still write through. The measurement above
+is the reason that row now says "nothing cheap".
+
+### Second attempt: dropping packets on the node
+
+`iptables -j DROP` on master-0 for all traffic to and from master-1 and the
+bastion. The bastion is included deliberately: it hosts the Redfish shim, so
+blocking it stops master-0 fencing *back* and makes the test one-sided.
+
+```
+23:10:09  partition applied
+23:10:28  master-1 issues ForceOff against master-0          +19s
+23:14:03  master-0 observed stopping
+23:25:28  first fence attempt times out (pcmk_reboot_timeout=900s)
+23:25:38  retry issues ForceOff
+23:26:01  EC2 reaches stopped; the agent issues On           +15m33s
+23:26:11  master-0 running
+23:28:09  TNF API serves real queries again                  +18m00s
+```
+
+### What it showed
+
+**Detection and decision take nineteen seconds.** That is the whole of
+Pacemaker's contribution: corosync lost the peer, master-1 took the DC role,
+started a stonith device it had not been running, and issued the fence. The
+other seventeen minutes are AWS stopping an instance. Whatever is wrong here,
+the cluster software is not the slow part.
+
+**The fence race resolved correctly, and not by luck.** master-0 held *both*
+stonith devices and was the DC, so the naive expectation is that it wins. The
+devices carry asymmetric delays -- `master-0_redfish` waits 10s,
+`master-1_redfish` waits 1s -- which means that in a symmetric partition
+master-0 fences master-1 first and survives. Here master-0 could not reach the
+shim, so exactly one fence request was issued and master-1 won. Worth knowing
+which way the asymmetry points: **in a partition where both nodes can still
+reach the bastion, master-0 is the designated survivor.**
+
+**A partition costs the same as a power-off.** 18m00s against 17m31s. From the
+cluster's point of view the two are the same event, because the expensive part
+is neither detection nor the failure mode -- it is waiting for EC2.
+
+**The first fence attempt timed out for the third consecutive time.** Three
+fences on this rig, three timeouts at 900s followed by a retry that succeeded
+in about twenty seconds. The stop takes 15m11s to 15m33s; the timeout is 15m00s.
 
 ## If any of this should change
 
