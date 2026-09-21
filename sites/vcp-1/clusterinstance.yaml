@@ -89,3 +89,22 @@ spec:
       templateRefs:
         - name: vcp-node-templates-v1
           namespace: open-cluster-management
+    # The workers too, and not only for completeness: the AgentClusterInstall's
+    # provisionRequirements are counted off spec.nodes by role, so a worker the
+    # policy creates a VM for and this list omits is an agent that registers, is
+    # approved, and is then waited for by nothing -- workerAgents stays 0, the
+    # install proceeds on the control plane alone, and the machine sits in the
+    # inventory looking like a node of a cluster it was never added to.
+    - hostName: "vcp-1-worker-1"
+      role: worker
+      bmcAddress: "redfish-virtualmedia://192.0.2.1/redfish/v1/Systems/vcp-1-worker-1"
+      bmcCredentialsName:
+        name: vcp-1-bmc-placeholder
+      # Continues the control plane's numbering rather than restarting it. The
+      # address is a fiction either way -- KubeVirt assigns the real one -- but
+      # two machines declaring the same one is the kind of fiction that reads as
+      # a duplicate host later.
+      bootMACAddress: "02:00:00:00:00:04"
+      templateRefs:
+        - name: vcp-node-templates-v1
+          namespace: open-cluster-management

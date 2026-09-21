@@ -228,12 +228,21 @@ spec:
                   # being substituted into a block scalar.
                   ca.pem: |
                     {{hub fromConfigMap "openshift-config-managed" "default-ingress-cert" "ca-bundle.crt" | autoindent hub}}
+            # One discovery volume per machine, not one shared by all of them.
+            #
+            # It is ReadWriteOnce on node-local storage, so a shared one is a
+            # hard constraint that pins every machine to whichever infra node
+            # holds it -- and the spread constraint below, being a preference,
+            # loses to it. Three machines then sat on one node, and losing that
+            # node lost the whole cluster rather than one member of three. A
+            # volume each costs one ISO import per machine and lets them
+            # actually spread.
             - complianceType: musthave
               objectDefinition:
                 apiVersion: cdi.kubevirt.io/v1beta1
                 kind: DataVolume
                 metadata:
-                  name: vcp-1-discovery
+                  name: vcp-1-cp-1-discovery
                   namespace: acm-vcp-vms
                 spec:
                   source:
@@ -318,9 +327,34 @@ spec:
                           labelSelector:
                             matchLabels:
                               tnf-toolbox-gp/cluster: vcp-1
+                        # And again over the control-plane machines alone, this
+                        # one a requirement rather than a preference. The
+                        # constraint above balances the cluster as a whole, which
+                        # an even split satisfies with every master on one infra
+                        # node and every worker on the other -- a node lost would
+                        # take the entire control plane.
+                        #
+                        # DoNotSchedule, unlike the constraint above, because
+                        # this is the property the topology exists for: a master
+                        # on each infra node, so that losing one costs a member
+                        # of the quorum and not the quorum. The cost is stated
+                        # rather than hidden -- a master that cannot be placed
+                        # on the emptier node stays Pending instead of joining
+                        # its siblings, which is visible and repairable, where an
+                        # unbalanced control plane that schedules cleanly is
+                        # neither. Three masters over two infra nodes leaves
+                        # 2/1 satisfiable with either node down to its last
+                        # slot, so this blocks nothing a healthy rig can place.
+                        - maxSkew: 1
+                          topologyKey: kubernetes.io/hostname
+                          whenUnsatisfiable: DoNotSchedule
+                          labelSelector:
+                            matchLabels:
+                              tnf-toolbox-gp/cluster: vcp-1
+                              tnf-toolbox-gp/role: control-plane
                       domain:
                         cpu:
-                          cores: 8
+                          cores: 10
                         memory:
                           guest: 32Gi
                         devices:
@@ -378,7 +412,7 @@ spec:
                             name: vcp-1-cp-1-root
                         - name: discovery
                           dataVolume:
-                            name: vcp-1-discovery
+                            name: vcp-1-cp-1-discovery
                         - name: data
                           dataVolume:
                             name: vcp-1-cp-1-data
@@ -386,6 +420,40 @@ spec:
                       # image to disk; without this KubeVirt treats the reboot as
                       # a crash and restarts the VM from the ISO instead.
                       terminationGracePeriodSeconds: 180
+            # One discovery volume per machine, not one shared by all of them.
+            #
+            # It is ReadWriteOnce on node-local storage, so a shared one is a
+            # hard constraint that pins every machine to whichever infra node
+            # holds it -- and the spread constraint below, being a preference,
+            # loses to it. Three machines then sat on one node, and losing that
+            # node lost the whole cluster rather than one member of three. A
+            # volume each costs one ISO import per machine and lets them
+            # actually spread.
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: cdi.kubevirt.io/v1beta1
+                kind: DataVolume
+                metadata:
+                  name: vcp-1-cp-2-discovery
+                  namespace: acm-vcp-vms
+                spec:
+                  source:
+                    http:
+                      # protect, not a bare substitution. Resolved hub-template
+                      # output is written into the replicated Policy in the
+                      # managed cluster's namespace on the hub, where anyone who
+                      # can read policies can read it and etcd encryption does
+                      # not cover it. This URL is a permanent credential to the
+                      # cluster's pull secret and SSH key, so only ciphertext is
+                      # allowed to travel.
+                      url: '{{hub (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" "vcp-1" "vcp-1").status.isoDownloadURL | protect hub}}'
+                      certConfigMap: vcp-1-hub-ca
+                  storage:
+                    accessModes: [ReadWriteOnce]
+                    resources:
+                      requests:
+                        storage: 8Gi
+                    storageClassName: lvms-vg1
             - complianceType: musthave
               objectDefinition:
                 apiVersion: kubevirt.io/v1
@@ -451,9 +519,34 @@ spec:
                           labelSelector:
                             matchLabels:
                               tnf-toolbox-gp/cluster: vcp-1
+                        # And again over the control-plane machines alone, this
+                        # one a requirement rather than a preference. The
+                        # constraint above balances the cluster as a whole, which
+                        # an even split satisfies with every master on one infra
+                        # node and every worker on the other -- a node lost would
+                        # take the entire control plane.
+                        #
+                        # DoNotSchedule, unlike the constraint above, because
+                        # this is the property the topology exists for: a master
+                        # on each infra node, so that losing one costs a member
+                        # of the quorum and not the quorum. The cost is stated
+                        # rather than hidden -- a master that cannot be placed
+                        # on the emptier node stays Pending instead of joining
+                        # its siblings, which is visible and repairable, where an
+                        # unbalanced control plane that schedules cleanly is
+                        # neither. Three masters over two infra nodes leaves
+                        # 2/1 satisfiable with either node down to its last
+                        # slot, so this blocks nothing a healthy rig can place.
+                        - maxSkew: 1
+                          topologyKey: kubernetes.io/hostname
+                          whenUnsatisfiable: DoNotSchedule
+                          labelSelector:
+                            matchLabels:
+                              tnf-toolbox-gp/cluster: vcp-1
+                              tnf-toolbox-gp/role: control-plane
                       domain:
                         cpu:
-                          cores: 8
+                          cores: 10
                         memory:
                           guest: 32Gi
                         devices:
@@ -511,7 +604,7 @@ spec:
                             name: vcp-1-cp-2-root
                         - name: discovery
                           dataVolume:
-                            name: vcp-1-discovery
+                            name: vcp-1-cp-2-discovery
                         - name: data
                           dataVolume:
                             name: vcp-1-cp-2-data
@@ -519,6 +612,40 @@ spec:
                       # image to disk; without this KubeVirt treats the reboot as
                       # a crash and restarts the VM from the ISO instead.
                       terminationGracePeriodSeconds: 180
+            # One discovery volume per machine, not one shared by all of them.
+            #
+            # It is ReadWriteOnce on node-local storage, so a shared one is a
+            # hard constraint that pins every machine to whichever infra node
+            # holds it -- and the spread constraint below, being a preference,
+            # loses to it. Three machines then sat on one node, and losing that
+            # node lost the whole cluster rather than one member of three. A
+            # volume each costs one ISO import per machine and lets them
+            # actually spread.
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: cdi.kubevirt.io/v1beta1
+                kind: DataVolume
+                metadata:
+                  name: vcp-1-cp-3-discovery
+                  namespace: acm-vcp-vms
+                spec:
+                  source:
+                    http:
+                      # protect, not a bare substitution. Resolved hub-template
+                      # output is written into the replicated Policy in the
+                      # managed cluster's namespace on the hub, where anyone who
+                      # can read policies can read it and etcd encryption does
+                      # not cover it. This URL is a permanent credential to the
+                      # cluster's pull secret and SSH key, so only ciphertext is
+                      # allowed to travel.
+                      url: '{{hub (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" "vcp-1" "vcp-1").status.isoDownloadURL | protect hub}}'
+                      certConfigMap: vcp-1-hub-ca
+                  storage:
+                    accessModes: [ReadWriteOnce]
+                    resources:
+                      requests:
+                        storage: 8Gi
+                    storageClassName: lvms-vg1
             - complianceType: musthave
               objectDefinition:
                 apiVersion: kubevirt.io/v1
@@ -584,9 +711,34 @@ spec:
                           labelSelector:
                             matchLabels:
                               tnf-toolbox-gp/cluster: vcp-1
+                        # And again over the control-plane machines alone, this
+                        # one a requirement rather than a preference. The
+                        # constraint above balances the cluster as a whole, which
+                        # an even split satisfies with every master on one infra
+                        # node and every worker on the other -- a node lost would
+                        # take the entire control plane.
+                        #
+                        # DoNotSchedule, unlike the constraint above, because
+                        # this is the property the topology exists for: a master
+                        # on each infra node, so that losing one costs a member
+                        # of the quorum and not the quorum. The cost is stated
+                        # rather than hidden -- a master that cannot be placed
+                        # on the emptier node stays Pending instead of joining
+                        # its siblings, which is visible and repairable, where an
+                        # unbalanced control plane that schedules cleanly is
+                        # neither. Three masters over two infra nodes leaves
+                        # 2/1 satisfiable with either node down to its last
+                        # slot, so this blocks nothing a healthy rig can place.
+                        - maxSkew: 1
+                          topologyKey: kubernetes.io/hostname
+                          whenUnsatisfiable: DoNotSchedule
+                          labelSelector:
+                            matchLabels:
+                              tnf-toolbox-gp/cluster: vcp-1
+                              tnf-toolbox-gp/role: control-plane
                       domain:
                         cpu:
-                          cores: 8
+                          cores: 10
                         memory:
                           guest: 32Gi
                         devices:
@@ -644,10 +796,177 @@ spec:
                             name: vcp-1-cp-3-root
                         - name: discovery
                           dataVolume:
-                            name: vcp-1-discovery
+                            name: vcp-1-cp-3-discovery
                         - name: data
                           dataVolume:
                             name: vcp-1-cp-3-data
+                      # An assisted install reboots each node when it writes the
+                      # image to disk; without this KubeVirt treats the reboot as
+                      # a crash and restarts the VM from the ISO instead.
+                      terminationGracePeriodSeconds: 180
+            # One discovery volume per machine, not one shared by all of them.
+            #
+            # It is ReadWriteOnce on node-local storage, so a shared one is a
+            # hard constraint that pins every machine to whichever infra node
+            # holds it -- and the spread constraint below, being a preference,
+            # loses to it. Three machines then sat on one node, and losing that
+            # node lost the whole cluster rather than one member of three. A
+            # volume each costs one ISO import per machine and lets them
+            # actually spread.
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: cdi.kubevirt.io/v1beta1
+                kind: DataVolume
+                metadata:
+                  name: vcp-1-worker-1-discovery
+                  namespace: acm-vcp-vms
+                spec:
+                  source:
+                    http:
+                      # protect, not a bare substitution. Resolved hub-template
+                      # output is written into the replicated Policy in the
+                      # managed cluster's namespace on the hub, where anyone who
+                      # can read policies can read it and etcd encryption does
+                      # not cover it. This URL is a permanent credential to the
+                      # cluster's pull secret and SSH key, so only ciphertext is
+                      # allowed to travel.
+                      url: '{{hub (lookup "agent-install.openshift.io/v1beta1" "InfraEnv" "vcp-1" "vcp-1").status.isoDownloadURL | protect hub}}'
+                      certConfigMap: vcp-1-hub-ca
+                  storage:
+                    accessModes: [ReadWriteOnce]
+                    resources:
+                      requests:
+                        storage: 8Gi
+                    storageClassName: lvms-vg1
+            - complianceType: musthave
+              objectDefinition:
+                apiVersion: kubevirt.io/v1
+                kind: VirtualMachine
+                metadata:
+                  name: vcp-1-worker-1
+                  namespace: acm-vcp-vms
+                  labels:
+                    tnf-toolbox-gp/cluster: vcp-1
+                    tnf-toolbox-gp/role: worker
+                spec:
+                  running: true
+                  dataVolumeTemplates:
+                    - metadata:
+                        name: vcp-1-worker-1-root
+                      spec:
+                        storage:
+                          accessModes: [ReadWriteOnce]
+                          resources:
+                            requests:
+                              storage: 180Gi
+                          storageClassName: lvms-vg1
+                        source:
+                          blank: {}
+                    - metadata:
+                        name: vcp-1-worker-1-data
+                      spec:
+                        storage:
+                          accessModes: [ReadWriteOnce]
+                          resources:
+                            requests:
+                              storage: 100Gi
+                          storageClassName: lvms-vg1
+                        source:
+                          blank: {}
+                  template:
+                    metadata:
+                      labels:
+                        kubevirt.io/domain: vcp-1-worker-1
+                        tnf-toolbox-gp/cluster: vcp-1
+                        # On the pod template, not only on the VirtualMachine
+                        # above. A Service selects pods, and the virt-launcher
+                        # pod inherits these labels rather than the VM object's
+                        # -- so the role set up there matches nothing here, and
+                        # expose.yml's Services find no endpoints. The NodePort
+                        # then listens with no backend and refuses every
+                        # connection, which reads as a firewall or a dead API
+                        # rather than as a selector that matches no pod.
+                        tnf-toolbox-gp/role: worker
+                    spec:
+                      # Spread these across the infra cluster's nodes rather than
+                      # letting them pile onto whichever one has room first.
+                      # maxSkew 1 asks for as even a distribution as the node
+                      # count allows -- three machines over two nodes becomes two
+                      # and one -- and ScheduleAnyway keeps it a preference: a VM
+                      # that cannot be placed evenly is still placed, which
+                      # matters on a two-node cluster where losing a node would
+                      # otherwise leave VMs Pending rather than merely unbalanced.
+                      topologySpreadConstraints:
+                        - maxSkew: 1
+                          topologyKey: kubernetes.io/hostname
+                          whenUnsatisfiable: ScheduleAnyway
+                          labelSelector:
+                            matchLabels:
+                              tnf-toolbox-gp/cluster: vcp-1
+                      domain:
+                        cpu:
+                          cores: 10
+                        memory:
+                          guest: 32Gi
+                        devices:
+                          disks:
+                            - name: root
+                              bootOrder: 1
+                              disk:
+                                bus: virtio
+                            # Second, and it matters: a node that reboots into
+                            # its installed disk must not be handed the discovery
+                            # ISO again, or the cluster installs and then
+                            # rediscovers itself forever.
+                            - name: discovery
+                              bootOrder: 2
+                              cdrom:
+                                bus: sata
+                                readonly: true
+                            # No bootOrder: it must never be booted from. This
+                            # is the blank disk LVM Storage builds the cluster's
+                            # storage class on, and a device LVM owns carries no
+                            # bootable filesystem.
+                            - name: data
+                              disk:
+                                bus: virtio
+                          interfaces:
+                            # The l2bridge binding plugin, not masquerade.
+                            # Masquerade NATs the guest behind the pod and hands
+                            # every VM the same 10.0.2.2, so three nodes became
+                            # three copies of one address. This attaches the VM
+                            # to the primary UDN above, where it gets one of its
+                            # own and keeps it.
+                            - name: default
+                              binding:
+                                name: l2bridge
+                          hostDevices:
+                            # Read from the infra cluster when the policy
+                            # enforces, not guessed when this file is written.
+                            # nvidia.com/gpu is excluded on purpose: that is the
+                            # time-sliced resource, and what a passed-through
+                            # card advertises is the model-derived name beside
+                            # it. The node is selected by the label this repo
+                            # sets itself, so it cannot drift with a
+                            # feature-discovery rename.
+                            - name: gpu1
+                              deviceName: '{{- $node := index (lookup "v1" "Node" "" "" "nvidia.com/gpu.workload.config=vm-passthrough").items 0 -}}
+                                {{- range $name, $quantity := $node.status.allocatable -}}
+                                {{- if and (hasPrefix "nvidia.com/" $name) (ne $name "nvidia.com/gpu") }}{{ $name }}{{ end -}}
+                                {{- end -}}'
+                      networks:
+                        - name: default
+                          pod: {}
+                      volumes:
+                        - name: root
+                          dataVolume:
+                            name: vcp-1-worker-1-root
+                        - name: discovery
+                          dataVolume:
+                            name: vcp-1-worker-1-discovery
+                        - name: data
+                          dataVolume:
+                            name: vcp-1-worker-1-data
                       # An assisted install reboots each node when it writes the
                       # image to disk; without this KubeVirt treats the reboot as
                       # a crash and restarts the VM from the ISO instead.
