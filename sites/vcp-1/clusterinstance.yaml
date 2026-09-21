@@ -108,3 +108,16 @@ spec:
       templateRefs:
         - name: vcp-node-templates-v1
           namespace: open-cluster-management
+    - hostName: "vcp-1-worker-2"
+      role: worker
+      bmcAddress: "redfish-virtualmedia://192.0.2.1/redfish/v1/Systems/vcp-1-worker-2"
+      bmcCredentialsName:
+        name: vcp-1-bmc-placeholder
+      # Continues the control plane's numbering rather than restarting it. The
+      # address is a fiction either way -- KubeVirt assigns the real one -- but
+      # two machines declaring the same one is the kind of fiction that reads as
+      # a duplicate host later.
+      bootMACAddress: "02:00:00:00:00:05"
+      templateRefs:
+        - name: vcp-node-templates-v1
+          namespace: open-cluster-management

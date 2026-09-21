@@ -85,16 +85,8 @@ CONTEXT = dict(
     # Another Jinja-valued role default, dropped by role_defaults() for the same
     # reason: the policy's own namespace, which is deliberately not the site's.
     vcp_policy_namespace="vcp-1-policies",
-    # set_fact'd by vcp-cluster's plan-nodes.yml, for the same reason. Four
-    # machines, three control-plane and one worker -- two to each infra node,
-    # which is the topology the profile builds. Both roles are here on purpose:
-    # the policy template renders per machine and branches on the role, so a
-    # fixture of masters alone would leave the worker's shape unrendered and
-    # unchecked.
-    vcp_nodes=[{"name": f"vcp-1-cp-{i}", "role": "control-plane",
-                "cores": 10, "memory": "32Gi", "gpus": 1} for i in (1, 2, 3)]
-    + [{"name": "vcp-1-worker-1", "role": "worker",
-        "cores": 10, "memory": "32Gi", "gpus": 1}],
+    # vcp_nodes is set below, once role_defaults() exists to derive it from --
+    # see _plan_vcp_nodes.
     haproxy_stats_port=9000,
     ansible_user="ec2-user",
     include_bootstrap=True,
@@ -142,6 +134,29 @@ def role_defaults():
         merged.update({k: v for k, v in values.items()
                        if not (isinstance(v, str) and "{{" in v)})
     return merged
+
+
+def _plan_vcp_nodes():
+    """The same list vcp-cluster's plan-nodes.yml builds, from the same defaults.
+
+    Derived rather than written out, because it was written out and went stale:
+    cd4ea0f raised the machine count and the core count and this fixture kept
+    describing the shape before it, so the templates were checked against a
+    cluster the automation had stopped building. Anything the fixture restates
+    is a second place for the plan to live.
+    """
+    d = role_defaults()
+    return ([{"name": f"{d['vcp_cluster_name']}-cp-{i}", "role": "control-plane",
+              "cores": d["vcp_cp_cores"], "memory": d["vcp_cp_memory"],
+              "gpus": d["vcp_gpus_per_node"]}
+             for i in range(1, int(d["vcp_control_plane_replicas"]) + 1)]
+            + [{"name": f"{d['vcp_cluster_name']}-worker-{i}", "role": "worker",
+                "cores": d["vcp_worker_cores"], "memory": d["vcp_worker_memory"],
+                "gpus": d["vcp_gpus_per_node"]}
+               for i in range(1, int(d["vcp_worker_replicas"]) + 1)])
+
+
+CONTEXT["vcp_nodes"] = _plan_vcp_nodes()
 
 
 def extra_vars_from_wrapper():
@@ -1307,12 +1322,12 @@ def test_guest_vms_are_spread_across_the_infra_cluster():
     infra cluster means one node can end up carrying a whole guest -- and losing
     that node then takes the guest with it rather than half of it.
 
-    Two constraints, and the difference between them is the point. The one over
-    the cluster as a whole is a preference: an unbalanced VM is better than a
-    Pending one when a node is down and the remaining one is the only place
-    anything can run. The one over the control-plane machines alone is a
+    Two constraints per machine, and the difference between them is the point.
+    The one over the cluster as a whole is a preference: an unbalanced VM is
+    better than a Pending one when a node is down and the remaining one is the
+    only place anything can run. The one over the machines sharing its role is a
     requirement, because an even split of the *cluster* is equally satisfied by
-    every master on one infra node and the worker on the other -- which loses
+    every master on one infra node and every worker on the other -- which loses
     the whole quorum with one node, and is exactly the state this profile was
     found in.
     """
@@ -1326,7 +1341,7 @@ def test_guest_vms_are_spread_across_the_infra_cluster():
         role = vm["metadata"]["labels"]["tnf-toolbox-gp/role"]
         tsc = vm["spec"]["template"]["spec"].get("topologySpreadConstraints", [])
         check(f"{name}: asks to be spread by hostname",
-              any(c["topologyKey"] == "kubernetes.io/hostname" for c in tsc))
+              all(c["topologyKey"] == "kubernetes.io/hostname" for c in tsc))
         check(f"{name}: as evenly as the nodes allow",
               all(c.get("maxSkew") == 1 for c in tsc))
 
@@ -1337,31 +1352,35 @@ def test_guest_vms_are_spread_across_the_infra_cluster():
         # loses the quorum.
         whole = [c for c in tsc
                  if c["labelSelector"]["matchLabels"] == {"tnf-toolbox-gp/cluster": "vcp-1"}]
-        masters = [c for c in tsc
-                   if c["labelSelector"]["matchLabels"].get("tnf-toolbox-gp/role")
-                   == "control-plane"]
+        own = [c for c in tsc
+               if c["labelSelector"]["matchLabels"].get("tnf-toolbox-gp/role") == role]
         check(f"{name}: spreads the cluster as a whole",
               len(whole) == 1)
         check(f"{name}: and stays schedulable when it cannot",
               all(c["whenUnsatisfiable"] == "ScheduleAnyway" for c in whole))
-
-        # Only on the machines it selects. On a worker the constraint is a
-        # no-op the scheduler still evaluates, and a control plane already
-        # skewed past maxSkew would then block a worker that had nothing to do
-        # with it.
-        check(f"{name}: carries the control-plane constraint only if it is one",
-              len(masters) == (1 if role == "control-plane" else 0))
+        # Its own role, not some other machine's. A constraint naming a role
+        # this machine is not is one the scheduler still evaluates and whose
+        # selector matches nothing it is -- so a control plane already skewed
+        # past maxSkew would block a worker that had no part in it.
+        check(f"{name}: is spread against the machines of its own role",
+              len(own) == 1 and len(tsc) == 2,
+              f"constraints select {[c['labelSelector']['matchLabels'] for c in tsc]}")
         check(f"{name}: and that one is a requirement, not a preference",
-              all(c["whenUnsatisfiable"] == "DoNotSchedule" for c in masters))
+              all(c["whenUnsatisfiable"] == "DoNotSchedule" for c in own))
 
-    # The guarantee the requirement buys, stated as the arithmetic rather than
-    # as the field: maxSkew 1 over two infra nodes cannot place three masters
-    # without leaving one on each.
-    cp = [vm for vm in vms
-          if vm["metadata"]["labels"]["tnf-toolbox-gp/role"] == "control-plane"]
-    check("a master on each infra node is arithmetic, not luck",
-          len(cp) >= 2,
-          f"{len(cp)} control-plane machines cannot be split across two nodes")
+    # The guarantee those requirements buy, stated as the arithmetic rather
+    # than as the field. maxSkew 1 over N domains puts a ceiling of
+    # ceil(count / N) on any one domain -- so with two infra nodes, three
+    # masters cannot all share one, and two workers cannot.
+    INFRA_NODES = 2
+    for role, limit in (("control-plane", "no infra node holds a whole quorum"),
+                        ("worker", "each infra node keeps a worker")):
+        count = len([vm for vm in vms
+                     if vm["metadata"]["labels"]["tnf-toolbox-gp/role"] == role])
+        worst = -(-count // INFRA_NODES)
+        check(f"{role}: {limit}",
+              count >= INFRA_NODES and worst < count,
+              f"{count} machine(s) over {INFRA_NODES} nodes puts up to {worst} on one")
 
     # HyperShift owns the NodePool's VM template, so the only lever is the
     # annotation that opts it into spread constraints instead of the weaker

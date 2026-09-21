@@ -333,33 +333,35 @@ spec:
                           labelSelector:
                             matchLabels:
                               tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
-{% if vm.role == 'control-plane' %}
-                        # And again over the control-plane machines alone, this
-                        # one a requirement rather than a preference. The
+                        # And again over the machines sharing this one's role,
+                        # as a requirement rather than a preference. The
                         # constraint above balances the cluster as a whole, which
                         # an even split satisfies with every master on one infra
-                        # node and every worker on the other -- a node lost would
-                        # take the entire control plane.
+                        # node and every worker on the other -- losing a node
+                        # would take the entire control plane, and the cluster
+                        # would have scheduled cleanly on its way there.
                         #
-                        # DoNotSchedule, unlike the constraint above, because
-                        # this is the property the topology exists for: a master
-                        # on each infra node, so that losing one costs a member
-                        # of the quorum and not the quorum. The cost is stated
-                        # rather than hidden -- a master that cannot be placed
-                        # on the emptier node stays Pending instead of joining
-                        # its siblings, which is visible and repairable, where an
-                        # unbalanced control plane that schedules cleanly is
-                        # neither. Three masters over two infra nodes leaves
-                        # 2/1 satisfiable with either node down to its last
-                        # slot, so this blocks nothing a healthy rig can place.
+                        # Per role rather than one rule for the control plane,
+                        # because each role wants the same thing of its own
+                        # members and the arithmetic differs only in the count.
+                        # maxSkew 1 over two infra nodes admits 2/1 for three
+                        # masters -- so no node holds a whole quorum -- and 1/1
+                        # for two workers, so each node keeps a router and a
+                        # place for a GPU workload to land.
+                        #
+                        # DoNotSchedule, because this is the property the
+                        # topology exists for. The cost is stated rather than
+                        # hidden: a machine that cannot be placed on the emptier
+                        # node stays Pending instead of joining its siblings,
+                        # which is visible and repairable, where an unbalanced
+                        # cluster that schedules cleanly is neither.
                         - maxSkew: 1
                           topologyKey: kubernetes.io/hostname
                           whenUnsatisfiable: DoNotSchedule
                           labelSelector:
                             matchLabels:
                               tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
-                              tnf-toolbox-gp/role: control-plane
-{% endif %}
+                              tnf-toolbox-gp/role: {{ vm.role }}
                       domain:
                         cpu:
                           cores: {{ vm.cores }}

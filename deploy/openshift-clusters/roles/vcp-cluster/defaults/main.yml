@@ -20,21 +20,26 @@ cim_database_storage: 20Gi
 cim_filesystem_storage: 20Gi
 cim_image_storage: 50Gi
 
-# A compact three-node cluster: three control-plane nodes carrying their own etcd
-# quorum -- unlike a hosted cluster, whose etcd is pods on the hub -- and no
-# separate workers, because the control-plane nodes are schedulable and do that
-# job themselves.
+# Three control-plane nodes carrying their own etcd quorum -- unlike a hosted
+# cluster, whose etcd is pods on the hub. Three is the number the quorum needs
+# and the number the infra cluster can split unevenly but never wholly: two
+# nodes cannot hold three masters without one of them holding exactly one.
 #
 # Three is the fleet's shape for a guest cluster either way. A hosted guest also
 # has three nodes; they are simply all workers there, since its control plane is
 # pods on the hub rather than nodes of its own.
 vcp_control_plane_replicas: 3
-# One worker, which makes four machines -- two on each infra node, now that a
-# discovery volume each lets them spread. Three would have put two on one node
-# and one on the other, which is a worse answer to the same question: an infra
-# node lost takes half the cluster either way, and with four it takes exactly
-# half rather than two thirds.
-vcp_worker_replicas: 1
+# Two workers, which makes five machines. The control plane is the part whose
+# placement is constrained -- maxSkew 1 with DoNotSchedule over two infra nodes
+# admits only a 2/1 split, so no infra node ever holds more than two of the
+# three masters, and losing one costs a member of the quorum rather than the
+# quorum. The workers spread by preference on top of that, giving 3/2.
+#
+# Two rather than one also puts the cluster over the line the assisted
+# installer draws at two workers: below it the installer keeps control-plane
+# nodes worker-labelled and runs the routers there, which is why expose.yml
+# selects on the count rather than on a worker merely existing.
+vcp_worker_replicas: 2
 
 # Assisted installer minimums are 4 vCPU / 16 GiB for a control-plane node and
 # 2 / 8 for a worker. These sit above them: the installer validates against free
@@ -45,10 +50,11 @@ vcp_worker_replicas: 1
 # GUEST_VM_MEMORY, so both kinds of guest node are the same size.
 vcp_cp_cores: 10
 vcp_cp_memory: 32Gi
-# The same size as a control-plane node. The assisted installer keeps the
-# control-plane nodes schedulable while there are fewer than two workers, so
-# this one is not the only place a workload can land -- but it is where the
-# router runs, and it carries its share of the app.
+# The same size as a control-plane node. At two workers the assisted installer
+# stops forcing the control-plane nodes schedulable, so these are where the
+# routers run -- but not the only place a workload can land, because the
+# AgentClusterInstall sets mastersSchedulable itself rather than leaving it to
+# that rule. Each carries its share of the app, and a GPU like every other node.
 vcp_worker_cores: 10
 vcp_worker_memory: 32Gi
 # 64Gi was too small and evicted builds: a worker carries ~25GiB of platform
