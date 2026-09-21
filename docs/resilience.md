@@ -46,7 +46,7 @@ things below cannot recover at all without a rebuild.
 
 | What fails | What goes down | What keeps running | Self-heals? | Basis |
 |---|---|---|---|---|
-| One TNF node | half the GPU capacity; anything pinned to it by a node-local PVC | the cluster API, etcd on the survivor, pods that can reschedule | yes, after the fence completes | config |
+| One TNF node | **the cluster API for ~17m**; half the GPU capacity; anything pinned to it by a node-local PVC | `*.apps` throughout; the guests' own quorum, if their machines are spread | yes, but only when the node returns — not on the survivor | observed |
 | Both TNF nodes | everything on TNF, including both guest profiles | the ACM hub | no — `make tnf-recover` | config |
 | **The TNF bastion** | **the whole TNF cluster's API, `api-int` and `*.apps`, *and* the ability to fence** | the nodes themselves, and workloads already scheduled | **no** | config |
 | The TNF AZ | both nodes and the bastion together | the ACM site | no — rebuild | config |
@@ -54,7 +54,7 @@ things below cannot recover at all without a rebuild.
 | The ACM bastion | the hub's API and console | TNF and the guests | no | config |
 | VPC peering | hub↔TNF management; metrics to the hub | each site on its own | yes | predicted |
 | A vcp-1 VM | one of five nodes | the rest — the machines of its role are split across both infra nodes | yes, `running: true` | observed |
-| An infra node holding vcp-1 VMs | at most two of three masters, and one of two workers | quorum on the survivor, and a router | yes, after the fence | observed |
+| An infra node holding vcp-1 VMs | at most two of three masters, and one of two workers; the guest's API for ~27m and the app for ~33m | the guest's quorum on the surviving master | yes, unattended, ~33m end to end | observed |
 | The guest NLB | the guest's public API and console | the guest itself, and in-cluster traffic | yes, CloudFormation | config |
 | An app pod | that stage of the pipeline | the rest, degraded | yes, unless GPU- or PVC-blocked | config |
 
@@ -211,16 +211,139 @@ actually did with them.
 oc get vmi -n acm-vcp-vms -o wide      # expect: masters 2/1, workers 1/1
 ```
 
-**4. Fence the infra node holding two of `vcp-1`'s masters.** Destructive to
-part of the guest, and the honest version of "what does losing a node cost".
-Expect the guest's API to survive on the remaining master and the two VMs to
-come back when the node does. This is the experiment §2's fix is a bet on, and
-the one still **predicted**: a two-of-three loss should be a quorum repair, but
-nothing here has watched etcd do it.
+**4. Fence the infra node holding two of `vcp-1`'s masters.** **Run on
+2026-09-21** -- see [Fencing a TNF node, measured](#fencing-a-tnf-node-measured)
+for the numbers. The guest's quorum repaired itself exactly as §2's fix bet it
+would. What the experiment actually found was elsewhere: TNF's own API is down
+for the whole fence, because a `g4dn.metal` takes longer to stop than the fence
+agent will wait. Worth re-running after any change to the fencing path, and the
+probe that measured it is four `curl`s in a loop -- the outage windows are only
+believable because something was sampling them.
 
 **5. Cut the peering.** Delete the peering route and confirm each site keeps
 running on its own, then restore it. Settles the one **predicted** row in the
 table.
+
+## Fencing a TNF node, measured
+
+Run 2026-09-21 on the five-node `vcp-1` build. `pcs stonith fence master-1`,
+which held two of `vcp-1`'s three control-plane VMs and one of its two workers.
+Every number below is **observed**, from a probe sampling four endpoints every
+ten seconds and from Pacemaker's own logs.
+
+| | |
+|---|---|
+| TNF `*.apps` | **no interruption** — 97 of 97 samples returned 200 |
+| TNF API, real queries | **out for 17m31s** |
+| `vcp-1` API, real queries | out for 27m17s |
+| The app's route | out for 33m26s |
+| Fence, issue to instance `running` | 15m32s |
+
+```
+21:03:09  fence issued
+21:03:11  Pacemaker requests fencing of master-1
+21:04:23  TNF /readyz answers 200 again -- while every real query still fails
+21:18:13  fence attempt FAILS: "Fence agent did not complete within 15m"
+21:18:36  retry succeeds, 23s later
+21:18:41  master-1 reaches EC2 state running
+21:20:01  master-0's etcd removes master-1 -- quorum at last
+21:20:40  TNF API serves real queries
+21:30:26  vcp-1 API serves real queries
+21:36:35  the app answers 200
+```
+
+### The headline: a fence costs the whole API, and it is arithmetic
+
+The blast-radius table above used to say losing one TNF node costs GPU capacity
+and keeps "the cluster API, etcd on the survivor". It does not. The API served
+nothing for the entire fence, and what ended the outage was **master-1 coming
+back**, not master-0 taking over.
+
+The chain is short and every link is measured:
+
+1. A `g4dn.metal` takes **~15m30s** to reach EC2 state `stopped`. This is the
+   instance type, not the shim: bare metal has a physical host to release.
+2. The fence agent's timeout is **15m**, so the first attempt always expires.
+   Observed twice on the same day, at 20:31 and at 21:18, both followed by a
+   retry that succeeded in about twenty seconds -- because by then the instance
+   had finally stopped.
+3. Pacemaker will not shrink etcd to one member until a fence is *confirmed*.
+   That is correct: shrinking on an unconfirmed fence is how two nodes both
+   decide they are the survivor.
+4. So etcd stays a two-member cluster with one member gone. Two-member etcd
+   needs two votes. There is no quorum, and the API answers nothing.
+
+The 17m31s is therefore not a slow failover. It is step 1 plus the time to
+notice, and it will happen on every fence of a bare-metal node.
+
+### The second finding: `/readyz` says yes when the API can serve nothing
+
+Throughout the outage the API answered `/readyz` with 200. Measured on TNF,
+three times in a row, at the same moment:
+
+```
+/version               OK     served from memory
+/readyz                OK     <- what health checks look at
+/livez                 TIMEOUT
+/api/v1/nodes?limit=1  TIMEOUT
+```
+
+Readiness is meant to be the stricter of the two, and here it is the one that
+lies. Anything that believes it -- an NLB health check, a TCP probe on the
+NodePort, a human running `curl /readyz` -- concludes the API is fine while
+every real request hangs. It is why `vcp-1`'s endpoint *flapped* between 200
+and failure rather than going cleanly down, which reads as a flaky network
+instead of an absent quorum.
+
+### What recovered by itself, and what limped
+
+Everything recovered without intervention. Worth separating how well:
+
+- **TNF `*.apps` never dropped a request.** Ingress runs on both nodes and the
+  bastion's haproxy took master-0's copy. This is the one part of the stack
+  that behaved exactly as the table claims.
+- **`vcp-1` repaired its own quorum.** Two of three control-plane VMs went with
+  the node. The third carried the cluster, and the two returned and rejoined
+  with one etcd restart between them and no degraded operator. This was the
+  **predicted** row that [§2](#2-vcp-1s-vms-used-to-all-sit-on-one-node--fixed)
+  bet on, and it is now observed.
+- **The VMs came back on the same infra nodes**, so the 2/1 and 1/1 spread
+  survived the outage rather than collapsing onto the survivor.
+- **GPUs lag the node.** `cp-1` and `cp-3` returned advertising
+  `nvidia.com/gpu: 0` and stayed that way for minutes, long enough for the
+  analyzer's replacement pod to be rejected from four nodes at once. They
+  self-corrected. A GPU workload is unschedulable for a few minutes after its
+  node returns, which is longer than the node takes to report Ready.
+- **The app took 33m26s** -- nearly twice the TNF API outage -- because its
+  recovery is serial: node back, kubelet back, GPU re-advertised, pod
+  rescheduled, model reloaded.
+
+### An issue this found one layer up: the app's volumes pin it too
+
+The scheduler refused the analyzer's replacement with *"1 node(s) didn't match
+PersistentVolume's node affinity"*. `analyzer-models` and `vllm-models` are
+ReadWriteOnce on `lvms-vg1`, which is node-local, so each of those two pods can
+only ever run on the node holding its volume.
+
+This is [§2](#2-vcp-1s-vms-used-to-all-sit-on-one-node--fixed) again, one layer
+up: the same storage class making the same promise about placement that the
+scheduler cannot keep. Losing a `vcp-1` node for a few minutes costs those pods
+a few minutes. Losing one permanently means the volume is gone and the analyzer
+has to refit its model from scratch, on whichever node it lands on next.
+
+### What to change
+
+| Finding | What it would take |
+|---|---|
+| **A fence costs the API for ~17m** | Fence by *isolation* rather than power. Revoking the instance's security group is confirmable in seconds, so Pacemaker could shrink etcd almost at once and power-cycle separately for recovery. This is the only change here that shortens the outage rather than trimming it. |
+| The first fence attempt always times out | Raise `pcmk_reboot_timeout` past the measured 15m30s, with margin. Cheap and safe, but it only saves the retry -- roughly two minutes of the seventeen. |
+| `/readyz` passing without quorum | Point the load balancers' health checks at something that needs etcd, so an API without quorum is taken out of rotation instead of kept in it. |
+| GPU workloads unschedulable after a node returns | Nothing, probably: it self-corrects in minutes and the alternative is trusting a device plugin that has not finished registering. Worth knowing so it is not diagnosed as a capacity problem. |
+| The app's models on node-local volumes | The same trade as `vcp-1`'s discovery volumes, and the same fix if it matters: shared storage, at the cost of needing some. |
+
+A note for whoever runs this next: `pcs stonith fence` through `oc debug` will
+report `error: http2: client connection lost`. The fence succeeded; the command
+lost its own session to the API blip it caused.
 
 ## If any of this should change
 
