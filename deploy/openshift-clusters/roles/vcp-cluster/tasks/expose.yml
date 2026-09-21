@@ -240,3 +240,76 @@
     # unlike an EBS volume id, which differs per node.
     lvm_devices: ["{{ vcp_data_device }}"]
   when: vcp_api_reachable | bool
+
+# The internal registry, now that there is somewhere to put it.
+#
+# A cluster that installs with no storage class leaves the registry operator in
+# Removed -- which reports Available, because Removed is a state it is happy to
+# be in, while storing nothing. Every build in the guest then fails with
+# "InvalidOutputReference: Output image could not be resolved", which reads as a
+# bad image reference rather than as a registry that was never turned on. That
+# is what 'make app' hit on the first all-VM cluster it was run against.
+#
+# Here rather than in the app role because it is a property of the cluster, not
+# of the workload, and because the storage it needs is built immediately above.
+#
+# The claim is created here rather than left to the operator, and that is the
+# part that matters. Asked for storage with an empty claim, the operator writes
+# a ReadWriteMany one -- and lvms-vg1 is TopoLVM, node-local block storage that
+# has no such mode, so provisioning fails with "unsupported access mode:
+# MULTI_NODE_MULTI_WRITER" and the PVC sits Pending for ever.
+#
+# Which also fixes the replica count: one writer, so one replica and Recreate
+# rather than a rolling update that would want two pods holding one volume.
+- name: "{{ vcp_cluster_name }}: give the registry a volume it can actually have"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_guest_kubeconfig }}"
+    state: present
+    definition:
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: "{{ vcp_registry_claim }}"
+        namespace: openshift-image-registry
+      spec:
+        accessModes: [ReadWriteOnce]
+        storageClassName: "{{ storage_class }}"
+        resources:
+          requests:
+            storage: "{{ vcp_registry_disk }}"
+  when: vcp_api_reachable | bool
+
+- name: "{{ vcp_cluster_name }}: turn the image registry on, now it has storage"
+  kubernetes.core.k8s:
+    kubeconfig: "{{ vcp_guest_kubeconfig }}"
+    state: patched
+    api_version: imageregistry.operator.openshift.io/v1
+    kind: Config
+    name: cluster
+    definition:
+      spec:
+        managementState: Managed
+        replicas: 1
+        rolloutStrategy: Recreate
+        storage:
+          pvc:
+            claim: "{{ vcp_registry_claim }}"
+  when: vcp_api_reachable | bool
+
+- name: "{{ vcp_cluster_name }}: wait for the registry to be serving"
+  ansible.builtin.command: >-
+    oc --kubeconfig {{ vcp_guest_kubeconfig }} get co image-registry
+    -o jsonpath='{.status.conditions[?(@.type=="Available")].status}-{.status.conditions[?(@.type=="Progressing")].status}'
+  register: vcp_registry_up
+  changed_when: false
+  retries: 30
+  delay: 10
+  until: vcp_registry_up.stdout | trim == 'True-False'
+  when: vcp_api_reachable | bool
+
+- name: "{{ vcp_cluster_name }}: report the registry"
+  ansible.builtin.debug:
+    msg: >-
+      {{ vcp_cluster_name }}: image registry Managed on
+      {{ storage_class }}, so builds in the guest have somewhere to push.
+  when: vcp_api_reachable | bool

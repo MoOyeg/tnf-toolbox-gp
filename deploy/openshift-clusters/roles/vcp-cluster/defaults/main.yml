@@ -64,6 +64,12 @@ vcp_data_disk: 100Gi
 # would need one per node.
 vcp_data_device: /dev/vdb
 
+# The internal registry's volume. Named and sized here because the registry
+# operator cannot be left to create it: its own claim is ReadWriteMany, which
+# the node-local storage class does not support. One writer, on one node.
+vcp_registry_claim: image-registry-storage
+vcp_registry_disk: 100Gi
+
 # And the disk the system is installed on, named for the same reason. It has to
 # be stated: both disks are eligible, and left to choose, the assisted installer
 # took the *smaller* one -- the data disk. The system landed on vdb, the VM

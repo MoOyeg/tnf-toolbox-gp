@@ -1,0 +1,36 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  namespace: visual-inspection-1
+  name: camera-sim
+  labels: {app.kubernetes.io/name: camera-sim, app.kubernetes.io/part-of: inspection}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app.kubernetes.io/name: camera-sim}
+  template:
+    metadata:
+      labels: {app.kubernetes.io/name: camera-sim}
+    spec:
+      containers:
+        - name: camera-sim
+          image: image-registry.openshift-image-registry.svc:5000/visual-inspection-1/camera-sim:latest
+          env:
+            - {name: RTSP_HOST, value: rtsp-server}
+            - {name: CAMERAS, value: "4"}
+            # No CATEGORY. Every line encoded into the image is published,
+            # with the camera budget split across them -- pinning one here is
+            # what left the other video sitting unused while four cameras all
+            # watched the same parts. Set CATEGORIES to a comma-separated list
+            # to run a subset.
+          resources:
+            requests: {cpu: 200m, memory: 256Mi}
+            limits: {cpu: "4", memory: 2Gi}
+          volumeMounts:
+            - {name: videos, mountPath: /videos}
+      volumes:
+        # Drop an mp4 in here to inspect real footage instead of the synthetic
+        # line; the entrypoint prefers it when present.
+        - name: videos
+          emptyDir: {}
