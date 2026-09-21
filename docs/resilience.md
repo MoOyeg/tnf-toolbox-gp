@@ -6,9 +6,11 @@ What this rig does when parts of it fail — and, more usefully, what it does
 The short version: **TNF survives losing a control-plane node. Almost nothing
 else here survives losing the thing it sits on.** That is a defensible shape for
 a demo rig, but the fencing story is careful enough to imply the rest of the
-stack is built to the same standard, and it is not. Three of the findings below
-are single points of failure that look like redundancy until you read the
-manifests.
+stack is built to the same standard, and it is not. The findings below are
+single points of failure that look like redundancy until you read the
+manifests. One of the three has since been fixed and is kept here with its
+fix, because the shape of the mistake is the useful part: it was a storage
+decision that silently overrode a scheduling one.
 
 ## How sure each claim is
 
@@ -51,11 +53,12 @@ things below cannot recover at all without a rebuild.
 | The ACM hub | GitOps, policy reconciliation, observability, the assisted installer | both guest profiles, TNF, the app | yes, when the hub returns | config |
 | The ACM bastion | the hub's API and console | TNF and the guests | no | config |
 | VPC peering | hub↔TNF management; metrics to the hub | each site on its own | yes | predicted |
-| A vcp-1 VM | one of three control-plane nodes | the other two, if the node holding them survives | yes, `running: true` | config |
+| A vcp-1 VM | one of five nodes | the rest — the machines of its role are split across both infra nodes | yes, `running: true` | observed |
+| An infra node holding vcp-1 VMs | at most two of three masters, and one of two workers | quorum on the survivor, and a router | yes, after the fence | observed |
 | The guest NLB | the guest's public API and console | the guest itself, and in-cluster traffic | yes, CloudFormation | config |
 | An app pod | that stage of the pipeline | the rest, degraded | yes, unless GPU- or PVC-blocked | config |
 
-## The three that are worse than they look
+## The three that were worse than they looked
 
 ### 1. The bastion is a single point of failure for the entire TNF cluster
 
@@ -85,32 +88,42 @@ so haproxy and the shim come back at the addresses DNS already points at. The
 real exposure is not the outage, it is that this rig has no monitor that would
 tell you the bastion is why the cluster went away.
 
-### 2. `vcp-1`'s three control-plane VMs all sit on one node
+### 2. `vcp-1`'s VMs used to all sit on one node — fixed
 
-This one reads as a three-node HA control plane and is not one. **observed** on
-the last cluster built, and forced by config:
+**Fixed**, and recorded here because the finding is what the fix is for. As
+written, this section described a three-node HA control plane that was not one:
+all three VMs ran on `master-1`, **observed** on the cluster this repo last
+built.
 
-- all three VMs mount the shared `vcp-1-discovery` DataVolume,
-  `accessModes: [ReadWriteOnce]`
-  (`roles/vcp-cluster/templates/policy-virtualmachines.yaml.j2:256`);
-- that volume is on `lvms-vg1`, which is TopoLVM — node-local, unreplicated,
-  and a *hard* scheduling constraint;
-- the `topologySpreadConstraints` a few lines down asks for `maxSkew: 1` but
-  with `whenUnsatisfiable: ScheduleAnyway`, which is a preference.
+The cause was storage, not scheduling. Every VM mounted one shared
+`vcp-1-discovery` DataVolume, `accessModes: [ReadWriteOnce]`, on `lvms-vg1`,
+which is TopoLVM — node-local and a *hard* scheduling constraint. The
+`topologySpreadConstraints` beside it asked for `maxSkew: 1` with
+`whenUnsatisfiable: ScheduleAnyway`, a preference. A hard constraint beats a
+soft one, so all three landed wherever the discovery volume did, permanently:
+nothing detaches that volume after the install.
 
-A hard constraint beats a soft one, so all three land wherever the discovery
-volume did. Nothing detaches that volume after the install, so the pinning is
-permanent, not just a first-boot artefact.
+Two changes, in
+`roles/vcp-cluster/templates/policy-virtualmachines.yaml.j2`:
 
-Consequence: losing the node that holds them loses the **entire** `vcp-1`
-cluster at once, rather than one member of three. On the upside, all three
-coming back together is a clean etcd restart rather than a quorum repair — a
-full-cluster stop is much easier to recover from than a split one.
+- **a discovery volume per machine**, so no volume pins two machines together.
+  It costs one ISO import per machine instead of one per cluster, which is the
+  whole price.
+- **a `DoNotSchedule` constraint per role**, on top of the cluster-wide
+  preference. `maxSkew: 1` over two infra nodes then admits 2/1 for three
+  masters and 1/1 for two workers — so no infra node can hold a whole quorum,
+  and each keeps a router.
 
-This is a known trade: splitting the discovery volume per VM was raised and
-deliberately declined. It is recorded here because the VM count implies an
-HA claim that the storage layout withdraws, and anyone demoing `vcp-1` as
-"three control-plane nodes" should know which of those words is load-bearing.
+**observed** after the rebuild: masters on `master-1`, `master-0`, `master-1`;
+workers one to each.
+
+What it costs is worth stating, because the old shape had a genuine upside: all
+three masters going down together was a clean etcd restart, where a split loses
+one member and repairs quorum. That trade is now taken the other way round on
+purpose. The other cost is that `DoNotSchedule` can leave a machine `Pending`
+rather than unbalanced if an infra node is cordoned or full — visible and
+repairable, where a control plane that schedules cleanly onto one node is
+neither.
 
 ### 3. `hcp-1`'s control plane is a single etcd replica on node-local storage
 
@@ -190,16 +203,20 @@ Confirms §1's API half. Start it again and the cluster should return without
 intervention — worth proving, since it decides whether this is a five-minute
 problem or a rebuild.
 
-**3. Look at where `vcp-1`'s VMs actually are.** Non-destructive, and settles §2
-in one command.
+**3. Look at where `vcp-1`'s VMs actually are.** Non-destructive, and the
+regression test for §2 — the constraints are only worth what the scheduler
+actually did with them.
 
 ```bash
-oc get vmi -n acm-vcp-vms -o wide               # expect: all three, one node
+oc get vmi -n acm-vcp-vms -o wide      # expect: masters 2/1, workers 1/1
 ```
 
-**4. Fence the node holding `vcp-1`.** Destructive to the guest, and the
-honest version of "what does losing a node cost". Expect the whole guest to go,
-and to come back when the node does.
+**4. Fence the infra node holding two of `vcp-1`'s masters.** Destructive to
+part of the guest, and the honest version of "what does losing a node cost".
+Expect the guest's API to survive on the remaining master and the two VMs to
+come back when the node does. This is the experiment §2's fix is a bet on, and
+the one still **predicted**: a two-of-three loss should be a quorum repair, but
+nothing here has watched etcd do it.
 
 **5. Cut the peering.** Delete the peering route and confirm each site keeps
 running on its own, then restore it. Settles the one **predicted** row in the
@@ -214,7 +231,6 @@ right one for a demo. If they should stop being trades:
 | Finding | What it would take |
 |---|---|
 | Bastion SPOF | an ASG of one with a recovery alarm, or moving `api`/`*.apps` to an NLB across two AZs and leaving only the shim on the bastion |
-| `vcp-1` co-location | one discovery DataVolume per VM, so the spread constraint is the only constraint left |
 | `hcp-1` single etcd | nothing, on two nodes — `HighlyAvailable` needs three, so this is a property of TNF, not of the config |
 | Single AZ | a second subnet, which the fencing design does not object to but the `platform:none` DNS layout would need reworking for |
 
