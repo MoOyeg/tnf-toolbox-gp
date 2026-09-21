@@ -35,8 +35,24 @@ fi
   || warn "no ssh private key at ${SSH_PRIVATE_KEY} yet; 'make keypair' creates it"
 [ "${BMC_PASSWORD}" = "CHANGE-ME" ] && bad "BMC_PASSWORD is still the placeholder" \
   || ok "BMC_PASSWORD set"
-[ "${ALLOWED_SSH_CIDR}" = "0.0.0.0/0" ] && warn "ALLOWED_SSH_CIDR is 0.0.0.0/0" \
-  || ok "ALLOWED_SSH_CIDR is ${ALLOWED_SSH_CIDR}"
+# Checked against this machine, not just reported. The address goes into both
+# bastions' security groups, so a stale one -- a new ISP lease, a VPN toggled
+# off -- locks you out of the environment this is about to build, and the stage
+# that fails is 'make peering', whose check SSHes to a bastion and calls it
+# unreachable peering. That cost a build here: routes and peering were both
+# fine.
+if [ "${ALLOWED_SSH_CIDR}" = "0.0.0.0/0" ]; then
+  warn "ALLOWED_SSH_CIDR is 0.0.0.0/0"
+elif MY_IP="$(curl -fsS -m 10 https://checkip.amazonaws.com 2>/dev/null | tr -d '[:space:]')" \
+     && [ -n "${MY_IP}" ]; then
+  if cidr_contains "${ALLOWED_SSH_CIDR}" "${MY_IP}"; then
+    ok "ALLOWED_SSH_CIDR ${ALLOWED_SSH_CIDR} covers this host (${MY_IP})"
+  else
+    bad "ALLOWED_SSH_CIDR is ${ALLOWED_SSH_CIDR} but this host is ${MY_IP}; ssh to the bastions will hang. Set it to ${MY_IP}/32, then re-run 'make infra' and 'make acm-infra' to push it into the security groups"
+  fi
+else
+  ok "ALLOWED_SSH_CIDR is ${ALLOWED_SSH_CIDR} (this host's public address could not be determined)"
+fi
 
 echo
 echo "AWS"

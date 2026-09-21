@@ -59,6 +59,39 @@ check "an empty value stays empty rather than vanishing" \
 check "no stray entries file is left behind" \
   "$([ ! -f "${tmp}.entries" ] && echo true || echo false)"
 
+
+echo
+echo "cidr_contains"
+
+# The failure this exists for: ALLOWED_SSH_CIDR still held the previous ISP
+# lease, so ssh to both bastions hung and 'make peering' reported the peering
+# itself as broken. Routes and the connection were fine.
+cidr_case() {
+  local cidr="$1" ip="$2" want="$3" got=no
+  cidr_contains "${cidr}" "${ip}" && got=yes
+  check "${cidr} contains ${ip}: ${want}" \
+    "$([ "${got}" = "${want}" ] && echo true || echo false)" "got ${got}"
+}
+
+cidr_case "108.53.252.219/32" "108.53.252.219" yes
+cidr_case "100.35.230.109/32" "108.53.252.219" no
+cidr_case "0.0.0.0/0"         "203.0.113.7"    yes
+cidr_case "10.0.0.0/16"       "10.0.255.254"   yes
+cidr_case "10.0.0.0/16"       "10.1.0.1"       no
+cidr_case "192.168.1.0/24"    "192.168.1.255"  yes
+cidr_case "192.168.1.0/24"    "192.168.2.0"    no
+cidr_case "203.0.113.5"       "203.0.113.5"    yes
+cidr_case "203.0.113.5"       "203.0.113.6"    no
+
+# Malformed input must not be read as a match: a CIDR nobody can parse is a
+# reason to stop, not to assume the caller is inside it.
+for bad_cidr in "not-a-cidr" "10.0.0.0/33" "10.0.0.0/abc" "999.1.1.1/32" "10.0.0/16"; do
+  got=no; cidr_contains "${bad_cidr}" "10.0.0.1" && got=yes
+  check "rejects ${bad_cidr}" "$([ "${got}" = "no" ] && echo true || echo false)"
+done
+got=no; cidr_contains "10.0.0.0/16" "not-an-ip" && got=yes
+check "rejects a malformed address" "$([ "${got}" = "no" ] && echo true || echo false)"
+
 rm -f "${tmp}"
 
 echo

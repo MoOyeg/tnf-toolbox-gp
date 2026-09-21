@@ -75,6 +75,44 @@ stack_output() {
     --query "Stacks[0].Outputs[?OutputKey=='$2'].OutputValue" --output text 2>/dev/null
 }
 
+# cidr_contains <cidr> <ipv4-address> -- is the address inside the range?
+#
+# For the one question worth asking about ALLOWED_SSH_CIDR: does it still cover
+# the machine running this? That address is written into both bastions'
+# security groups, so an ISP or VPN change locks you out of the environment you
+# are building. The stage that notices is 'make peering', whose check SSHes to a
+# bastion and reports the failure as unreachable peering -- which sends you to
+# the route tables, where nothing is wrong.
+#
+# Arithmetic rather than python or ipcalc: doctor is meant to run on a bare
+# checkout with nothing installed beyond the tools it checks for.
+ipv4_to_int() {
+  local ip="$1" o1 o2 o3 o4 octet
+  IFS=. read -r o1 o2 o3 o4 <<< "${ip}"
+  for octet in "${o1:-}" "${o2:-}" "${o3:-}" "${o4:-}"; do
+    [[ "${octet}" =~ ^[0-9]{1,3}$ ]] && [ "${octet}" -le 255 ] || return 1
+  done
+  echo $(( (o1 << 24) | (o2 << 16) | (o3 << 8) | o4 ))
+}
+
+cidr_contains() {
+  local cidr="$1" ip="$2" network bits mask net_int ip_int
+  network="${cidr%%/*}"
+  case "${cidr}" in
+    */*) bits="${cidr##*/}" ;;
+    *)   bits=32 ;;
+  esac
+  [[ "${bits}" =~ ^[0-9]{1,2}$ ]] && [ "${bits}" -le 32 ] || return 1
+  net_int="$(ipv4_to_int "${network}")" || return 1
+  ip_int="$(ipv4_to_int "${ip}")" || return 1
+  if [ "${bits}" -eq 0 ]; then
+    mask=0
+  else
+    mask=$(( (0xFFFFFFFF << (32 - bits)) & 0xFFFFFFFF ))
+  fi
+  [ $(( net_int & mask )) -eq $(( ip_int & mask )) ]
+}
+
 # create_or_update_stack <stack> <template> [Key=Value ...]
 #
 # Parameters are passed as plain Key=Value and converted to a JSON file here.

@@ -107,7 +107,7 @@ Four things in `instance.env` need attention; the rest have working defaults:
 | `REGION` / `AVAILABILITY_ZONE` | must agree, and `g4dn.metal` has to be offered there — `make doctor` checks both |
 | `SSH_KEY_NAME` | the EC2 key pair. It does not have to exist: `make keypair` creates it, and the local key alongside it |
 | `BMC_PASSWORD` | ships as `CHANGE-ME`, which `make doctor` rejects. It is the password Pacemaker fences with |
-| `ALLOWED_SSH_CIDR` | ships as `0.0.0.0/0`. Narrow it to your own address |
+| `ALLOWED_SSH_CIDR` | ships as `0.0.0.0/0`. Narrow it to your own address — `make doctor` fails if it no longer covers the machine you run from, because that address goes into both bastions' security groups and a stale one locks you out |
 
 `BASE_DOMAIN` is left blank on purpose — it is filled from the account's public
 Route53 zone, so a sandbox that hands you a new domain needs no edit.
