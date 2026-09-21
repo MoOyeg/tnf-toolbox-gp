@@ -333,19 +333,33 @@ spec:
                           labelSelector:
                             matchLabels:
                               tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
-                        # And again over the control-plane machines alone. The
+{% if vm.role == 'control-plane' %}
+                        # And again over the control-plane machines alone, this
+                        # one a requirement rather than a preference. The
                         # constraint above balances the cluster as a whole, which
                         # an even split satisfies with every master on one infra
                         # node and every worker on the other -- a node lost would
-                        # take the entire control plane. This one puts a master
-                        # on each infra node before it puts a second anywhere.
+                        # take the entire control plane.
+                        #
+                        # DoNotSchedule, unlike the constraint above, because
+                        # this is the property the topology exists for: a master
+                        # on each infra node, so that losing one costs a member
+                        # of the quorum and not the quorum. The cost is stated
+                        # rather than hidden -- a master that cannot be placed
+                        # on the emptier node stays Pending instead of joining
+                        # its siblings, which is visible and repairable, where an
+                        # unbalanced control plane that schedules cleanly is
+                        # neither. Three masters over two infra nodes leaves
+                        # 2/1 satisfiable with either node down to its last
+                        # slot, so this blocks nothing a healthy rig can place.
                         - maxSkew: 1
                           topologyKey: kubernetes.io/hostname
-                          whenUnsatisfiable: ScheduleAnyway
+                          whenUnsatisfiable: DoNotSchedule
                           labelSelector:
                             matchLabels:
                               tnf-toolbox-gp/cluster: {{ vcp_cluster_name }}
                               tnf-toolbox-gp/role: control-plane
+{% endif %}
                       domain:
                         cpu:
                           cores: {{ vm.cores }}

@@ -85,10 +85,16 @@ CONTEXT = dict(
     # Another Jinja-valued role default, dropped by role_defaults() for the same
     # reason: the policy's own namespace, which is deliberately not the site's.
     vcp_policy_namespace="vcp-1-policies",
-    # set_fact'd by vcp-cluster's plan-nodes.yml, for the same reason. Three
-    # schedulable control-plane nodes: the compact topology the profile builds.
+    # set_fact'd by vcp-cluster's plan-nodes.yml, for the same reason. Four
+    # machines, three control-plane and one worker -- two to each infra node,
+    # which is the topology the profile builds. Both roles are here on purpose:
+    # the policy template renders per machine and branches on the role, so a
+    # fixture of masters alone would leave the worker's shape unrendered and
+    # unchecked.
     vcp_nodes=[{"name": f"vcp-1-cp-{i}", "role": "control-plane",
-                "cores": 8, "memory": "32Gi", "gpus": 1} for i in (1, 2, 3)],
+                "cores": 10, "memory": "32Gi", "gpus": 1} for i in (1, 2, 3)]
+    + [{"name": "vcp-1-worker-1", "role": "worker",
+        "cores": 10, "memory": "32Gi", "gpus": 1}],
     haproxy_stats_port=9000,
     ansible_user="ec2-user",
     include_bootstrap=True,
@@ -1296,9 +1302,14 @@ def test_guest_vms_are_spread_across_the_infra_cluster():
     infra cluster means one node can end up carrying a whole guest -- and losing
     that node then takes the guest with it rather than half of it.
 
-    ScheduleAnyway rather than DoNotSchedule on purpose: an unbalanced VM is
-    better than a Pending one, which is the trade that matters when a node is
-    down and the remaining one is the only place anything can run.
+    Two constraints, and the difference between them is the point. The one over
+    the cluster as a whole is a preference: an unbalanced VM is better than a
+    Pending one when a node is down and the remaining one is the only place
+    anything can run. The one over the control-plane machines alone is a
+    requirement, because an even split of the *cluster* is equally satisfied by
+    every master on one infra node and the worker on the other -- which loses
+    the whole quorum with one node, and is exactly the state this profile was
+    found in.
     """
     print("\nspreading guest VMs")
     roles = f"{ROOT}/deploy/openshift-clusters/roles"
@@ -1306,13 +1317,46 @@ def test_guest_vms_are_spread_across_the_infra_cluster():
     _, _, objects = vcp_policy()
     vms = [o for o in objects if o["kind"] == "VirtualMachine"]
     for vm in vms:
+        name = vm["metadata"]["name"]
+        role = vm["metadata"]["labels"]["tnf-toolbox-gp/role"]
         tsc = vm["spec"]["template"]["spec"].get("topologySpreadConstraints", [])
-        check(f"{vm['metadata']['name']}: asks to be spread by hostname",
+        check(f"{name}: asks to be spread by hostname",
               any(c["topologyKey"] == "kubernetes.io/hostname" for c in tsc))
-        check(f"{vm['metadata']['name']}: as evenly as the nodes allow",
-              any(c.get("maxSkew") == 1 for c in tsc))
-        check(f"{vm['metadata']['name']}: but is still schedulable when it cannot be",
-              all(c.get("whenUnsatisfiable") == "ScheduleAnyway" for c in tsc))
+        check(f"{name}: as evenly as the nodes allow",
+              all(c.get("maxSkew") == 1 for c in tsc))
+
+        # Keyed on the selector rather than on position: the two constraints
+        # differ only in what they select and what they do when they cannot be
+        # satisfied, so matching them by index would pass a file that had
+        # swapped them -- and swapped is the shape that schedules cleanly and
+        # loses the quorum.
+        whole = [c for c in tsc
+                 if c["labelSelector"]["matchLabels"] == {"tnf-toolbox-gp/cluster": "vcp-1"}]
+        masters = [c for c in tsc
+                   if c["labelSelector"]["matchLabels"].get("tnf-toolbox-gp/role")
+                   == "control-plane"]
+        check(f"{name}: spreads the cluster as a whole",
+              len(whole) == 1)
+        check(f"{name}: and stays schedulable when it cannot",
+              all(c["whenUnsatisfiable"] == "ScheduleAnyway" for c in whole))
+
+        # Only on the machines it selects. On a worker the constraint is a
+        # no-op the scheduler still evaluates, and a control plane already
+        # skewed past maxSkew would then block a worker that had nothing to do
+        # with it.
+        check(f"{name}: carries the control-plane constraint only if it is one",
+              len(masters) == (1 if role == "control-plane" else 0))
+        check(f"{name}: and that one is a requirement, not a preference",
+              all(c["whenUnsatisfiable"] == "DoNotSchedule" for c in masters))
+
+    # The guarantee the requirement buys, stated as the arithmetic rather than
+    # as the field: maxSkew 1 over two infra nodes cannot place three masters
+    # without leaving one on each.
+    cp = [vm for vm in vms
+          if vm["metadata"]["labels"]["tnf-toolbox-gp/role"] == "control-plane"]
+    check("a master on each infra node is arithmetic, not luck",
+          len(cp) >= 2,
+          f"{len(cp)} control-plane machines cannot be split across two nodes")
 
     # HyperShift owns the NodePool's VM template, so the only lever is the
     # annotation that opts it into spread constraints instead of the weaker
