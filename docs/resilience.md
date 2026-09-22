@@ -53,7 +53,7 @@ things below cannot recover at all without a rebuild.
 | The ACM hub | GitOps, policy reconciliation, observability, the assisted installer | both guest profiles, TNF, the app | yes, when the hub returns | config |
 | The ACM bastion | the hub's API and console | TNF and the guests | no | config |
 | VPC peering | hub↔TNF management; metrics to the hub | each site on its own | yes | predicted |
-| A vcp-1 VM | one of five nodes | the rest — the machines of its role are split across both infra nodes | yes, `running: true` | observed |
+| A vcp-1 VM | one of five nodes, for 3m31s (control plane) to 6m34s (a GPU workload) | everything else; one probe blip of ~30s | yes, `running: true`, unattended | observed |
 | An infra node holding vcp-1 VMs | at most two of three masters, and one of two workers; the guest's API for ~27m and the app for ~33m | the guest's quorum on the surviving master | yes, unattended, ~33m end to end | observed |
 | The guest NLB | the guest's public API and console | the guest itself, and in-cluster traffic | yes, CloudFormation | config |
 | An app pod | that stage of the pipeline | the rest, degraded | yes, unless GPU- or PVC-blocked | config |
@@ -441,6 +441,66 @@ is neither detection nor the failure mode -- it is waiting for EC2.
 **The first fence attempt timed out for the third consecutive time.** Three
 fences on this rig, three timeouts at 900s followed by a retry that succeeded
 in about twenty seconds. The stop takes 15m11s to 15m33s; the timeout is 15m00s.
+
+## Losing a guest VM, measured
+
+Run 2026-09-22, straight after the partition, as the control the other two
+experiments needed: every long outage so far began with an infra node leaving,
+so the obvious question is what the guest costs on its own. Both machines were
+destroyed with `oc delete vmi`, which is as abrupt as a guest loss gets --
+KubeVirt recreates them because the `VirtualMachine` says `running: true`.
+
+| | control plane (`cp-1`) | worker (`worker-2`) |
+|---|---|---|
+| VM running again | 1m27s | under 3m |
+| Guest node `Ready` | **3m31s** | **3m57s** |
+| Its workload back | n/a | 6m34s |
+| Measured interruption | one 30s blip of the guest API | one 40s blip of the app |
+
+```
+23:58:04  cp-1 destroyed
+23:59:31  KubeVirt has it running again, back on master-1
+00:00:35  guest API fails two probes as cp-1's etcd rejoins
+00:01:35  node Ready
+00:02:40  etcd 3 of 3
+
+00:03:01  worker-2 destroyed
+00:06:10  the app fails three probes -- worker-2 runs a router, and the
+          ingress Service selects worker machines
+00:06:58  node Ready
+00:09:35  analyzer running again, on worker-2, without refitting
+```
+
+Set against 27 minutes of guest API and 33 minutes of app when an infra node
+was fenced, this is the answer to where the fragility lives. **It is not the
+guest cluster, and it is not KubeVirt.** A control-plane machine can be
+destroyed outright and the cluster does not notice for longer than half a
+minute. Everything expensive measured in this document begins with a
+`g4dn.metal` being asked to stop.
+
+### The two guest-side findings compound, and this is where it shows
+
+The analyzer took 6m34s against the node's 3m57s, and the scheduler said why:
+
+```
+0/5 nodes are available:
+  1 Insufficient nvidia.com/gpu
+  3 node(s) didn't match PersistentVolume's node affinity
+```
+
+Its GPU had not been re-advertised on the machine that had just rebooted, and
+`analyzer-models` is ReadWriteOnce on node-local storage, so `worker-2` was the
+only machine it was allowed to run on. Separately each is minor: a device
+plugin that registers late normally means "schedule it elsewhere", and a pinned
+volume normally means "it always runs here". Together the pin removes the
+fallback the lag needs, and a delay becomes a block.
+
+It is worth being fair about the pin, because it is not only a cost. The
+analyzer came back **without refitting** -- the log shows no quantile pass at
+all -- because destroying a VM does not destroy its DataVolumes, so the guest's
+LVM volume and the fitted model on it survived. Refitting is about twelve
+minutes. The pin bought that, and would cost it on a permanent loss of the
+machine.
 
 ## If any of this should change
 
